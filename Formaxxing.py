@@ -21,10 +21,14 @@ def convert_dataset(input_path, output_path, debug):
             with open(input_path, 'r', encoding='utf-8') as infile:
                 data = json.load(infile)
         elif input_path.endswith('.jsonl'):
+            data = []
             with open(input_path, 'r', encoding='utf-8') as infile:
-                data = [json.loads(line) for line in infile]
+                for line in infile:
+                    data.append(json.loads(line))
         elif input_path.endswith('.parquet'):
             data = pd.read_parquet(input_path).to_dict(orient='records')
+        elif input_path.endswith('.csv'):
+            data = pd.read_csv(input_path).to_dict(orient='records')
         elif input_path.endswith('.txt'):
             data = []
             with open(input_path, 'r', encoding='utf-8') as infile:
@@ -39,19 +43,24 @@ def convert_dataset(input_path, output_path, debug):
                         if debug:
                             print(f"Skipped invalid JSON line: {line.strip()}")
         else:
-            raise ValueError("Unsupported file format. Please use .json, .jsonl, .parquet, or .txt files.")
+            raise ValueError("Unsupported file format. Please use .json, .jsonl, .parquet, .csv, or .txt files.")
 
         preview_entries = []
         with open(output_path, 'w', encoding='utf-8') as outfile:
             for entry in data:
-                conversations = entry.get("conversations", [])
+                conversations = []
 
+                # Handle system message first
                 if 'system' in entry:
                     conversations.append({"from": "system", "value": entry['system']})
-                if 'user' in entry:
-                    conversations.append({"from": "human", "value": entry['user']})
-                if 'assistant' in entry:
-                    conversations.append({"from": "gpt", "value": entry['assistant']})
+
+                # Handle JSONL-specific format
+                if 'completion' in entry:
+                    for message in entry['completion']:
+                        if message['role'] == 'user':
+                            conversations.append({"from": "human", "value": message['content']})
+                        elif message['role'] == 'assistant':
+                            conversations.append({"from": "gpt", "value": message['content']})
 
                 preview_output = {"conversations": conversations}
                 if len(preview_entries) < 3:
@@ -84,6 +93,7 @@ def select_input_file():
         ("JSON files", "*.json"),
         ("JSON Lines files", "*.jsonl"),
         ("Parquet files", "*.parquet"),
+        ("CSV files", "*.csv"),
         ("Plaintext files", "*.txt")
     ])
     if file_path:

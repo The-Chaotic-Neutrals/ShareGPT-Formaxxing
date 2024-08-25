@@ -4,6 +4,27 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 import sqlite3
 import csv
+import pygame
+import os
+
+# Set the path to the local MP3 file
+mp3_file_path = "bgm.mp3"  # Update this path
+
+def play_music():
+    if pygame.mixer.music.get_busy():
+        pygame.mixer.music.pause()
+        music_button.config(text="Play Music")
+    else:
+        if os.path.exists(mp3_file_path):
+            pygame.mixer.music.load(mp3_file_path)
+            pygame.mixer.music.play(-1)  # -1 means the music will loop indefinitely
+            music_button.config(text="Pause Music")
+        else:
+            messagebox.showwarning("Music Error", "MP3 file not found.")
+
+def set_volume(val):
+    volume = float(val) / 100  # Slider value is between 0 and 100
+    pygame.mixer.music.set_volume(volume)
 
 def process_plaintext_line(line, debug):
     conversations = []
@@ -192,21 +213,24 @@ def apply_light_mode():
     style.configure('TButton', background='#f0f0f0', foreground='#000000', padding=6)
     style.configure('TLabel', background='#ffffff', foreground='#000000')
     style.configure('TCheckbutton', background='#ffffff', foreground='#000000')
-    style.configure('TEntry', background='#f0f0f0', foreground='#000000')
-    style.configure('TScrolledText', background='#f0f0f0', foreground='#000000')
+    style.configure('TEntry', background='#ffffff', foreground='#000000')
+    style.configure('TScrolledText', background='#ffffff', foreground='#000000')
     status_bar.config(bg='#ffffff', fg='#000000')
 
-# Set up the Tkinter window
+# Initialize Pygame mixer
+pygame.mixer.init()
+
+# Create the main application window
 root = tk.Tk()
 root.title("Dataset Converter")
 
-# Load and set the window icon
-icon_path = "./icon.png"  # Change this to the path of your icon file
+# Set icon
+icon_path = "icon.png"  # Update this path
 try:
     icon = tk.PhotoImage(file=icon_path)
     root.iconphoto(False, icon)
-except tk.TclError:
-    messagebox.showerror("Error", "Failed to load icon. Ensure the file path and format are correct.")
+except Exception as e:
+    print(f"Failed to load icon: {e}")
 
 # Set up style
 style = ttk.Style()
@@ -237,21 +261,31 @@ tk.Checkbutton(root, text="Enable Debugging", variable=debug_var).grid(row=2, co
 # Convert button
 tk.Button(root, text="Convert", command=on_convert_button_click).grid(row=3, column=0, columnspan=3, pady=20)
 
+# Music button
+music_button = tk.Button(root, text="Play Music", command=play_music)
+music_button.grid(row=4, column=0, columnspan=3, pady=10)
+
+# Volume control
+tk.Label(root, text="Volume:").grid(row=5, column=0, padx=10, pady=10, sticky="e")
+volume_slider = tk.Scale(root, from_=0, to=100, orient=tk.HORIZONTAL, command=set_volume)
+volume_slider.set(100)  # Set initial volume to 100%
+volume_slider.grid(row=5, column=1, columnspan=2, padx=10, pady=10, sticky="ew")
+
 # Dark Mode Toggle Button
-tk.Checkbutton(root, text="Dark Mode", variable=dark_mode_var, command=toggle_dark_mode).grid(row=4, column=0, columnspan=3, pady=10)
+tk.Checkbutton(root, text="Dark Mode", variable=dark_mode_var, command=toggle_dark_mode).grid(row=6, column=0, columnspan=3, pady=10)
 
 # Preview window
-tk.Label(root, text="Preview Output:").grid(row=5, column=0, padx=10, pady=10, sticky="nw")
+tk.Label(root, text="Preview Output:").grid(row=7, column=0, padx=10, pady=10, sticky="nw")
 preview_text = scrolledtext.ScrolledText(root, wrap=tk.WORD, font=('Consolas', 10))
-preview_text.grid(row=6, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
+preview_text.grid(row=8, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
 
 # Status Bar
 status_var = tk.StringVar()
 status_bar = tk.Label(root, textvariable=status_var, anchor='w', relief=tk.SUNKEN)
-status_bar.grid(row=7, column=0, columnspan=3, sticky='ew')
+status_bar.grid(row=9, column=0, columnspan=3, sticky='ew')
 
 # Set up resizing behavior
-root.grid_rowconfigure(6, weight=1)
+root.grid_rowconfigure(8, weight=1)
 root.grid_columnconfigure(1, weight=1)
 
 def pause():

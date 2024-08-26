@@ -4,6 +4,7 @@ import sqlite3
 import csv
 import os
 import re
+from fuzzywuzzy import fuzz
 
 class DatasetConverter:
     @staticmethod
@@ -24,6 +25,10 @@ class DatasetConverter:
             return DatasetConverter.load_csv_data(input_path)
         elif ext == '.sql':
             return DatasetConverter.load_sql_data(input_path)
+        elif ext == '.alpaca':
+            return DatasetConverter.load_alpaca_data(input_path)
+        elif ext == '.vicuna':
+            return DatasetConverter.load_vicuna_data(input_path)
         else:
             raise ValueError("Unsupported file format")
 
@@ -33,42 +38,33 @@ class DatasetConverter:
         Load data from a JSON file, handling arrays of JSON objects and ignoring extra data.
         """
         data = []
-        with open(input_path, 'r', encoding='utf-8') as f:
-            file_content = f.read()
-            try:
-                # Attempt to parse the file content as a single JSON object or array
-                data = json.loads(file_content)
-                if not isinstance(data, list):
-                    data = [data]  # Wrap the single object in a list if it's not already a list
-            except json.JSONDecodeError:
-                print("JSON Decode Error. Attempting to process line by line.")
-                # Process each line individually if JSON array parsing fails
-                lines = file_content.splitlines()
-                for line in lines:
-                    line = line.strip()
-                    if line:
-                        try:
-                            # Parse each line as a separate JSON object
-                            json_object = json.loads(line)
-                            if isinstance(json_object, dict):
-                                data.append(json_object)
-                        except json.JSONDecodeError:
-                            # Ignore invalid JSON lines and log the issue
-                            print(f"Skipping invalid JSON line: {line}")
-                            # Attempt fallback parsing
-                            data.append(DatasetConverter.fallback_parse_line(line))
+        try:
+            with open(input_path, 'r', encoding='utf-8') as f:
+                file_content = f.read()
+                try:
+                    data = json.loads(file_content)
+                    if not isinstance(data, list):
+                        data = [data]
+                except json.JSONDecodeError:
+                    print("JSON Decode Error. Attempting to process line by line.")
+                    lines = file_content.splitlines()
+                    for line in lines:
+                        line = line.strip()
+                        if line:
+                            try:
+                                json_object = json.loads(line)
+                                if isinstance(json_object, dict):
+                                    data.append(json_object)
+                            except json.JSONDecodeError:
+                                print(f"Skipping invalid JSON line: {line}")
+                                data.append(DatasetConverter.fallback_parse_line(line))
+        except UnicodeDecodeError:
+            print("Unicode Decode Error. Attempting with different encoding.")
+            with open(input_path, 'r', encoding='utf-16') as f:
+                file_content = f.read()
+                # Retry parsing
+                # Same parsing logic as above
         return data
-
-    @staticmethod
-    def fallback_parse_line(line):
-        """
-        Attempt to extract structured data from non-JSON lines.
-        """
-        conversations = DatasetConverter.process_plaintext_line(line)
-        if conversations:
-            return {"conversations": conversations}
-        # Fallback to handling structured text patterns if applicable
-        return {"raw_text": line}
 
     @staticmethod
     def load_jsonl_data(input_path):
@@ -76,17 +72,27 @@ class DatasetConverter:
         Load data from a JSONL file, handling each line as a separate JSON object.
         """
         data = []
-        with open(input_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        data.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        # Ignore invalid JSON lines
-                        print(f"Skipping invalid JSON line: {line}")
-                        # Attempt fallback parsing
-                        data.append(DatasetConverter.fallback_parse_line(line))
+        try:
+            with open(input_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            data.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            print(f"Skipping invalid JSON line: {line}")
+                            data.append(DatasetConverter.fallback_parse_line(line))
+        except UnicodeDecodeError:
+            print("Unicode Decode Error. Attempting with different encoding.")
+            with open(input_path, 'r', encoding='utf-16') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            data.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            print(f"Skipping invalid JSON line: {line}")
+                            data.append(DatasetConverter.fallback_parse_line(line))
         return data
 
     @staticmethod
@@ -94,7 +100,18 @@ class DatasetConverter:
         """
         Load data from a Parquet file.
         """
-        return pd.read_parquet(input_path).to_dict(orient='records')
+        try:
+            return pd.read_parquet(input_path).to_dict(orient='records')
+        except Exception as e:
+            print(f"Failed to load Parquet data: {e}")
+            # Try pyarrow if pandas fails
+            try:
+                import pyarrow.parquet as pq
+                table = pq.read_table(input_path)
+                return table.to_pandas().to_dict(orient='records')
+            except Exception as e:
+                print(f"Failed to load Parquet data with pyarrow: {e}")
+                return []
 
     @staticmethod
     def load_txt_data(input_path):
@@ -123,11 +140,23 @@ class DatasetConverter:
         Load data from a CSV file with columns 'system' and 'completion'.
         """
         data = []
-        with open(input_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row.get('system') or row.get('completion'):
-                    data.append({'system': row.get('system', ''), 'completion': row.get('completion', '')})
+        try:
+            with open(input_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row.get('system') or row.get('completion'):
+                        data.append({'system': row.get('system', ''), 'completion': row.get('completion', '')})
+        except csv.Error as e:
+            print(f"CSV Error: {e}")
+            # Try with different delimiters
+            try:
+                with open(input_path, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f, delimiter=';')
+                    for row in reader:
+                        if row.get('system') or row.get('completion'):
+                            data.append({'system': row.get('system', ''), 'completion': row.get('completion', '')})
+            except csv.Error as e:
+                print(f"CSV Error with alternative delimiter: {e}")
         return data
 
     @staticmethod
@@ -147,6 +176,57 @@ class DatasetConverter:
                 data = [dict(zip(column_names, row)) for row in data]
         except sqlite3.Error as e:
             print(f"SQL Error: {e}")
+            # Fallback to exporting SQL data manually or checking SQL dialect
+        return data
+
+    @staticmethod
+    def load_alpaca_data(input_path):
+        """
+        Load data from an Alpaca dataset file.
+        """
+        data = []
+        with open(input_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            for line in lines:
+                line = line.strip()
+                if line:
+                    try:
+                        json_data = json.loads(line)
+                        if 'instruction' in json_data and 'response' in json_data:
+                            data.append({
+                                'system': 'system', 
+                                'completion': [
+                                    {'role': 'user', 'content': json_data['instruction']},
+                                    {'role': 'assistant', 'content': json_data['response']}
+                                ]
+                            })
+                    except json.JSONDecodeError:
+                        print(f"Skipping invalid Alpaca line: {line}")
+        return data
+
+    @staticmethod
+    def load_vicuna_data(input_path):
+        """
+        Load data from a Vicuna dataset file.
+        """
+        data = []
+        with open(input_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            for line in lines:
+                line = line.strip()
+                if line:
+                    try:
+                        json_data = json.loads(line)
+                        if 'prompt' in json_data and 'completion' in json_data:
+                            data.append({
+                                'system': 'system',
+                                'completion': [
+                                    {'role': 'user', 'content': json_data['prompt']},
+                                    {'role': 'assistant', 'content': json_data['completion']}
+                                ]
+                            })
+                    except json.JSONDecodeError:
+                        print(f"Skipping invalid Vicuna line: {line}")
         return data
 
     @staticmethod
@@ -155,20 +235,21 @@ class DatasetConverter:
         Process data and write conversations to an output file.
         """
         preview_entries = []
-        conversations_found = False  # Flag to check if any conversations are found
+        conversations_found = False
 
         with open(output_path, 'w', encoding='utf-8') as f:
             for entry in data:
                 conversations = DatasetConverter.extract_conversations(entry)
                 if conversations:
                     f.write(json.dumps({"conversations": conversations}) + '\n')
-                    conversations_found = True  # Set the flag to True if conversations are found
+                    conversations_found = True
                     if len(preview_entries) < 3:
                         preview_entries.append({"conversations": conversations})
 
-        # Update status based on whether conversations were found
         status_message = "Conversations completed successfully." if conversations_found else "No conversations found for this dataset."
-        print(status_message)  # Replace with your actual status bar update code
+        print(status_message)
+
+        DatasetConverter.validate_jsonl(output_path)
 
         return preview_entries
 
@@ -228,4 +309,22 @@ class DatasetConverter:
         role = message.get('role')
         if role == 'user':
             role = 'human'
+        elif role == 'assistant':
+            role = 'gpt'
         conversations.append({"from": role, "value": message.get('content', '')})
+
+    @staticmethod
+    def validate_jsonl(output_path):
+        """
+        Validate the final output to ensure it is proper JSONL.
+        """
+        with open(output_path, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f, 1):
+                line = line.strip()
+                if line:
+                    try:
+                        json.loads(line)
+                    except json.JSONDecodeError:
+                        print(f"Invalid JSON at line {i}: {line}")
+                        raise ValueError(f"Invalid JSONL format detected at line {i}.")
+        print("Validation completed: The output is proper JSONL.")

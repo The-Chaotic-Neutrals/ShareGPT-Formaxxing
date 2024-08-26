@@ -2,15 +2,17 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 import pygame
 import os
+import json
 from dataset_converter import DatasetConverter
 
 class UIManager:
     def __init__(self, root):
         self.root = root
-        self.root.title("Dataset Converter")
+        self.root.title("Chaotic Neutral's ShareGPT Formaxxing-Tool")
         self.dark_mode_var = tk.BooleanVar(value=False)
         self.setup_ui()
         self.init_pygame()
+        self.load_icon()
 
     def setup_ui(self):
         self.root.columnconfigure(1, weight=1)
@@ -29,30 +31,37 @@ class UIManager:
         self.entry_output_file = self.create_labeled_entry("Output File:", 1, self.select_output_file)
 
     def create_labeled_entry(self, label, row, command):
-        tk.Label(self.root, text=label).grid(row=row, column=0, padx=10, pady=10, sticky="e")
+        self.label = tk.Label(self.root, text=label)
+        self.label.grid(row=row, column=0, padx=10, pady=10, sticky="e")
         entry = tk.Entry(self.root, width=50)
         entry.grid(row=row, column=1, padx=10, pady=10, sticky="ew")
-        tk.Button(self.root, text="Browse...", command=command).grid(row=row, column=2, padx=10, pady=10)
+        self.browse_button = tk.Button(self.root, text="Browse...", command=command)
+        self.browse_button.grid(row=row, column=2, padx=10, pady=10)
         return entry
 
     def create_options_ui(self):
         self.debug_var = tk.BooleanVar()
-        tk.Checkbutton(self.root, text="Enable Debugging", variable=self.debug_var).grid(row=2, column=0, columnspan=3, pady=10)
+        self.debug_checkbox = tk.Checkbutton(self.root, text="Enable Debugging", variable=self.debug_var)
+        self.debug_checkbox.grid(row=2, column=0, columnspan=3, pady=10)
 
-        tk.Button(self.root, text="Convert", command=self.on_convert_button_click).grid(row=3, column=0, columnspan=3, pady=20)
+        self.convert_button = tk.Button(self.root, text="Convert", command=self.on_convert_button_click)
+        self.convert_button.grid(row=3, column=0, columnspan=3, pady=20)
 
         self.music_button = tk.Button(self.root, text="Play Music", command=self.play_music)
         self.music_button.grid(row=4, column=0, columnspan=3, pady=10)
 
-        tk.Label(self.root, text="Volume:").grid(row=5, column=0, padx=10, pady=10, sticky="e")
+        self.volume_label = tk.Label(self.root, text="Volume:")
+        self.volume_label.grid(row=5, column=0, padx=10, pady=10, sticky="e")
         self.volume_slider = tk.Scale(self.root, from_=0, to=100, orient=tk.HORIZONTAL, command=self.set_volume)
         self.volume_slider.set(100)
         self.volume_slider.grid(row=5, column=1, columnspan=2, padx=10, pady=10, sticky="ew")
 
-        tk.Checkbutton(self.root, text="Dark Mode", variable=self.dark_mode_var, command=self.toggle_dark_mode).grid(row=6, column=0, columnspan=3, pady=10)
+        self.dark_mode_checkbox = tk.Checkbutton(self.root, text="Dark Mode", variable=self.dark_mode_var, command=self.toggle_dark_mode)
+        self.dark_mode_checkbox.grid(row=6, column=0, columnspan=3, pady=10)
 
     def create_preview_ui(self):
-        tk.Label(self.root, text="Preview Output:").grid(row=7, column=0, padx=10, pady=10, sticky="nw")
+        self.preview_label = tk.Label(self.root, text="Preview Output:")
+        self.preview_label.grid(row=7, column=0, padx=10, pady=10, sticky="nw")
         self.preview_text = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, font=('Consolas', 10))
         self.preview_text.grid(row=8, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
 
@@ -64,7 +73,7 @@ class UIManager:
     def init_pygame(self):
         pygame.init()
         pygame.mixer.init()
-        self.mp3_file_path = "bgm.mp3"
+        self.mp3_file_path = "kitchen.mp3"
 
     def select_input_file(self):
         self.select_file(self.entry_input_file, [
@@ -135,24 +144,70 @@ class UIManager:
             self.apply_light_mode()
 
     def apply_dark_mode(self):
-        self.root.tk_setPalette(background='#2e2e2e', foreground='#ffffff')
-        self.style.configure('TButton', background='#3e3e3e', foreground='#ffffff', padding=6)
-        self.style.configure('TLabel', background='#2e2e2e', foreground='#ffffff')
-        self.style.configure('TCheckbutton', background='#2e2e2e', foreground='#ffffff')
-        self.style.configure('TEntry', background='#3e3e3e', foreground='#ffffff')
-        self.style.configure('TScrolledText', background='#3e3e3e', foreground='#ffffff')
-        self.status_bar.config(bg='#2e2e2e', fg='#ffffff')
+        dark_bg = '#2e2e2e'
+        dark_fg = 'gold'
+        self.root.tk_setPalette(background=dark_bg, foreground=dark_fg)
+        self.style.configure('TButton', background='#3e3e3e', foreground=dark_fg, padding=6)
+        self.style.configure('TLabel', background=dark_bg, foreground=dark_fg)
+        self.style.configure('TCheckbutton', background=dark_bg, foreground=dark_fg)
+        self.style.configure('TEntry', background='#3e3e3e', foreground=dark_fg)
+        self.style.configure('TScrolledText', background='#3e3e3e', foreground=dark_fg)
+        self.status_bar.config(bg=dark_bg, fg=dark_fg)
+        
+        # Update all widgets to gold text in dark mode
+        for widget in [self.label, self.browse_button, self.convert_button, self.music_button, 
+                       self.volume_label, self.preview_label]:
+            widget.config(bg=dark_bg, fg=dark_fg, activebackground=dark_bg, activeforeground=dark_fg)
+        
+        self.entry_input_file.config(bg='#3e3e3e', fg=dark_fg, insertbackground=dark_fg)
+        self.entry_output_file.config(bg='#3e3e3e', fg=dark_fg, insertbackground=dark_fg)
+        self.preview_text.config(bg='#3e3e3e', fg=dark_fg, insertbackground=dark_fg)
+        self.volume_slider.config(bg=dark_bg, fg=dark_fg, troughcolor='#3e3e3e', activebackground=dark_fg)
+        
+        for checkbox in [self.debug_checkbox, self.dark_mode_checkbox]:
+            checkbox.config(
+                selectcolor=dark_bg,
+                fg=dark_fg,
+                activeforeground=dark_fg,
+                activebackground=dark_bg,
+                background=dark_bg,
+                highlightbackground=dark_bg,
+                highlightcolor=dark_bg
+            )
 
     def apply_light_mode(self):
-        self.root.tk_setPalette(background='#ffffff', foreground='#000000')
-        self.style.configure('TButton', background='#f0f0f0', foreground='#000000', padding=6)
-        self.style.configure('TLabel', background='#ffffff', foreground='#000000')
-        self.style.configure('TCheckbutton', background='#ffffff', foreground='#000000')
-        self.style.configure('TEntry', background='#ffffff', foreground='#000000')
-        self.style.configure('TScrolledText', background='#ffffff', foreground='#000000')
-        self.status_bar.config(bg='#ffffff', fg='#000000')
+        light_bg = '#ffffff'
+        light_fg = '#000000'
+        self.root.tk_setPalette(background=light_bg, foreground=light_fg)
+        self.style.configure('TButton', background='#f0f0f0', foreground=light_fg, padding=6)
+        self.style.configure('TLabel', background=light_bg, foreground=light_fg)
+        self.style.configure('TCheckbutton', background=light_bg, foreground=light_fg)
+        self.style.configure('TEntry', background=light_bg, foreground=light_fg)
+        self.style.configure('TScrolledText', background=light_bg, foreground=light_fg)
+        self.status_bar.config(bg=light_bg, fg=light_fg)
+        
+        # Reset widgets back to light mode colors
+        for widget in [self.label, self.browse_button, self.convert_button, self.music_button, 
+                       self.volume_label, self.preview_label]:
+            widget.config(bg=light_bg, fg=light_fg, activebackground=light_bg, activeforeground=light_fg)
+        
+        self.entry_input_file.config(bg=light_bg, fg=light_fg, insertbackground=light_fg)
+        self.entry_output_file.config(bg=light_bg, fg=light_fg, insertbackground=light_fg)
+        self.preview_text.config(bg=light_bg, fg=light_fg, insertbackground=light_fg)
+        self.volume_slider.config(bg=light_bg, fg=light_fg, troughcolor='#f0f0f0', activebackground=light_fg)
+        
+        for checkbox in [self.debug_checkbox, self.dark_mode_checkbox]:
+            checkbox.config(
+                selectcolor=light_bg,
+                fg=light_fg,
+                activeforeground=light_fg,
+                activebackground=light_bg,
+                background=light_bg,
+                highlightbackground=light_bg,
+                highlightcolor=light_bg
+            )
 
-    def on_closing(self):
-        pygame.quit()
-        self.root.quit()
-        messagebox.showinfo("Info", "Press OK to exit.")
+    def load_icon(self):
+        icon_path = "icon.ico"  # Replace with your custom icon file path
+        if os.path.exists(icon_path):
+            self.root.iconbitmap(icon_path)

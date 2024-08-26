@@ -9,12 +9,11 @@ class DatasetConverter:
     def load_data(input_path):
         ext = os.path.splitext(input_path)[1].lower()
         if ext == '.json':
-            with open(input_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            return DatasetConverter.load_json_data(input_path)
         elif ext == '.jsonl':
-            return [json.loads(line) for line in open(input_path, 'r', encoding='utf-8') if line.strip()]
+            return DatasetConverter.load_jsonl_data(input_path)
         elif ext == '.parquet':
-            return pd.read_parquet(input_path).to_dict(orient='records')
+            return DatasetConverter.load_parquet_data(input_path)
         elif ext == '.txt':
             return DatasetConverter.load_txt_data(input_path)
         elif ext == '.csv':
@@ -23,6 +22,25 @@ class DatasetConverter:
             return DatasetConverter.load_sql_data(input_path)
         else:
             raise ValueError("Unsupported file format")
+
+    @staticmethod
+    def load_json_data(input_path):
+        with open(input_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            # If the JSON file is an array of records
+            if isinstance(data, list):
+                return data
+            else:
+                return [data]
+
+    @staticmethod
+    def load_jsonl_data(input_path):
+        with open(input_path, 'r', encoding='utf-8') as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    @staticmethod
+    def load_parquet_data(input_path):
+        return pd.read_parquet(input_path).to_dict(orient='records')
 
     @staticmethod
     def load_txt_data(input_path):
@@ -46,13 +64,19 @@ class DatasetConverter:
 
     @staticmethod
     def load_sql_data(input_path):
-        with sqlite3.connect(":memory:") as conn:
-            cursor = conn.cursor()
-            with open(input_path, 'r', encoding='utf-8') as f:
-                cursor.executescript(f.read())
-            data = cursor.execute("SELECT * FROM data").fetchall()
-            column_names = [description[0] for description in cursor.description]
-            return [dict(zip(column_names, row)) for row in data]
+        data = []
+        try:
+            with sqlite3.connect(":memory:") as conn:
+                cursor = conn.cursor()
+                with open(input_path, 'r', encoding='utf-8') as f:
+                    cursor.executescript(f.read())
+                cursor.execute("CREATE TABLE IF NOT EXISTS data (system TEXT, completion TEXT)")
+                data = cursor.execute("SELECT * FROM data").fetchall()
+                column_names = [description[0] for description in cursor.description]
+                data = [dict(zip(column_names, row)) for row in data]
+        except Exception as e:
+            print(f"Error loading SQL data: {e}")
+        return data
 
     @staticmethod
     def process_data(data, output_path):
@@ -71,8 +95,8 @@ class DatasetConverter:
         conversations = []
         for role in ['system', 'user', 'assistant']:
             if f'{role}:' in line:
-                conversations.append({"from": role if role != 'assistant' else 'gpt', 
-                                      "value": line.split(f'{role}:')[1].strip()})
+                value = line.split(f'{role}:', 1)[1].strip()
+                conversations.append({"from": role if role != 'assistant' else 'gpt', "value": value})
         return conversations
 
     @staticmethod
@@ -81,13 +105,15 @@ class DatasetConverter:
         if 'conversations' in entry:
             for message in entry['conversations']:
                 role = message.get('from')
-                if role in ['system', 'user', 'gpt']:
-                    conversations.append({"from": role, "value": message.get('value', '')})
+                if role == 'user':
+                    role = 'human'
+                conversations.append({"from": role, "value": message.get('value', '')})
         else:
             if 'system' in entry:
                 conversations.append({"from": "system", "value": entry['system']})
             if 'completion' in entry:
                 DatasetConverter.process_completion(entry['completion'], conversations)
+
         return conversations
 
     @staticmethod
@@ -102,12 +128,12 @@ class DatasetConverter:
                     for message in completion_json:
                         DatasetConverter.add_conversation(message, conversations)
             except json.JSONDecodeError:
+                print(f"Error decoding JSON in completion: {completion}")
                 pass
 
     @staticmethod
     def add_conversation(message, conversations):
         role = message.get('role')
         if role == 'user':
-            conversations.append({"from": "human", "value": message.get('content', '')})
-        elif role == 'assistant':
-            conversations.append({"from": "gpt", "value": message.get('content', '')})
+            role = 'human'
+        conversations.append({"from": role, "value": message.get('content', '')})

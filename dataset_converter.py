@@ -27,7 +27,6 @@ class DatasetConverter:
     def load_json_data(input_path):
         with open(input_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            # If the JSON file is an array of records
             if isinstance(data, list):
                 return data
             else:
@@ -74,20 +73,32 @@ class DatasetConverter:
                 data = cursor.execute("SELECT * FROM data").fetchall()
                 column_names = [description[0] for description in cursor.description]
                 data = [dict(zip(column_names, row)) for row in data]
-        except Exception as e:
-            print(f"Error loading SQL data: {e}")
+        except Exception:
+            pass
         return data
 
     @staticmethod
     def process_data(data, output_path):
         preview_entries = []
+        conversations_found = False  # Flag to check if any conversations are found
+
         with open(output_path, 'w', encoding='utf-8') as f:
             for entry in data:
                 conversations = DatasetConverter.extract_conversations(entry)
                 if conversations:
                     f.write(json.dumps({"conversations": conversations}) + '\n')
+                    conversations_found = True  # Set the flag to True if conversations are found
                     if len(preview_entries) < 3:
                         preview_entries.append({"conversations": conversations})
+
+        # Update status based on whether conversations were found
+        if conversations_found:
+            status_message = "Conversations completed successfully."
+        else:
+            status_message = "No conversations found for this dataset."
+
+        print(status_message)  # Replace with your actual status bar update code
+
         return preview_entries
 
     @staticmethod
@@ -113,7 +124,6 @@ class DatasetConverter:
                 conversations.append({"from": "system", "value": entry['system']})
             if 'completion' in entry:
                 DatasetConverter.process_completion(entry['completion'], conversations)
-
         return conversations
 
     @staticmethod
@@ -128,7 +138,6 @@ class DatasetConverter:
                     for message in completion_json:
                         DatasetConverter.add_conversation(message, conversations)
             except json.JSONDecodeError:
-                print(f"Error decoding JSON in completion: {completion}")
                 pass
 
     @staticmethod

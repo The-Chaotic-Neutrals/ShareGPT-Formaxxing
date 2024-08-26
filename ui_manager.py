@@ -40,35 +40,31 @@ class UIManager:
         return entry
 
     def create_options_ui(self):
-        self.debug_var = tk.BooleanVar()
-        self.debug_checkbox = tk.Checkbutton(self.root, text="Enable Debugging", variable=self.debug_var)
-        self.debug_checkbox.grid(row=2, column=0, columnspan=3, pady=10)
-
         self.convert_button = tk.Button(self.root, text="Convert", command=self.on_convert_button_click)
-        self.convert_button.grid(row=3, column=0, columnspan=3, pady=20)
+        self.convert_button.grid(row=2, column=0, columnspan=3, pady=20)
 
         self.music_button = tk.Button(self.root, text="Play Music", command=self.play_music)
-        self.music_button.grid(row=4, column=0, columnspan=3, pady=10)
+        self.music_button.grid(row=3, column=0, columnspan=3, pady=10)
 
         self.volume_label = tk.Label(self.root, text="Volume:")
-        self.volume_label.grid(row=5, column=0, padx=10, pady=10, sticky="e")
+        self.volume_label.grid(row=4, column=0, padx=10, pady=10, sticky="e")
         self.volume_slider = tk.Scale(self.root, from_=0, to=100, orient=tk.HORIZONTAL, command=self.set_volume)
         self.volume_slider.set(100)
-        self.volume_slider.grid(row=5, column=1, columnspan=2, padx=10, pady=10, sticky="ew")
+        self.volume_slider.grid(row=4, column=1, columnspan=2, padx=10, pady=10, sticky="ew")
 
         self.dark_mode_checkbox = tk.Checkbutton(self.root, text="Dark Mode", variable=self.dark_mode_var, command=self.toggle_dark_mode)
-        self.dark_mode_checkbox.grid(row=6, column=0, columnspan=3, pady=10)
+        self.dark_mode_checkbox.grid(row=5, column=0, columnspan=3, pady=10)
 
     def create_preview_ui(self):
         self.preview_label = tk.Label(self.root, text="Preview Output:")
-        self.preview_label.grid(row=7, column=0, padx=10, pady=10, sticky="nw")
+        self.preview_label.grid(row=6, column=0, padx=10, pady=10, sticky="nw")
         self.preview_text = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, font=('Consolas', 10))
-        self.preview_text.grid(row=8, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
+        self.preview_text.grid(row=7, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
 
     def create_status_bar(self):
         self.status_var = tk.StringVar()
         self.status_bar = tk.Label(self.root, textvariable=self.status_var, anchor='w', relief=tk.SUNKEN)
-        self.status_bar.grid(row=9, column=0, columnspan=3, sticky='ew')
+        self.status_bar.grid(row=8, column=0, columnspan=3, sticky='ew')
 
     def init_pygame(self):
         pygame.init()
@@ -89,53 +85,76 @@ class UIManager:
         self.select_file(self.entry_output_file, [("JSON Lines files", "*.jsonl")], save=True)
 
     def select_file(self, entry, filetypes, save=False):
-        if save:
-            file_path = filedialog.asksaveasfilename(defaultextension=".jsonl", filetypes=filetypes)
-        else:
-            file_path = filedialog.askopenfilename(filetypes=filetypes)
-        if file_path:
-            entry.delete(0, tk.END)
-            entry.insert(0, file_path)
+        try:
+            if save:
+                file_path = filedialog.asksaveasfilename(defaultextension=".jsonl", filetypes=filetypes)
+            else:
+                file_path = filedialog.askopenfilename(filetypes=filetypes)
+            if file_path:
+                entry.delete(0, tk.END)
+                entry.insert(0, file_path)
+        except Exception as e:
+            messagebox.showerror("File Selection Error", f"An error occurred: {str(e)}")
 
     def on_convert_button_click(self):
         input_path = self.entry_input_file.get()
         output_path = self.entry_output_file.get()
         if input_path and output_path:
+            self.update_status_bar("Starting conversion...")
             self.convert_dataset(input_path, output_path)
         else:
-            messagebox.showwarning("Input Error", "Please select both input and output files.")
+            self.update_status_bar("Input Error: Please select both input and output files.")
 
     def convert_dataset(self, input_path, output_path):
         try:
+            self.update_status_bar("Loading data from the input file...")
             data = DatasetConverter.load_data(input_path)
+            if not data:
+                raise ValueError("Loaded data is empty or invalid.")
+
+            self.update_status_bar("Processing data...")
             preview_entries = DatasetConverter.process_data(data, output_path)
-            self.update_preview(preview_entries)
-            self.status_var.set("Conversion completed successfully!")
+            
+            if not preview_entries:
+                self.update_status_bar("No conversations found for this dataset.")
+                self.update_preview("No conversations found for this dataset.")
+            else:
+                self.update_status_bar("Conversion completed successfully!")
+                self.update_preview(preview_entries)
+
         except Exception as e:
-            messagebox.showerror("Error", str(e))
+            self.update_status_bar(f"Error: {str(e)}")
+            self.update_preview("No conversations available due to error.")
 
     def update_preview(self, preview_entries):
         self.preview_text.delete(1.0, tk.END)
-        if preview_entries:
+        if isinstance(preview_entries, list):
             self.preview_text.insert(tk.END, json.dumps(preview_entries, indent=2))
         else:
-            self.preview_text.insert(tk.END, "No conversations found for this dataset.")
+            self.preview_text.insert(tk.END, preview_entries)
+        self.root.update_idletasks()  # Force the UI to update
 
     def play_music(self):
-        if pygame.mixer.music.get_busy():
-            pygame.mixer.music.pause()
-            self.music_button.config(text="Play Music")
-        else:
-            if os.path.exists(self.mp3_file_path):
-                pygame.mixer.music.load(self.mp3_file_path)
-                pygame.mixer.music.play(-1)
-                self.music_button.config(text="Pause Music")
+        try:
+            if pygame.mixer.music.get_busy():
+                pygame.mixer.music.pause()
+                self.music_button.config(text="Play Music")
             else:
-                messagebox.showwarning("Music Error", "MP3 file not found.")
+                if os.path.exists(self.mp3_file_path):
+                    pygame.mixer.music.load(self.mp3_file_path)
+                    pygame.mixer.music.play(-1)
+                    self.music_button.config(text="Pause Music")
+                else:
+                    messagebox.showwarning("Music Error", "MP3 file not found.")
+        except Exception as e:
+            messagebox.showerror("Music Playback Error", f"An error occurred: {str(e)}")
 
     def set_volume(self, val):
-        volume = float(val) / 100
-        pygame.mixer.music.set_volume(volume)
+        try:
+            volume = float(val) / 100
+            pygame.mixer.music.set_volume(volume)
+        except ValueError:
+            messagebox.showwarning("Volume Error", "Invalid volume value.")
 
     def toggle_dark_mode(self):
         if self.dark_mode_var.get():
@@ -164,7 +183,7 @@ class UIManager:
         self.preview_text.config(bg='#3e3e3e', fg=dark_fg, insertbackground=dark_fg)
         self.volume_slider.config(bg=dark_bg, fg=dark_fg, troughcolor='#3e3e3e', activebackground=dark_fg)
         
-        for checkbox in [self.debug_checkbox, self.dark_mode_checkbox]:
+        for checkbox in [self.dark_mode_checkbox]:
             checkbox.config(
                 selectcolor=dark_bg,
                 fg=dark_fg,
@@ -196,7 +215,7 @@ class UIManager:
         self.preview_text.config(bg=light_bg, fg=light_fg, insertbackground=light_fg)
         self.volume_slider.config(bg=light_bg, fg=light_fg, troughcolor='#f0f0f0', activebackground=light_fg)
         
-        for checkbox in [self.debug_checkbox, self.dark_mode_checkbox]:
+        for checkbox in [self.dark_mode_checkbox]:
             checkbox.config(
                 selectcolor=light_bg,
                 fg=light_fg,
@@ -211,3 +230,7 @@ class UIManager:
         icon_path = "icon.ico"  # Replace with your custom icon file path
         if os.path.exists(icon_path):
             self.root.iconbitmap(icon_path)
+
+    def update_status_bar(self, message):
+        self.status_var.set(message)
+        self.root.update_idletasks()  # Force the UI to update

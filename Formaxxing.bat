@@ -1,2 +1,2 @@
 @echo off
-start python Formaxxing.py
+start python main.py

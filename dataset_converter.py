@@ -236,12 +236,32 @@ class DatasetConverter:
         return data
 
     @staticmethod
+    def detect_format(sample_text):
+        """
+        Detect the format of the dataset based on a sample text.
+        """
+        if any(keyword in sample_text for keyword in ['instruction', 'response']):
+            return 'alpaca'
+        elif any(keyword in sample_text for keyword in ['prompt', 'completion']):
+            return 'vicuna'
+        elif 'system:' in sample_text or 'user:' in sample_text or 'assistant:' in sample_text:
+            return 'plaintext'
+        else:
+            return 'unknown'
+
+    @staticmethod
     def process_data(data, output_path):
         """
         Process data and write conversations to an output file.
         """
         preview_entries = []
         conversations_found = False
+        detected_format = 'unknown'
+
+        # Detect format based on a sample entry
+        if data:
+            sample_entry = json.dumps(data[0])
+            detected_format = DatasetConverter.detect_format(sample_entry)
 
         with open(output_path, 'w', encoding='utf-8') as f:
             for entry in data:
@@ -252,7 +272,7 @@ class DatasetConverter:
                     if len(preview_entries) < 3:
                         preview_entries.append({"conversations": conversations})
 
-        status_message = "Conversations completed successfully." if conversations_found else "No conversations found for this dataset."
+        status_message = f"Conversations completed successfully. Format detected: {detected_format}" if conversations_found else f"No conversations found for this dataset. Format detected: {detected_format}"
         print(status_message)
 
         DatasetConverter.validate_jsonl(output_path)
@@ -288,6 +308,16 @@ class DatasetConverter:
                 conversations.append({"from": "system", "value": entry['system']})
             if 'completion' in entry:
                 DatasetConverter.process_completion(entry['completion'], conversations)
+            elif 'messages' in entry:
+                # Handle cases with "messages" instead of "completion"
+                for message in entry.get('messages', []):
+                    if isinstance(message, dict):
+                        role = message.get('role')
+                        if role == 'user':
+                            role = 'human'
+                        elif role == 'assistant':
+                            role = 'gpt'
+                        conversations.append({"from": role, "value": message.get('content', '')})
         return conversations
 
     @staticmethod

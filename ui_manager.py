@@ -109,19 +109,21 @@ class UIManager:
             messagebox.showerror("Pygame Initialization Error", f"An error occurred while initializing Pygame: {str(e)}")
 
     def select_input_file(self):
-        self.select_file(self.entry_input_file, [
+        self.select_file(self.entry_input_file)
+
+    def select_output_file(self):
+        self.select_file(self.entry_output_file, save=True)
+
+    def select_file(self, entry, save=False):
+        filetypes = [
+            ("All Supported Files", "*.json;*.jsonl;*.parquet;*.txt;*.csv;*.sql"),
             ("JSON files", "*.json"),
             ("JSON Lines files", "*.jsonl"),
             ("Parquet files", "*.parquet"),
             ("Plaintext files", "*.txt"),
             ("CSV files", "*.csv"),
             ("SQL files", "*.sql")
-        ])
-
-    def select_output_file(self):
-        self.select_file(self.entry_output_file, [("JSON Lines files", "*.jsonl")], save=True)
-
-    def select_file(self, entry, filetypes, save=False):
+        ]
         try:
             if save:
                 file_path = filedialog.asksaveasfilename(defaultextension=".jsonl", filetypes=filetypes)
@@ -159,6 +161,15 @@ class UIManager:
                 self.update_status_bar("Conversion completed successfully!")
                 self.update_preview(preview_entries)
 
+        except FileNotFoundError:
+            self.update_status_bar("File not found.")
+            self.update_preview("The specified file could not be found.")
+        except json.JSONDecodeError:
+            self.update_status_bar("Invalid JSON format.")
+            self.update_preview("The data could not be decoded as JSON.")
+        except ValueError as ve:
+            self.update_status_bar(f"Value Error: {str(ve)}")
+            self.update_preview("The data contained invalid values.")
         except Exception as e:
             self.update_status_bar(f"Error: {str(e)}")
             self.update_preview("No conversations available due to error.")

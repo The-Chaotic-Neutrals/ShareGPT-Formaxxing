@@ -57,13 +57,17 @@ class DatasetConverter:
                                     data.append(json_object)
                             except json.JSONDecodeError:
                                 print(f"Skipping invalid JSON line: {line}")
-                                data.append(DatasetConverter.fallback_parse_line(line))
+                                data.extend(DatasetConverter.fallback_parse_line(line))
         except UnicodeDecodeError:
             print("Unicode Decode Error. Attempting with different encoding.")
             with open(input_path, 'r', encoding='utf-16') as f:
                 file_content = f.read()
-                # Retry parsing
-                # Same parsing logic as above
+                try:
+                    data = json.loads(file_content)
+                    if not isinstance(data, list):
+                        data = [data]
+                except json.JSONDecodeError:
+                    print("JSON Decode Error after retry.")
         return data
 
     @staticmethod
@@ -81,7 +85,7 @@ class DatasetConverter:
                             data.append(json.loads(line))
                         except json.JSONDecodeError:
                             print(f"Skipping invalid JSON line: {line}")
-                            data.append(DatasetConverter.fallback_parse_line(line))
+                            data.extend(DatasetConverter.fallback_parse_line(line))
         except UnicodeDecodeError:
             print("Unicode Decode Error. Attempting with different encoding.")
             with open(input_path, 'r', encoding='utf-16') as f:
@@ -92,7 +96,7 @@ class DatasetConverter:
                             data.append(json.loads(line))
                         except json.JSONDecodeError:
                             print(f"Skipping invalid JSON line: {line}")
-                            data.append(DatasetConverter.fallback_parse_line(line))
+                            data.extend(DatasetConverter.fallback_parse_line(line))
         return data
 
     @staticmethod
@@ -131,7 +135,7 @@ class DatasetConverter:
                         if conversations:
                             data.append({"conversations": conversations})
                         else:
-                            data.append({"raw_text": line})
+                            data.extend(DatasetConverter.fallback_parse_line(line))
         return data
 
     @staticmethod
@@ -202,6 +206,7 @@ class DatasetConverter:
                             })
                     except json.JSONDecodeError:
                         print(f"Skipping invalid Alpaca line: {line}")
+                        data.extend(DatasetConverter.fallback_parse_line(line))
         return data
 
     @staticmethod
@@ -227,6 +232,7 @@ class DatasetConverter:
                             })
                     except json.JSONDecodeError:
                         print(f"Skipping invalid Vicuna line: {line}")
+                        data.extend(DatasetConverter.fallback_parse_line(line))
         return data
 
     @staticmethod
@@ -312,6 +318,41 @@ class DatasetConverter:
         elif role == 'assistant':
             role = 'gpt'
         conversations.append({"from": role, "value": message.get('content', '')})
+
+    @staticmethod
+    def fallback_parse_line(line):
+        """
+        Fallback method to handle lines that cannot be parsed as JSON.
+        This method tries to infer a structured format from raw lines using fuzzy matching and string searches.
+        """
+        # Example of simple keyword-based parsing
+        keywords = {
+            'system': 'system:',
+            'user': 'user:',
+            'assistant': 'assistant:',
+        }
+        conversations = []
+        
+        for role, keyword in keywords.items():
+            if keyword in line:
+                value = line.split(keyword, 1)[1].strip()
+                conversations.append({"from": role if role != 'assistant' else 'gpt', "value": value})
+        
+        # Fuzzy matching fallback
+        if not conversations:
+            potential_roles = ['system', 'user', 'assistant']
+            for role in potential_roles:
+                # Look for a close match to known roles
+                ratio = fuzz.ratio(line.lower(), role)
+                if ratio > 70:  # Adjust threshold as needed
+                    conversations.append({"from": role if role != 'assistant' else 'gpt', "value": line.strip()})
+                    break
+        
+        if not conversations:
+            # Default case if no structured information found
+            conversations.append({"raw_text": line})
+        
+        return conversations
 
     @staticmethod
     def validate_jsonl(output_path):

@@ -1,12 +1,12 @@
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk
 from theme import Theme
-from music_player import MusicPlayer
 from dataset_converter_app import DatasetConverterApp
 from dataset_filter_app import DatasetFilterApp
 from deslop_tool_app import DeslopToolApp
 from generate_wordcloud import GenerateWordCloudApp
 from ui_elements import UIElements
+from music_player_app import MusicPlayerApp  # Import the new MusicPlayerApp class
 import os
 
 class UIManager:
@@ -15,11 +15,10 @@ class UIManager:
         self.root.title("Chaotic Neutral's ShareGPT Formaxxing-Tool")
         self.theme = Theme.DARK
         self.style = ttk.Style()
-        self.music_player = MusicPlayer()
-        self.music_button = None  # Initialize as None
         self.setup_ui()
 
     def setup_ui(self):
+        """Set up the user interface with initial configurations."""
         self.root.configure(bg=self.theme.get('bg', 'white'))
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
@@ -29,28 +28,19 @@ class UIManager:
         self.update_ui_styles()
 
     def set_icon(self):
+        """Set the icon for the window."""
         icon_path = "icon.ico"
         if os.path.exists(icon_path):
             self.root.iconbitmap(icon_path)
         else:
             print("Icon file not found.")
 
-    def play_music(self):
-        if self.music_button is None:
-            print("Error: music_button is not initialized.")
-            return
-        
-        try:
-            status = self.music_player.play_music()
-            self.music_button.config(text=status)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to play music: {e}")
-            self.music_button.config(text="Play Music")
-
-    def set_volume(self, value):
-        self.music_player.set_volume(value)
+    def open_music_player_app(self):
+        """Open the Music Player application."""
+        MusicPlayerApp(self.root, self.theme)
 
     def create_options_ui(self):
+        """Create and place the UI elements for options."""
         options_frame = tk.Frame(self.root, bg=self.theme.get('bg', 'white'))
         options_frame.grid(row=0, column=0, columnspan=5, pady=20, sticky='ew')
 
@@ -58,10 +48,10 @@ class UIManager:
             options_frame.columnconfigure(i, weight=1)
 
         buttons = [
-            ("Play Music", self.play_music),
+            ("Music Player", self.open_music_player_app),
             ("DataMaxxer", self.open_filter_app),
             ("Deslop Tool", self.open_deslop_tool),
-            ("Dataset Converter", self.open_dataset_converter_app),  # Button text updated here
+            ("Dataset Converter", self.open_dataset_converter_app),
             ("Generate Word Cloud", self.open_wordcloud_generator),
         ]
 
@@ -69,34 +59,27 @@ class UIManager:
             button = tk.Button(options_frame, text=text, command=command, bg=self.theme.get('button_bg', 'lightgrey'), fg=self.theme.get('button_fg', 'black'))
             button.grid(row=0, column=index, pady=10, padx=5, sticky='ew')
 
-        # Initialize music_button here
-        self.music_button = tk.Button(options_frame, text="Play Music", command=self.play_music, bg=self.theme.get('button_bg', 'lightgrey'), fg=self.theme.get('button_fg', 'black'))
-        self.music_button.grid(row=0, column=0, pady=10, padx=5, sticky='ew')
-
-        volume_frame = tk.Frame(self.root, bg=self.theme.get('bg', 'white'))
-        volume_frame.grid(row=1, column=0, columnspan=5, pady=10, sticky='ew')
-        volume_frame.columnconfigure(0, weight=1)
-
-        self.volume_slider = UIElements.create_volume_slider(volume_frame, self.theme, self.set_volume)
-        self.volume_slider.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-
     def open_dataset_converter_app(self):
+        """Open the Dataset Converter application."""
         DatasetConverterApp(self.root, self.theme)
 
     def open_filter_app(self):
+        """Open the Dataset Filter application."""
         DatasetFilterApp(self.root, self.theme)
 
     def open_deslop_tool(self):
+        """Open the Deslop Tool application."""
         DeslopToolApp(self.root, self.theme)
 
     def open_wordcloud_generator(self):
+        """Open the Word Cloud Generator application."""
         GenerateWordCloudApp(self.root, self.theme)
 
     def update_ui_styles(self):
+        """Update the UI styles based on the selected theme."""
         self.style.configure('TButton', background=self.theme.get('button_bg', 'lightgrey'), foreground=self.theme.get('button_fg', 'black'))
         self.style.configure('TLabel', background=self.theme.get('bg', 'white'), foreground=self.theme.get('fg', 'black'))
         self.style.configure('TEntry', fieldbackground=self.theme.get('entry_bg', 'white'), foreground=self.theme.get('entry_fg', 'black'))
-        self.style.configure('TScale', background=self.theme.get('volume_slider_bg', 'lightgrey'), foreground=self.theme.get('volume_slider_fg', 'black'))
 
         for widget in self.root.winfo_children():
             if widget.winfo_class() == 'Frame':
@@ -105,5 +88,3 @@ class UIManager:
                 widget.configure(bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
             elif widget.winfo_class() == 'Entry':
                 widget.configure(bg=self.theme.get('entry_bg', 'white'), fg=self.theme.get('entry_fg', 'black'))
-            elif widget.winfo_class() == 'Scale':
-                widget.configure(bg=self.theme.get('volume_slider_bg', 'lightgrey'), fg=self.theme.get('volume_slider_fg', 'black'))

@@ -4,6 +4,7 @@ from theme import Theme
 from music_player import MusicPlayer
 from dataset_converter import DatasetConverter
 from dataset_filter_app import DatasetFilterApp
+from deslop_tool_app import DeslopToolApp  # Import the DeslopToolApp class
 from ui_elements import UIElements
 import json
 import os
@@ -64,7 +65,11 @@ class UIManager:
         self.volume_slider.grid(row=4, column=1, columnspan=2, padx=10, pady=10, sticky="ew")
 
         self.filter_button = tk.Button(self.root, text="DataMaxxer", command=self.open_filter_app, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
-        self.filter_button.grid(row=9, column=0, columnspan=3, pady=20)
+        self.filter_button.grid(row=5, column=0, columnspan=3, pady=20)  # Adjust the row number as needed
+
+        # Add the new Deslop Tool button
+        self.deslop_button = tk.Button(self.root, text="Deslop Tool", command=self.open_deslop_tool, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
+        self.deslop_button.grid(row=6, column=0, columnspan=3, pady=20)  # Adjust the row number as needed
 
     def create_preview_ui(self):
         self.preview_label = tk.Label(self.root, text="Preview Output:", bg=self.theme['bg'], fg=self.theme['fg'])
@@ -130,8 +135,10 @@ class UIManager:
         self.status_var.set(message)
 
     def open_filter_app(self):
-        # Pass the necessary arguments to DatasetFilterApp
         DatasetFilterApp(self.root, self.theme)
+
+    def open_deslop_tool(self):
+        DeslopToolApp(self.root, self.theme)  # Ensure this is the correct class and initialization
 
     def update_ui_styles(self):
         # Update ttk styles first

@@ -13,6 +13,12 @@ CALL %VENV_NAME%\Scripts\activate
 :: Install the requirements from requirements.txt
 pip install -r requirements.txt
 
+:: Download the SpaCy model
+python -m spacy download en_core_web_sm
+
+:: Check if the model was installed correctly
+python -c "import spacy; spacy.load('en_core_web_sm')"
+
 :: Notify the user
 echo Virtual environment is set up and requirements have been installed.
 
@@ -20,3 +26,4 @@ echo Virtual environment is set up and requirements have been installed.
 CALL deactivate
 
 ENDLOCAL
+pause

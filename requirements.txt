@@ -19,3 +19,5 @@ torch
 tqdm
 transformers
 wordcloud
+CuPy
+python-Levenshtein

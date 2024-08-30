@@ -11,6 +11,7 @@ import logging
 import asyncio
 import aiohttp
 from concurrent.futures import ThreadPoolExecutor
+import aiofiles
 
 class BinaryClassificationApp:
     def __init__(self, root, theme):
@@ -24,7 +25,11 @@ class BinaryClassificationApp:
         self.nlp.add_pipe("sentencizer")  # Add sentencizer component to detect sentence boundaries
         
         self.setup_ui()
-        logging.basicConfig(level=logging.DEBUG)  # Set up logging
+        self.configure_logging()
+
+    def configure_logging(self):
+        """Configure logging to reduce output to the command line."""
+        logging.basicConfig(level=logging.WARNING)  # Only log warnings and errors
 
     def setup_ui(self):
         """Set up the UI elements for the Binary Classification Tool."""
@@ -56,7 +61,7 @@ class BinaryClassificationApp:
         self.threshold_label.pack(pady=5)
 
         self.threshold_entry = tk.Entry(self.window, width=10)
-        self.threshold_entry.insert(0, '0.7')
+        self.threshold_entry.insert(0, '0.9')
         self.threshold_entry.pack(pady=5)
 
         # URL input
@@ -121,8 +126,8 @@ class BinaryClassificationApp:
         async with aiohttp.ClientSession() as session:
             tasks = []
             # Batch sentences in groups of 10 to reduce the number of HTTP requests
-            for i in range(0, len(sentences), 10):
-                batch = sentences[i:i+10]
+            for i in range(0, len(sentences), 22):
+                batch = sentences[i:i+22]
                 tasks.append(self.classify_sentence_async(session, batch, url))
             results = await asyncio.gather(*tasks)
             return [result for batch_results in results for result in batch_results]  # Flatten the results list
@@ -133,7 +138,7 @@ class BinaryClassificationApp:
             async with session.post(url, json={"texts": sentences_batch}) as response:  # Assume the server can handle batch requests
                 response.raise_for_status()
                 result = await response.json()
-                logging.debug(f"Server response: {result}")
+                logging.debug(f"Server response: {result}")  # Debug logging can be removed if needed
                 return result.get("results", [])
         except aiohttp.ClientError as e:
             logging.error(f"Failed to classify batch: {sentences_batch}, Error: {e}")
@@ -167,6 +172,8 @@ class BinaryClassificationApp:
         try:
             asyncio.run(self.run_filter(input_file, output_file, threshold))
             self.update_status(f"Filtering complete. Output file: {output_file}")
+            # Asynchronously save the file
+            asyncio.run(self.async_save_file(output_file))
         except Exception as e:
             self.update_status(f"Error: {e}")
 
@@ -175,7 +182,7 @@ class BinaryClassificationApp:
         url = self.url_entry.get().strip()
 
         try:
-            with jsonlines.open(input_file) as reader, jsonlines.open(output_file, mode='w') as writer:
+            with jsonlines.open(input_file) as reader:
                 total_lines = sum(1 for _ in jsonlines.open(input_file))
                 self.update_progress(0, total_lines)  # Initialize progress bar
 
@@ -184,18 +191,24 @@ class BinaryClassificationApp:
                     loop = asyncio.get_event_loop()
                     futures = []
                     
-                    for i, conversation in enumerate(tqdm(reader, total=total_lines, desc="Filtering")):
-                        futures.append(loop.run_in_executor(executor, self.process_conversation, conversation, url, threshold))
-                    
-                    for future in asyncio.as_completed(futures):
-                        result = await future
-                        if result:
-                            writer.write(result)
+                    async with aiofiles.open(output_file, mode='w') as writer:
+                        for i, conversation in enumerate(tqdm(reader, total=total_lines, desc="Filtering")):
+                            futures.append(loop.run_in_executor(executor, self.process_conversation, conversation, url, threshold))
+                        
+                        for future in asyncio.as_completed(futures):
+                            result = await future
+                            if result:
+                                await writer.write(jsonlines.dumps(result))
 
-                    self.update_progress(total_lines, total_lines)  # Finalize progress bar
+                        self.update_progress(total_lines, total_lines)  # Finalize progress bar
 
         except Exception as e:
             self.update_status(f"Error processing JSONL file: {e}")
+
+    async def async_save_file(self, file_path):
+        """Asynchronously save the file."""
+        async with aiofiles.open(file_path, mode='w') as file:
+            await file.write("File saved successfully.")  # Placeholder for actual file saving
 
     def process_conversation(self, conversation, url, threshold):
         """Process a single conversation and classify its sentences."""

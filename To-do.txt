@@ -1,0 +1,8 @@
+-Installer Bat file that creates venv
+-Requirements.txt
+-Server Hosting for classification model
+-Synthmaxxer + local support
+-Dedup Script
+-Spellcheck script
+-Ngram frequency script
+-Tabular Dataset Viewer

@@ -7,6 +7,8 @@ from deslop_tool_app import DeslopToolApp
 from generate_wordcloud import GenerateWordCloudApp
 from ui_elements import UIElements
 from music_player_app import MusicPlayerApp  # Import the new MusicPlayerApp class
+from binary_classification_app import BinaryClassificationApp  # Import the existing BinaryClassificationApp class
+from binary_classification_server_app import BinaryClassificationServerApp  # Import the new BinaryClassificationServerApp class
 import os
 
 class UIManager:
@@ -39,26 +41,6 @@ class UIManager:
         """Open the Music Player application."""
         MusicPlayerApp(self.root, self.theme)
 
-    def create_options_ui(self):
-        """Create and place the UI elements for options."""
-        options_frame = tk.Frame(self.root, bg=self.theme.get('bg', 'white'))
-        options_frame.grid(row=0, column=0, columnspan=5, pady=20, sticky='ew')
-
-        for i in range(5):
-            options_frame.columnconfigure(i, weight=1)
-
-        buttons = [
-            ("Music Player", self.open_music_player_app),
-            ("DataMaxxer", self.open_filter_app),
-            ("Deslop Tool", self.open_deslop_tool),
-            ("Dataset Converter", self.open_dataset_converter_app),
-            ("Generate Word Cloud", self.open_wordcloud_generator),
-        ]
-
-        for index, (text, command) in enumerate(buttons):
-            button = tk.Button(options_frame, text=text, command=command, bg=self.theme.get('button_bg', 'lightgrey'), fg=self.theme.get('button_fg', 'black'))
-            button.grid(row=0, column=index, pady=10, padx=5, sticky='ew')
-
     def open_dataset_converter_app(self):
         """Open the Dataset Converter application."""
         DatasetConverterApp(self.root, self.theme)
@@ -74,6 +56,36 @@ class UIManager:
     def open_wordcloud_generator(self):
         """Open the Word Cloud Generator application."""
         GenerateWordCloudApp(self.root, self.theme)
+
+    def open_binary_classification_app(self):
+        """Open the Binary Classification Tool."""
+        BinaryClassificationApp(self.root, self.theme)
+
+    def open_binary_classification_server_app(self):
+        """Open the Binary Classification Server application."""
+        BinaryClassificationServerApp(self.root, self.theme)
+
+    def create_options_ui(self):
+        """Create and place the UI elements for options."""
+        options_frame = tk.Frame(self.root, bg=self.theme.get('bg', 'white'))
+        options_frame.grid(row=0, column=0, columnspan=7, pady=20, sticky='ew')
+
+        for i in range(7):
+            options_frame.columnconfigure(i, weight=1)
+
+        buttons = [
+            ("Music Player", self.open_music_player_app),
+            ("DataMaxxer", self.open_filter_app),
+            ("Deslop", self.open_deslop_tool),
+            ("Dataset Converter", self.open_dataset_converter_app),
+            ("Generate Word Cloud", self.open_wordcloud_generator),
+            ("Binary Classification", self.open_binary_classification_app),
+            ("Binary Classification Server", self.open_binary_classification_server_app)  # New button
+        ]
+
+        for index, (text, command) in enumerate(buttons):
+            button = tk.Button(options_frame, text=text, command=command, bg=self.theme.get('button_bg', 'lightgrey'), fg=self.theme.get('button_fg', 'black'))
+            button.grid(row=0, column=index, pady=10, padx=5, sticky='ew')
 
     def update_ui_styles(self):
         """Update the UI styles based on the selected theme."""

@@ -6,8 +6,9 @@ from dataset_filter_app import DatasetFilterApp
 from deslop_tool_app import DeslopToolApp
 from generate_wordcloud import GenerateWordCloudApp
 from ui_elements import UIElements
-from music_player_app import MusicPlayerApp  # Import the new MusicPlayerApp class
-from binary_classification_app import BinaryClassificationApp  # Import the existing BinaryClassificationApp class
+from music_player_app import MusicPlayerApp
+from binary_classification_app import BinaryClassificationApp
+from deduplication_app import DeduplicationApp  # Import the new DeduplicationApp class
 import os
 
 class UIManager:
@@ -59,13 +60,17 @@ class UIManager:
     def open_binary_classification_app(self):
         """Open the Binary Classification Tool."""
         BinaryClassificationApp(self.root, self.theme)
+    
+    def open_deduplication_app(self):
+        """Open the Deduplication Tool."""
+        DeduplicationApp(self.root, self.theme)
 
     def create_options_ui(self):
         """Create and place the UI elements for options."""
         options_frame = tk.Frame(self.root, bg=self.theme.get('bg', 'white'))
-        options_frame.grid(row=0, column=0, columnspan=7, pady=20, sticky='ew')
+        options_frame.grid(row=0, column=0, columnspan=8, pady=20, sticky='ew')  # Updated columnspan
 
-        for i in range(7):
+        for i in range(8):  # Updated number of columns
             options_frame.columnconfigure(i, weight=1)
 
         buttons = [
@@ -75,6 +80,7 @@ class UIManager:
             ("Dataset Converter", self.open_dataset_converter_app),
             ("Generate Word Cloud", self.open_wordcloud_generator),
             ("Binary Classification", self.open_binary_classification_app),
+            ("Deduplication", self.open_deduplication_app),  # New button
         ]
 
         for index, (text, command) in enumerate(buttons):

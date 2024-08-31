@@ -67,6 +67,9 @@ class NgramAnalyzerApp:
         self.results_area = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, width=80, height=20, bg=self.theme.get('entry_bg', 'black'), fg=self.theme.get('entry_fg', 'gold'))
         self.results_area.grid(row=4, column=0, padx=10, pady=10)
 
+        # Set the icon for the root window
+        self.set_icon(self.root)
+
     def browse_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("JSONL files", "*.jsonl")])
         if file_path:
@@ -75,7 +78,7 @@ class NgramAnalyzerApp:
 
     def start_analysis(self):
         # Start analysis in a separate thread to avoid blocking the UI
-        threading.Thread(target=self.run_analysis).start()
+        threading.Thread(target=self.run_analysis, daemon=True).start()
 
     def run_analysis(self):
         # Get parameters
@@ -95,11 +98,11 @@ class NgramAnalyzerApp:
         elapsed_time = time.time() - start_time
 
         # Display results
-        self.results_area.insert(tk.END, results)
-        self.results_area.insert(tk.END, f'Took {elapsed_time:.03f} seconds\n')
+        self.root.after(0, self.results_area.insert, tk.END, results)
+        self.root.after(0, self.results_area.insert, tk.END, f'Took {elapsed_time:.03f} seconds\n')
 
         # Plot the results
-        self.plot_results(ngrams)
+        self.root.after(0, self.plot_results, ngrams)
 
     def format_results(self, ngrams):
         """Format the n-grams results for display."""
@@ -113,58 +116,67 @@ class NgramAnalyzerApp:
 
     def plot_results(self, ngrams):
         """Plot the n-gram frequencies."""
-        # Create a new window for the plot
-        plot_window = tk.Toplevel(self.root)
-        plot_window.title("N-gram Frequencies")
+        def create_plot():
+            """Create and embed the plot in the Tkinter window."""
+            # Create a new window for the plot
+            plot_window = tk.Toplevel(self.root)
+            plot_window.title("N-gram Frequencies")
 
-        # Set the icon for the plot window
+            # Set the icon for the plot window
+            self.set_icon(plot_window)
+
+            # Create a figure and axis for plotting
+            fig, ax = plt.subplots(figsize=(12, 8))
+            fig.patch.set_facecolor(self.theme.get('bg', 'black'))
+            ax.set_facecolor(self.theme.get('bg', 'black'))
+            ax.spines['bottom'].set_color(self.theme.get('fg', 'gold'))
+            ax.spines['top'].set_color(self.theme.get('fg', 'gold'))
+            ax.spines['right'].set_color(self.theme.get('fg', 'gold'))
+            ax.spines['left'].set_color(self.theme.get('fg', 'gold'))
+
+            colors = plt.cm.get_cmap('tab20', len(ngrams))
+
+            for i, n in enumerate(sorted(ngrams)):
+                ngram_counts = ngrams[n]
+                most_common = ngram_counts.most_common(10)
+                grams, counts = zip(*most_common) if most_common else ([], [])
+
+                ax.barh([' '.join(gram) for gram in grams], counts, label=f'{n}-grams', color=colors(i))
+
+            ax.set_xlabel('Frequency', color=self.theme.get('fg', 'gold'))
+            ax.set_title('Top 10 Most Common N-grams', color=self.theme.get('fg', 'gold'))
+            ax.legend()
+
+            # Adjust margins to avoid clipping
+            fig.subplots_adjust(left=0.2, right=0.95, top=0.95, bottom=0.1)
+
+            # Embed the plot in the Tkinter window
+            canvas = FigureCanvasTkAgg(fig, master=plot_window)
+            canvas.draw()
+
+            # Use grid layout to manage space properly
+            canvas.get_tk_widget().grid(row=0, column=0, sticky='nsew')
+
+            # Make sure the window resizes with the content
+            plot_window.grid_rowconfigure(0, weight=1)
+            plot_window.grid_columnconfigure(0, weight=1)
+
+            # Optionally, add a scrollbar if the plot is too large
+            canvas.get_tk_widget().update_idletasks()  # Update widget dimensions
+            plot_window.geometry(f"{canvas.get_tk_widget().winfo_width()}x{canvas.get_tk_widget().winfo_height()}")  # Set window size to match canvas
+
+            # Adjust the plot size dynamically if needed
+            plot_window.minsize(800, 600)  # Set minimum size for the plot window
+
+        # Schedule the plot creation to run in the main thread
+        self.root.after(0, create_plot)
+
+    def set_icon(self, window):
+        """Set the icon for the given window."""
         try:
-            plot_window.iconbitmap('icon.ico')
+            window.iconbitmap('icon.ico')
         except Exception as e:
             print(f"Icon could not be set: {e}")
-
-        # Create a figure and axis for plotting
-        fig, ax = plt.subplots(figsize=(12, 8))
-        fig.patch.set_facecolor(self.theme.get('bg', 'black'))
-        ax.set_facecolor(self.theme.get('bg', 'black'))
-        ax.spines['bottom'].set_color(self.theme.get('fg', 'gold'))
-        ax.spines['top'].set_color(self.theme.get('fg', 'gold'))
-        ax.spines['right'].set_color(self.theme.get('fg', 'gold'))
-        ax.spines['left'].set_color(self.theme.get('fg', 'gold'))
-
-        colors = plt.cm.get_cmap('tab20', len(ngrams))
-
-        for i, n in enumerate(sorted(ngrams)):
-            ngram_counts = ngrams[n]
-            most_common = ngram_counts.most_common(10)
-            grams, counts = zip(*most_common) if most_common else ([], [])
-
-            ax.barh([' '.join(gram) for gram in grams], counts, label=f'{n}-grams', color=colors(i))
-
-        ax.set_xlabel('Frequency', color=self.theme.get('fg', 'gold'))
-        ax.set_title('Top 10 Most Common N-grams', color=self.theme.get('fg', 'gold'))
-        ax.legend()
-
-        # Adjust margins to avoid clipping
-        fig.subplots_adjust(left=0.2, right=0.95, top=0.95, bottom=0.1)
-
-        # Embed the plot in the Tkinter window
-        canvas = FigureCanvasTkAgg(fig, master=plot_window)
-        canvas.draw()
-
-        # Use grid layout to manage space properly
-        canvas.get_tk_widget().grid(row=0, column=0, sticky='nsew')
-
-        # Make sure the window resizes with the content
-        plot_window.grid_rowconfigure(0, weight=1)
-        plot_window.grid_columnconfigure(0, weight=1)
-
-        # Optionally, add a scrollbar if the plot is too large
-        canvas.get_tk_widget().update_idletasks()  # Update widget dimensions
-        plot_window.geometry(f"{canvas.get_tk_widget().winfo_width()}x{canvas.get_tk_widget().winfo_height()}")  # Set window size to match canvas
-
-        # Adjust the plot size dynamically if needed
-        plot_window.minsize(800, 600)  # Set minimum size for the plot window
 
 def tokenize(string):
     return re.findall(r'\b\S+\b', string.lower())

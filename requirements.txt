@@ -11,8 +11,14 @@ PyYAML
 Requests
 spacy
 torch
+torchvision  
+torchaudio
 tqdm
 transformers
 wordcloud
 CuPy
 python-Levenshtein
+pyspellchecker
+textblob
+markdown2
+language_tool_python

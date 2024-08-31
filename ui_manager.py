@@ -9,7 +9,8 @@ from ui_elements import UIElements
 from music_player_app import MusicPlayerApp
 from binary_classification_app import BinaryClassificationApp
 from deduplication_app import DeduplicationApp
-from ngram_analyzer_app import NgramAnalyzerApp  # Import the new NgramAnalyzerApp class
+from ngram_analyzer_app import NgramAnalyzerApp
+from text_correction_app import TextCorrectionApp  # Import the new TextCorrectionApp class
 import os
 
 class UIManager:
@@ -76,13 +77,16 @@ class UIManager:
         theme = self.theme  # Ensure you have the theme defined
         NgramAnalyzerApp(ngram_window, theme)
 
+    def open_text_correction_app(self):
+        """Open the Text Correction application."""
+        TextCorrectionApp(self.root, self.theme)
 
     def create_options_ui(self):
         """Create and place the UI elements for options."""
         options_frame = tk.Frame(self.root, bg=self.theme.get('bg', 'white'))
-        options_frame.grid(row=0, column=0, columnspan=8, pady=20, sticky='ew')  # Updated columnspan
+        options_frame.grid(row=0, column=0, columnspan=9, pady=20, sticky='ew')  # Updated columnspan
 
-        for i in range(8):  # Updated number of columns
+        for i in range(9):  # Updated number of columns
             options_frame.columnconfigure(i, weight=1)
 
         buttons = [
@@ -93,7 +97,8 @@ class UIManager:
             ("Generate Word Cloud", self.open_wordcloud_generator),
             ("Binary Classification", self.open_binary_classification_app),
             ("Deduplication", self.open_deduplication_app),
-            ("N-gram Analyzer", self.open_ngram_analyzer_app),  # New button
+            ("N-gram Analyzer", self.open_ngram_analyzer_app),
+            ("Text Correction", self.open_text_correction_app)  # New button
         ]
 
         for index, (text, command) in enumerate(buttons):

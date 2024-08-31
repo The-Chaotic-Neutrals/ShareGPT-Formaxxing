@@ -1,17 +1,12 @@
 aiofiles
-aiohttp
-aiohttp
 fuzzywuzzy
 jsonlines
 matplotlib
-matplotlib
 pandas
-Pillow
 Pillow
 polars
 pyarrow
 pygame
-PyYAML
 PyYAML
 Requests
 spacy

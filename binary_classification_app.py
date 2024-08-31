@@ -3,85 +3,120 @@ from tkinter import filedialog
 from tkinter import ttk
 import spacy
 import jsonlines
+import json
 import os
-import requests
-from tqdm import tqdm
-from threading import Thread
 import logging
-import asyncio
-import aiohttp
 from concurrent.futures import ThreadPoolExecutor
-import aiofiles
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
+from threading import Thread
+
+MODEL_NAME = "protectai/distilroberta-base-rejection-v1"
 
 class BinaryClassificationApp:
     def __init__(self, root, theme):
         self.root = root
         self.theme = theme
-        
-        # Require GPU; raise an exception if not available
-        spacy.require_gpu()
-        
-        self.nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])  # Load Spacy model without parser and NER
-        self.nlp.add_pipe("sentencizer")  # Add sentencizer component to detect sentence boundaries
-        
+        self.device = 'cuda'  # Default to GPU
+        self.total_positive_count = 0
+        self.total_negative_count = 0
+
+        # Initialize the Spacy and Transformer models
+        self.initialize_models()
+
+        # Set up the user interface
         self.setup_ui()
+
+        # Configure logging
         self.configure_logging()
+
+        # Update the device preference after initializing models
+        self.update_device_preference()
 
     def configure_logging(self):
         """Configure logging to reduce output to the command line."""
         logging.basicConfig(level=logging.WARNING)  # Only log warnings and errors
 
+    def initialize_models(self):
+        """Initialize Spacy and Transformer models."""
+        self.nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+        self.nlp.add_pipe("sentencizer")
+
+        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        self.model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+
     def setup_ui(self):
-        """Set up the UI elements for the Binary Classification Tool."""
+        """Set up the user interface for the Binary Classification app."""
         self.window = tk.Toplevel(self.root)
-        self.window.title("Binary Classification")
+        self.window.title("Binary Classification App")
         self.window.configure(bg=self.theme.get('bg', 'white'))
+        self.window.iconbitmap('icon.ico')  # Ensure 'icon.ico' is in the same directory as your script
 
-        # Set the window icon
-        icon_path = "icon.ico"
-        if os.path.isfile(icon_path):
-            self.window.iconbitmap(icon_path)
-        else:
-            print(f"Icon file not found: {icon_path}")
+        # Main frame
+        main_frame = tk.Frame(self.window, bg=self.theme.get('bg', 'white'))
+        main_frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 
-        self.input_file_label = tk.Label(self.window, text="Select Input File:", bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
-        self.input_file_label.pack(pady=5)
-        
-        self.input_file_entry = tk.Entry(self.window, width=50)
-        self.input_file_entry.pack(pady=5)
-        
-        self.input_file_button = tk.Button(self.window, text="Browse", command=self.browse_input_file, bg=self.theme.get('button_bg', 'lightgrey'), fg='gold')
-        self.input_file_button.pack(pady=5)
+        # File handling UI
+        self.file_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
+        self.file_frame.pack(pady=5)
 
-        self.filter_button = tk.Button(self.window, text="Filter Conversations", command=self.start_filtering, bg=self.theme.get('button_bg', 'lightgrey'), fg='gold')
+        self.input_file_label = tk.Label(self.file_frame, text="Select Input File:", bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
+        self.input_file_label.pack(side=tk.LEFT, padx=5)
+
+        self.input_file_entry = tk.Entry(self.file_frame, width=50)
+        self.input_file_entry.pack(side=tk.LEFT, padx=5)
+
+        self.input_file_button = tk.Button(self.file_frame, text="Browse", command=self.browse_input_file, bg=self.theme.get('button_bg', 'lightgrey'))
+        self.input_file_button.pack(side=tk.LEFT, padx=5)
+
+        self.filter_button = tk.Button(main_frame, text="Filter Conversations", command=self.start_filtering, bg=self.theme.get('button_bg', 'lightgrey'))
         self.filter_button.pack(pady=10)
 
         # Threshold input
-        self.threshold_label = tk.Label(self.window, text="Threshold (0.0 - 1.0):", bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
+        self.threshold_label = tk.Label(main_frame, text="Threshold (0.0 - 1.0):", bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
         self.threshold_label.pack(pady=5)
 
-        self.threshold_entry = tk.Entry(self.window, width=10)
+        self.threshold_entry = tk.Entry(main_frame, width=10)
         self.threshold_entry.insert(0, '0.9')
         self.threshold_entry.pack(pady=5)
 
-        # URL input
-        self.url_label = tk.Label(self.window, text="Classification URL:", bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
-        self.url_label.pack(pady=5)
+        # Batch size input
+        self.batch_size_label = tk.Label(main_frame, text="Batch Size:", bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
+        self.batch_size_label.pack(pady=5)
 
-        self.url_entry = tk.Entry(self.window, width=50)
-        self.url_entry.insert(0, "http://localhost:8120/predict")
-        self.url_entry.pack(pady=5)
-
-        # Progress bar
-        self.progress_label = tk.Label(self.window, text="Progress:", bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
-        self.progress_label.pack(pady=5)
-
-        self.progress_bar = ttk.Progressbar(self.window, orient='horizontal', length=400, mode='determinate')
-        self.progress_bar.pack(pady=5)
+        self.batch_size_entry = tk.Entry(main_frame, width=10)
+        self.batch_size_entry.insert(0, '16')  # Default batch size
+        self.batch_size_entry.pack(pady=5)
 
         # Status bar
-        self.status_bar = tk.Label(self.window, text="Status: Ready", bg='lightgrey', fg='black', anchor='w')
+        self.status_bar = tk.Label(main_frame, text="Status: Ready", bg='lightgrey', fg='black', anchor='w')
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Counts display
+        self.count_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
+        self.count_frame.pack(pady=5)
+
+        self.positive_count_label = tk.Label(self.count_frame, text="Positive Count: 0", bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
+        self.positive_count_label.pack(side=tk.LEFT, padx=5)
+
+        self.negative_count_label = tk.Label(self.count_frame, text="Negative Count: 0", bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
+        self.negative_count_label.pack(side=tk.LEFT, padx=5)
+
+        # Device preference checkbox
+        self.gpu_var = tk.BooleanVar()
+        self.gpu_checkbox = tk.Checkbutton(main_frame, text="Prefer GPU", variable=self.gpu_var, command=self.update_device_preference, bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
+        self.gpu_checkbox.pack(pady=10)
+
+    def update_device_preference(self):
+        """Update the device preference based on user selection."""
+        if hasattr(self, 'model'):
+            if self.gpu_var.get() and torch.cuda.is_available():
+                self.device = 'cuda'
+                self.update_status("Using GPU")
+            else:
+                self.device = 'cpu'
+                self.update_status("Using CPU")
+            self.model.to(self.device)
 
     def browse_input_file(self):
         """Open a file dialog to select the input JSONL file."""
@@ -94,56 +129,6 @@ class BinaryClassificationApp:
         """Start filtering in a separate thread to keep the UI responsive."""
         thread = Thread(target=self.filter_conversations)
         thread.start()
-
-    def test_connection(self):
-        """Test the connection to the classification URL."""
-        url = self.url_entry.get().strip()
-        if not url:
-            self.update_status("Please enter a classification URL.")
-            return
-
-        # Use a thread to handle the network request
-        thread = Thread(target=self._test_connection_thread, args=(url,))
-        thread.start()
-
-    def _test_connection_thread(self, url):
-        """Thread worker for testing the connection."""
-        try:
-            # Send a test request to the server
-            test_sentence = "This is a test sentence."
-            response = requests.post(url, json={"text": test_sentence})
-            
-            if response.status_code == 200:
-                result = response.json()
-                self.update_status(f"Connection successful! Response: {result}")
-            else:
-                self.update_status(f"Connection failed with status code: {response.status_code}")
-        except requests.RequestException as e:
-            self.update_status(f"Failed to connect: {e}")
-
-    async def classify_sentences_async(self, sentences, url):
-        """Classify multiple sentences asynchronously."""
-        async with aiohttp.ClientSession() as session:
-            tasks = []
-            # Batch sentences in groups of 10 to reduce the number of HTTP requests
-            for i in range(0, len(sentences), 22):
-                batch = sentences[i:i+22]
-                tasks.append(self.classify_sentence_async(session, batch, url))
-            results = await asyncio.gather(*tasks)
-            return [result for batch_results in results for result in batch_results]  # Flatten the results list
-
-    async def classify_sentence_async(self, session, sentences_batch, url):
-        """Classify a batch of sentences asynchronously."""
-        try:
-            async with session.post(url, json={"texts": sentences_batch}) as response:  # Assume the server can handle batch requests
-                response.raise_for_status()
-                result = await response.json()
-                logging.debug(f"Server response: {result}")  # Debug logging can be removed if needed
-                return result.get("results", [])
-        except aiohttp.ClientError as e:
-            logging.error(f"Failed to classify batch: {sentences_batch}, Error: {e}")
-            self.update_status(f"Failed to classify sentences.")
-            return [None] * len(sentences_batch)
 
     def filter_conversations(self):
         """Filter conversations based on the specified criteria."""
@@ -160,6 +145,14 @@ class BinaryClassificationApp:
             self.update_status(f"Error: {e}")
             return
 
+        try:
+            batch_size = int(self.batch_size_entry.get())
+            if batch_size <= 0:
+                raise ValueError("Batch size must be a positive integer.")
+        except ValueError as e:
+            self.update_status(f"Error: {e}")
+            return
+
         # Create output directory if it doesn't exist
         output_dir = "classified"
         os.makedirs(output_dir, exist_ok=True)
@@ -170,47 +163,56 @@ class BinaryClassificationApp:
         # Perform filtering in a separate thread to keep the UI responsive
         self.update_status("Filtering started...")
         try:
-            asyncio.run(self.run_filter(input_file, output_file, threshold))
+            self.total_positive_count = 0
+            self.total_negative_count = 0
+            self.run_filter(input_file, output_file, threshold, batch_size)
             self.update_status(f"Filtering complete. Output file: {output_file}")
-            # Asynchronously save the file
-            asyncio.run(self.async_save_file(output_file))
         except Exception as e:
             self.update_status(f"Error: {e}")
 
-    async def run_filter(self, input_file, output_file, threshold):
+    def run_filter(self, input_file, output_file, threshold, batch_size):
         """Run the filtering process on the input file."""
-        url = self.url_entry.get().strip()
-
         try:
             with jsonlines.open(input_file) as reader:
                 total_lines = sum(1 for _ in jsonlines.open(input_file))
-                self.update_progress(0, total_lines)  # Initialize progress bar
+                self.update_status(f"Total lines: {total_lines}")
 
                 # Use a thread pool for parallel processing of conversations
                 with ThreadPoolExecutor(max_workers=4) as executor:
-                    loop = asyncio.get_event_loop()
                     futures = []
-                    
-                    async with aiofiles.open(output_file, mode='w') as writer:
-                        for i, conversation in enumerate(tqdm(reader, total=total_lines, desc="Filtering")):
-                            futures.append(loop.run_in_executor(executor, self.process_conversation, conversation, url, threshold))
-                        
-                        for future in asyncio.as_completed(futures):
-                            result = await future
-                            if result:
-                                await writer.write(jsonlines.dumps(result))
 
-                        self.update_progress(total_lines, total_lines)  # Finalize progress bar
+                    with open(output_file, mode='w') as writer:
+                        batch = []
+                        for i, conversation in enumerate(reader):
+                            batch.append(conversation)
+                            if len(batch) >= batch_size:
+                                futures.append(executor.submit(self.process_batch, batch, threshold, writer))
+                                batch = []
+
+                        # Process remaining batch
+                        if batch:
+                            futures.append(executor.submit(self.process_batch, batch, threshold, writer))
+
+                        for future in futures:
+                            future.result()  # Ensure all futures are completed
+
+            self.update_status(f"Filtering complete. Output file: {output_file}")
 
         except Exception as e:
             self.update_status(f"Error processing JSONL file: {e}")
 
-    async def async_save_file(self, file_path):
-        """Asynchronously save the file."""
-        async with aiofiles.open(file_path, mode='w') as file:
-            await file.write("File saved successfully.")  # Placeholder for actual file saving
+    def process_batch(self, batch, threshold, writer):
+        """Process a batch of conversations and write the results to the output file."""
+        try:
+            for conversation in batch:
+                result = self.process_conversation(conversation, threshold)
+                if result:
+                    # Convert result to JSON string and write to file
+                    writer.write(json.dumps(result) + '\n')
+        except Exception as e:
+            self.update_status(f"Error processing batch: {e}")
 
-    def process_conversation(self, conversation, url, threshold):
+    def process_conversation(self, conversation, threshold):
         """Process a single conversation and classify its sentences."""
         keep_conversation = True
 
@@ -220,17 +222,21 @@ class BinaryClassificationApp:
                 doc = self.nlp(turn.get('value', ''))
                 sentences.extend(self.extract_sentences(doc))
 
-        # Classify sentences in batches
-        classifications = asyncio.run(self.classify_sentences_async(sentences, url))
+        # Classify sentences and check against threshold
+        classifications = self.predict(sentences)
 
-        for classification in classifications:
-            if classification and classification.get('positive', 0) > threshold:
-                keep_conversation = False
-                break
+        # Update counts
+        positive_count = sum(1 for classification in classifications if classification['positive'] > threshold)
+        negative_count = sum(1 for classification in classifications if classification['negative'] > threshold)
 
-        if keep_conversation:
-            return conversation
-        return None
+        self.total_positive_count += positive_count
+        self.total_negative_count += negative_count
+        self.update_counts(self.total_positive_count, self.total_negative_count)
+
+        if positive_count > 0:
+            keep_conversation = False
+
+        return conversation if keep_conversation else None
 
     def extract_sentences(self, doc):
         """Extract sentences from a Spacy Doc object."""
@@ -241,10 +247,29 @@ class BinaryClassificationApp:
         if self.root:
             self.root.after(0, lambda: self.status_bar.config(text=f"Status: {message}"))
 
-    def update_progress(self, current, total):
-        """Update the progress bar with the current progress."""
+    def update_counts(self, positive_count, negative_count):
+        """Update the positive and negative counts in the UI."""
         if self.root:
-            progress = (current / total) * 100
-            self.root.after(0, lambda: self.progress_bar.config(value=progress))
-            if current % 10 == 0:  # Update UI less frequently
-                self.root.after(0, lambda: self.progress_bar.update_idletasks())
+            self.root.after(0, lambda: self.positive_count_label.config(text=f"Positive Count: {positive_count}"))
+            self.root.after(0, lambda: self.negative_count_label.config(text=f"Negative Count: {negative_count}"))
+
+    def predict(self, texts):
+        """Predict the classifications for a batch of texts."""
+        encoded_inputs = self.tokenizer(texts, padding=True, truncation=True, return_tensors="pt").to(self.device)
+        with torch.no_grad():
+            outputs = self.model(**encoded_inputs)
+        logits = outputs.logits
+        predictions = torch.sigmoid(logits).cpu().numpy()
+        results = [{"positive": float(pred[1]), "negative": float(pred[0])} for pred in predictions]
+        return results
+
+# Sample usage
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.withdraw()  # Hide the root window
+    app = BinaryClassificationApp(root, theme={
+        'bg': 'white',
+        'fg': 'black',
+        'button_bg': 'lightgrey'
+    })
+    root.mainloop()

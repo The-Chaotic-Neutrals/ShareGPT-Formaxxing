@@ -8,7 +8,6 @@ from generate_wordcloud import GenerateWordCloudApp
 from ui_elements import UIElements
 from music_player_app import MusicPlayerApp  # Import the new MusicPlayerApp class
 from binary_classification_app import BinaryClassificationApp  # Import the existing BinaryClassificationApp class
-from binary_classification_server_app import BinaryClassificationServerApp  # Import the new BinaryClassificationServerApp class
 import os
 
 class UIManager:
@@ -61,10 +60,6 @@ class UIManager:
         """Open the Binary Classification Tool."""
         BinaryClassificationApp(self.root, self.theme)
 
-    def open_binary_classification_server_app(self):
-        """Open the Binary Classification Server application."""
-        BinaryClassificationServerApp(self.root, self.theme)
-
     def create_options_ui(self):
         """Create and place the UI elements for options."""
         options_frame = tk.Frame(self.root, bg=self.theme.get('bg', 'white'))
@@ -80,7 +75,6 @@ class UIManager:
             ("Dataset Converter", self.open_dataset_converter_app),
             ("Generate Word Cloud", self.open_wordcloud_generator),
             ("Binary Classification", self.open_binary_classification_app),
-            ("Binary Classification Server", self.open_binary_classification_server_app)  # New button
         ]
 
         for index, (text, command) in enumerate(buttons):

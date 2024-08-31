@@ -1,4 +1,3 @@
 -Synthmaxxer + local support
 -Spellcheck script
--Ngram frequency script
 -Tabular Dataset Viewer

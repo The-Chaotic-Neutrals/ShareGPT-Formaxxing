@@ -8,7 +8,8 @@ from generate_wordcloud import GenerateWordCloudApp
 from ui_elements import UIElements
 from music_player_app import MusicPlayerApp
 from binary_classification_app import BinaryClassificationApp
-from deduplication_app import DeduplicationApp  # Import the new DeduplicationApp class
+from deduplication_app import DeduplicationApp
+from ngram_analyzer_app import NgramAnalyzerApp  # Import the new NgramAnalyzerApp class
 import os
 
 class UIManager:
@@ -64,6 +65,17 @@ class UIManager:
     def open_deduplication_app(self):
         """Open the Deduplication Tool."""
         DeduplicationApp(self.root, self.theme)
+    
+    def open_ngram_analyzer_app(self):
+        """Open the N-gram Analyzer application in a separate window."""
+        # Create a new Tkinter window for the N-gram Analyzer app
+        ngram_window = tk.Toplevel(self.root)
+        ngram_window.title("N-gram Analyzer App")
+
+        # Pass the new window and theme to the NgramAnalyzerApp
+        theme = self.theme  # Ensure you have the theme defined
+        NgramAnalyzerApp(ngram_window, theme)
+
 
     def create_options_ui(self):
         """Create and place the UI elements for options."""
@@ -80,7 +92,8 @@ class UIManager:
             ("Dataset Converter", self.open_dataset_converter_app),
             ("Generate Word Cloud", self.open_wordcloud_generator),
             ("Binary Classification", self.open_binary_classification_app),
-            ("Deduplication", self.open_deduplication_app),  # New button
+            ("Deduplication", self.open_deduplication_app),
+            ("N-gram Analyzer", self.open_ngram_analyzer_app),  # New button
         ]
 
         for index, (text, command) in enumerate(buttons):

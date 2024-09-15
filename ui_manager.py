@@ -3,7 +3,7 @@ from tkinter import ttk
 from theme import Theme
 from dataset_converter_app import DatasetConverterApp
 from dataset_filter_app import DatasetFilterApp
-from deslop_tool_app import DeslopToolApp
+from DeslopTool_app import DeslopToolApp
 from WordCloudGenerator_app import GenerateWordCloudApp
 from ui_elements import UIElements
 from music_player_app import MusicPlayerApp

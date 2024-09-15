@@ -4,7 +4,6 @@ import jsonlines
 import os
 import logging
 import re
-import markdown2
 import json
 import language_tool_python
 from threading import Thread
@@ -41,8 +40,6 @@ class TextCorrectionApp:
         self.tool = language_tool_python.LanguageTool('en-US')
 
         self.toggles = {
-            'markdown': tk.StringVar(value="on"),
-            'hardcoded': tk.StringVar(value="on"),
             'regex': tk.StringVar(value="on"),
             'spacing': tk.StringVar(value="on"),
             'grammar': tk.StringVar(value="on"),
@@ -96,8 +93,7 @@ class TextCorrectionApp:
         self.toggles_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
         self.toggles_frame.pack(pady=5)
 
-        self.create_toggle("Markdown Conversion", 'markdown')
-        self.create_toggle("Hardcoded Corrections", 'hardcoded')
+        # Removed the hardcoded corrections toggle creation
         self.create_toggle("Regex-Based Corrections", 'regex')
         self.create_toggle("Spacing and Punctuation", 'spacing')
         self.create_toggle("Grammar Correction", 'grammar')
@@ -203,8 +199,6 @@ class TextCorrectionApp:
     def correct_text(self, text):
         """Correct text using a multi-step process."""
         corrections = {
-            'markdown': self.convert_markdown,
-            'hardcoded': self.apply_hardcoded_corrections,
             'regex': self.apply_regex_corrections,
             'spacing': self.enforce_spacing,
             'grammar': self.correct_with_grammar
@@ -213,31 +207,6 @@ class TextCorrectionApp:
             if self.toggles[key].get() == 'on':
                 text = func(text)
         return text.strip()
-
-    def convert_markdown(self, text):
-        """Convert markdown to plain text."""
-        html = markdown2.markdown(text)
-        return re.sub(r'<[^>]+>', '', html)
-
-    def apply_hardcoded_corrections(self, text, corrections_file='common_spellings.txt'):
-        """Apply corrections from a file to common spelling mistakes in the text."""
-        corrections = {}
-        try:
-            with open(corrections_file, 'r') as file:
-                for line in file:
-                    wrong, right = line.strip().split(',')
-                    corrections[wrong] = right
-        except FileNotFoundError:
-            logging.error(f"The file '{corrections_file}' was not found.")
-            return text
-        except ValueError:
-            logging.error("The correction file format is incorrect. Each line should be 'wrong,correct'.")
-            return text
-        
-        for wrong, right in corrections.items():
-            text = text.replace(wrong, right)
-        
-        return text
 
     def apply_regex_corrections(self, text):
         """Apply regex-based corrections."""

@@ -11,7 +11,7 @@ def filter_dataset(input_path, output_dir):
         # Define a function to check if a conversation contains all required roles
         def has_required_roles(conversation):
             roles = set(msg['from'] for msg in conversation)
-            return 'system' in roles and 'human' in roles and 'gpt' in roles
+            return 'human' in roles and 'gpt' in roles
 
         # Convert the data to a Polars DataFrame
         df = pl.DataFrame(data)

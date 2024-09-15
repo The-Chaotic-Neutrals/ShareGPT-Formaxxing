@@ -1,10 +1,6 @@
 import json
-import pandas as pd
-import sqlite3
-import csv
 import os
 import re
-from fuzzywuzzy import fuzz
 
 class DatasetConverter:
     @staticmethod
@@ -17,18 +13,6 @@ class DatasetConverter:
             return DatasetConverter.load_json_data(input_path)
         elif ext == '.jsonl':
             return DatasetConverter.load_jsonl_data(input_path)
-        elif ext == '.parquet':
-            return DatasetConverter.load_parquet_data(input_path)
-        elif ext == '.txt':
-            return DatasetConverter.load_txt_data(input_path)
-        elif ext == '.csv':
-            return DatasetConverter.load_csv_data(input_path)
-        elif ext == '.sql':
-            return DatasetConverter.load_sql_data(input_path)
-        elif ext == '.alpaca':
-            return DatasetConverter.load_alpaca_data(input_path)
-        elif ext == '.vicuna':
-            return DatasetConverter.load_vicuna_data(input_path)
         else:
             raise ValueError("Unsupported file format")
 
@@ -100,151 +84,11 @@ class DatasetConverter:
         return data
 
     @staticmethod
-    def load_parquet_data(input_path):
-        """
-        Load data from a Parquet file.
-        """
-        try:
-            return pd.read_parquet(input_path).to_dict(orient='records')
-        except Exception as e:
-            print(f"Failed to load Parquet data: {e}")
-            # Try pyarrow if pandas fails
-            try:
-                import pyarrow.parquet as pq
-                table = pq.read_table(input_path)
-                return table.to_pandas().to_dict(orient='records')
-            except Exception as e:
-                print(f"Failed to load Parquet data with pyarrow: {e}")
-                return []
-
-    @staticmethod
-    def load_txt_data(input_path):
-        """
-        Load data from a plain text file, where each line may be JSON or a formatted conversation line.
-        """
-        data = []
-        with open(input_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        json_data = json.loads(line)
-                        data.append(json_data)
-                    except json.JSONDecodeError:
-                        conversations = DatasetConverter.process_plaintext_line(line)
-                        if conversations:
-                            data.append({"conversations": conversations})
-                        else:
-                            data.extend(DatasetConverter.fallback_parse_line(line))
-        return data
-
-    @staticmethod
-    def load_csv_data(input_path):
-        """
-        Load data from a CSV file with columns 'system' and 'completion'.
-        """
-        data = []
-        try:
-            with open(input_path, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    if row.get('system') or row.get('completion'):
-                        data.append({'system': row.get('system', ''), 'completion': row.get('completion', '')})
-        except csv.Error as e:
-            print(f"CSV Error: {e}")
-            # Try with different delimiters
-            try:
-                with open(input_path, 'r', encoding='utf-8') as f:
-                    reader = csv.DictReader(f, delimiter=';')
-                    for row in reader:
-                        if row.get('system') or row.get('completion'):
-                            data.append({'system': row.get('system', ''), 'completion': row.get('completion', '')})
-            except csv.Error as e:
-                print(f"CSV Error with alternative delimiter: {e}")
-        return data
-
-    @staticmethod
-    def load_sql_data(input_path):
-        """
-        Load data from a SQL file by executing its script in memory.
-        """
-        data = []
-        try:
-            with sqlite3.connect(":memory:") as conn:
-                cursor = conn.cursor()
-                with open(input_path, 'r', encoding='utf-8') as f:
-                    cursor.executescript(f.read())
-                cursor.execute("CREATE TABLE IF NOT EXISTS data (system TEXT, completion TEXT)")
-                data = cursor.execute("SELECT * FROM data").fetchall()
-                column_names = [description[0] for description in cursor.description]
-                data = [dict(zip(column_names, row)) for row in data]
-        except sqlite3.Error as e:
-            print(f"SQL Error: {e}")
-            # Fallback to exporting SQL data manually or checking SQL dialect
-        return data
-
-    @staticmethod
-    def load_alpaca_data(input_path):
-        """
-        Load data from an Alpaca dataset file.
-        """
-        data = []
-        with open(input_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-            for line in lines:
-                line = line.strip()
-                if line:
-                    try:
-                        json_data = json.loads(line)
-                        if 'instruction' in json_data and 'response' in json_data:
-                            data.append({
-                                'system': 'system', 
-                                'completion': [
-                                    {'role': 'user', 'content': json_data['instruction']},
-                                    {'role': 'assistant', 'content': json_data['response']}
-                                ]
-                            })
-                    except json.JSONDecodeError:
-                        print(f"Skipping invalid Alpaca line: {line}")
-                        data.extend(DatasetConverter.fallback_parse_line(line))
-        return data
-
-    @staticmethod
-    def load_vicuna_data(input_path):
-        """
-        Load data from a Vicuna dataset file.
-        """
-        data = []
-        with open(input_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-            for line in lines:
-                line = line.strip()
-                if line:
-                    try:
-                        json_data = json.loads(line)
-                        if 'prompt' in json_data and 'completion' in json_data:
-                            data.append({
-                                'system': 'system',
-                                'completion': [
-                                    {'role': 'user', 'content': json_data['prompt']},
-                                    {'role': 'assistant', 'content': json_data['completion']}
-                                ]
-                            })
-                    except json.JSONDecodeError:
-                        print(f"Skipping invalid Vicuna line: {line}")
-                        data.extend(DatasetConverter.fallback_parse_line(line))
-        return data
-
-    @staticmethod
     def detect_format(sample_text):
         """
         Detect the format of the dataset based on a sample text.
         """
-        if any(keyword in sample_text for keyword in ['instruction', 'response']):
-            return 'alpaca'
-        elif any(keyword in sample_text for keyword in ['prompt', 'completion']):
-            return 'vicuna'
-        elif 'system:' in sample_text or 'user:' in sample_text or 'assistant:' in sample_text:
+        if 'system:' in sample_text or 'user:' in sample_text or 'assistant:' in sample_text:
             return 'plaintext'
         else:
             return 'unknown'

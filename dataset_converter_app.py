@@ -67,13 +67,9 @@ class DatasetConverterApp:
 
     def select_input_file(self):
         filetypes = [
-            ("All Supported Files", "*.json;*.jsonl;*.parquet;*.txt;*.csv;*.sql"),
+            ("All Supported Files", "*.json;*.jsonl"),
             ("JSON files", "*.json"),
-            ("JSON Lines files", "*.jsonl"),
-            ("Parquet files", "*.parquet"),
-            ("Plaintext files", "*.txt"),
-            ("CSV files", "*.csv"),
-            ("SQL files", "*.sql")
+            ("JSON Lines files", "*.jsonl")
         ]
         try:
             file_path = filedialog.askopenfilename(filetypes=filetypes)

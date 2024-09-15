@@ -4,13 +4,13 @@ from theme import Theme
 from dataset_converter_app import DatasetConverterApp
 from dataset_filter_app import DatasetFilterApp
 from deslop_tool_app import DeslopToolApp
-from generate_wordcloud import GenerateWordCloudApp
+from WordCloudGenerator_app import GenerateWordCloudApp
 from ui_elements import UIElements
 from music_player_app import MusicPlayerApp
 from binary_classification_app import BinaryClassificationApp
 from deduplication_app import DeduplicationApp
 from ngram_analyzer_app import NgramAnalyzerApp
-from text_correction_app import TextCorrectionApp  # Import the new TextCorrectionApp class
+from text_correction_app import TextCorrectionApp
 import os
 
 class UIManager:
@@ -19,6 +19,7 @@ class UIManager:
         self.root.title("Chaotic Neutral's ShareGPT Formaxxing-Tool")
         self.theme = Theme.DARK
         self.style = ttk.Style()
+        self.wordcloud_window = None  # Variable to keep track of the word cloud window
         self.setup_ui()
 
     def setup_ui(self):
@@ -55,10 +56,10 @@ class UIManager:
         """Open the Deslop Tool application."""
         DeslopToolApp(self.root, self.theme)
 
-    def open_wordcloud_generator(self):
-        """Open the Word Cloud Generator application."""
+    def open_wordcloud_generator_app(self):
+        """Open the Word Cloud Generator application."""        
         GenerateWordCloudApp(self.root, self.theme)
-
+       
     def open_binary_classification_app(self):
         """Open the Binary Classification Tool."""
         BinaryClassificationApp(self.root, self.theme)
@@ -68,13 +69,10 @@ class UIManager:
         DeduplicationApp(self.root, self.theme)
     
     def open_ngram_analyzer_app(self):
-        """Open the N-gram Analyzer application in a separate window."""
-        # Create a new Tkinter window for the N-gram Analyzer app
+        """Open the N-gram Analyzer application in a separate window."""        
         ngram_window = tk.Toplevel(self.root)
         ngram_window.title("N-gram Analyzer App")
-
-        # Pass the new window and theme to the NgramAnalyzerApp
-        theme = self.theme  # Ensure you have the theme defined
+        theme = self.theme
         NgramAnalyzerApp(ngram_window, theme)
 
     def open_text_correction_app(self):
@@ -84,9 +82,9 @@ class UIManager:
     def create_options_ui(self):
         """Create and place the UI elements for options."""
         options_frame = tk.Frame(self.root, bg=self.theme.get('bg', 'white'))
-        options_frame.grid(row=0, column=0, columnspan=9, pady=20, sticky='ew')  # Updated columnspan
+        options_frame.grid(row=0, column=0, columnspan=9, pady=20, sticky='ew')
 
-        for i in range(9):  # Updated number of columns
+        for i in range(9):
             options_frame.columnconfigure(i, weight=1)
 
         buttons = [
@@ -94,11 +92,11 @@ class UIManager:
             ("DataMaxxer", self.open_filter_app),
             ("Deslop", self.open_deslop_tool),
             ("Dataset Converter", self.open_dataset_converter_app),
-            ("Generate Word Cloud", self.open_wordcloud_generator),
+            ("Generate Word Cloud", self.open_wordcloud_generator_app),
             ("Binary Classification", self.open_binary_classification_app),
             ("Deduplication", self.open_deduplication_app),
             ("N-gram Analyzer", self.open_ngram_analyzer_app),
-            ("Text Correction", self.open_text_correction_app)  # New button
+            ("Text Correction", self.open_text_correction_app)
         ]
 
         for index, (text, command) in enumerate(buttons):

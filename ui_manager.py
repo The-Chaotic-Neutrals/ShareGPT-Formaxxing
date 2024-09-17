@@ -10,7 +10,7 @@ from music_player_app import MusicPlayerApp
 from binary_classification_app import BinaryClassificationApp
 from deduplication_app import DeduplicationApp
 from ngram_analyzer_app import NgramAnalyzerApp
-from text_correction_app import TextCorrectionApp
+from grammar_maxxer_app import GrammarMaxxerApp  # Updated import to GrammarMaxxerApp
 import os
 
 class UIManager:
@@ -49,7 +49,7 @@ class UIManager:
         DatasetConverterApp(self.root, self.theme)
 
     def open_filter_app(self):
-        """Open the Dataset Filter application."""
+        """Open the Dataset Filter application.""" 
         DatasetFilterApp(self.root, self.theme)
 
     def open_deslop_tool(self):
@@ -76,8 +76,8 @@ class UIManager:
         NgramAnalyzerApp(ngram_window, theme)
 
     def open_text_correction_app(self):
-        """Open the Text Correction application."""
-        TextCorrectionApp(self.root, self.theme)
+        """Open the GrammarMaxxer application."""  # Updated method description
+        GrammarMaxxerApp(self.root, self.theme)  # Updated class name
 
     def create_options_ui(self):
         """Create and place the UI elements for options."""
@@ -96,7 +96,7 @@ class UIManager:
             ("Binary Classification", self.open_binary_classification_app),
             ("Deduplication", self.open_deduplication_app),
             ("N-gram Analyzer", self.open_ngram_analyzer_app),
-            ("Text Correction", self.open_text_correction_app)
+            ("GrammarMaxxer", self.open_text_correction_app)  # Updated button label
         ]
 
         for index, (text, command) in enumerate(buttons):

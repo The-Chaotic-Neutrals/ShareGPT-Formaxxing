@@ -1,12 +1,9 @@
 import tkinter as tk
 from tkinter import filedialog, scrolledtext
-import jsonlines
-import os
-import logging
-import re
-import json
-import language_tool_python
 from threading import Thread
+import language_tool_python
+import logging
+from grammar_maxxer import GrammarMaxxer  # Updated import to GrammarMaxxer
 
 class ToggleSwitch(tk.Canvas):
     def __init__(self, parent, *args, **kwargs):
@@ -33,15 +30,12 @@ class ToggleSwitch(tk.Canvas):
             self.coords('switch', 5, 5, 25, 25)
             self.itemconfig('bg', fill='lightgrey')
 
-class TextCorrectionApp:
+class GrammarMaxxerApp:
     def __init__(self, root, theme):
         self.root = root
         self.theme = theme
-        self.tool = language_tool_python.LanguageTool('en-US')
 
         self.toggles = {
-            'regex': tk.StringVar(value="on"),
-            'spacing': tk.StringVar(value="on"),
             'grammar': tk.StringVar(value="on"),
         }
 
@@ -56,19 +50,10 @@ class TextCorrectionApp:
                                 logging.StreamHandler()
                             ])
 
-    def load_json(self, file_path):
-        """Load data from a JSON file."""
-        try:
-            with open(file_path, 'r') as file:
-                return json.load(file)
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            logging.error(f"Failed to load JSON file {file_path}: {e}")
-            raise
-
     def setup_ui(self):
-        """Set up the user interface for the Text Correction app."""
+        """Set up the user interface for the GrammarMaxxer app."""
         self.window = tk.Toplevel(self.root)
-        self.window.title("Text Correction App")
+        self.window.title("GrammarMaxxer App")
         self.window.configure(bg=self.theme.get('bg', 'white'))
         self.window.iconbitmap('icon.ico')
 
@@ -94,8 +79,6 @@ class TextCorrectionApp:
         self.toggles_frame.pack(pady=5)
 
         # Removed the hardcoded corrections toggle creation
-        self.create_toggle("Regex-Based Corrections", 'regex')
-        self.create_toggle("Spacing and Punctuation", 'spacing')
         self.create_toggle("Grammar Correction", 'grammar')
 
         self.status_bar = tk.Label(main_frame, text="Status: Ready", bg='lightgrey', fg='black', anchor='w')
@@ -149,82 +132,20 @@ class TextCorrectionApp:
 
     def correct_text_file(self):
         """Correct the text in the input file and write the corrected text to an output file."""
-        input_file = self.input_file_entry.get()
-        if not self.validate_file(input_file):
+        grammar_maxxer = GrammarMaxxer(self.input_file_entry.get(), self.toggles)  # Create an instance of GrammarMaxxer
+        if not grammar_maxxer.validate_file():
             return
 
-        output_file = self.prepare_output_file(input_file)
+        output_file = grammar_maxxer.prepare_output_file()
         self.update_status("Text correction started...")
         self.corrections_text.delete(1.0, tk.END)
 
         try:
-            self.process_file(input_file, output_file)
+            grammar_maxxer.process_file(output_file, self.update_corrections)
             self.update_status(f"Text correction complete. Output file: {output_file}")
         except Exception as e:
             logging.error(f"Error processing file: {e}", exc_info=True)
             self.update_status(f"Error processing file: {e}")
-
-    def validate_file(self, file_path):
-        """Validate the selected file."""
-        if not file_path.endswith('.jsonl'):
-            self.update_status("Invalid file type. Please select a .jsonl file.")
-            return False
-        return True
-
-    def prepare_output_file(self, input_file):
-        """Prepare the output file path."""
-        output_dir = "corrected"
-        os.makedirs(output_dir, exist_ok=True)
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
-        return os.path.join(output_dir, f"{base_name}-corrected.jsonl")
-
-    def process_file(self, input_file, output_file):
-        """Process the input file and write the corrected text to the output file."""
-        with jsonlines.open(input_file) as reader:
-            with jsonlines.open(output_file, mode='w') as writer:
-                for conversation in reader:
-                    corrected_conversation = self.correct_conversation(conversation)
-                    writer.write(corrected_conversation)
-
-    def correct_conversation(self, conversation):
-        """Correct the text in a conversation and update the live tracker."""
-        for turn in conversation.get('conversations', []):
-            if turn.get('from') == 'gpt':
-                original_text = turn.get('value', '')
-                corrected_text = self.correct_text(original_text)
-                turn['value'] = corrected_text
-                self.update_corrections(original_text, corrected_text)
-        return conversation
-
-    def correct_text(self, text):
-        """Correct text using a multi-step process."""
-        corrections = {
-            'regex': self.apply_regex_corrections,
-            'spacing': self.enforce_spacing,
-            'grammar': self.correct_with_grammar
-        }
-        for key, func in corrections.items():
-            if self.toggles[key].get() == 'on':
-                text = func(text)
-        return text.strip()
-
-    def apply_regex_corrections(self, text):
-        """Apply regex-based corrections."""
-        text = re.sub(r'\b(\w+)\s+\1\b', r'\1', text)  # Example regex for duplicate words
-        return text
-
-    def enforce_spacing(self, text):
-        """Enforce proper spacing and punctuation."""
-        text = re.sub(r'\s*\.\s*\.\s*', '...', text)  # Convert multiple dots into ellipses
-        text = re.sub(r'\s+([?.!,"](?:\s|$))', r'\1', text)  # Fix spacing before punctuation
-        text = re.sub(r'(\S)([,.!?;])(\S)', r'\1 \2 \3', text)  # Add space around punctuation
-        return text
-
-    def correct_with_grammar(self, text):
-        """Correct grammar using LanguageTool."""
-        matches = self.tool.check(text)
-        corrected_text = language_tool_python.utils.correct(text, matches)
-        return corrected_text
 
     def update_corrections(self, original_text, corrected_text):
         """Update the corrections tracker with the original and corrected text."""
@@ -234,8 +155,8 @@ class TextCorrectionApp:
 
 def main():
     root = tk.Tk()
-    root.title("Text Correction Tool")
-    app = TextCorrectionApp(root, theme={
+    root.title("GrammarMaxxer Tool")
+    app = GrammarMaxxerApp(root, theme={
         'bg': 'black',
         'entry_bg': 'lightgrey',
         'button_bg': 'grey'

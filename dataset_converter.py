@@ -4,15 +4,38 @@ import re
 
 class DatasetConverter:
     @staticmethod
+    def sanitize_file(input_path, output_path):
+        """
+        Remove special or hidden characters from a file and save it as UTF-8.
+        """
+        try:
+            with open(input_path, 'r', encoding='utf-8', errors='replace') as f:
+                file_content = f.read()
+            
+            # Remove non-printable characters and control characters
+            sanitized_content = re.sub(r'[^\x20-\x7E]', '', file_content)
+            
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(sanitized_content)
+        
+        except (UnicodeDecodeError, IOError) as e:
+            print(f"Error reading or writing file: {e}")
+            raise
+
+    @staticmethod
     def load_data(input_path):
         """
         Load data from a file based on its extension.
         """
-        ext = os.path.splitext(input_path)[1].lower()
+        # Sanitize file before processing
+        sanitized_path = input_path + '.sanitized'
+        DatasetConverter.sanitize_file(input_path, sanitized_path)
+        
+        ext = os.path.splitext(sanitized_path)[1].lower()
         if ext == '.json':
-            return DatasetConverter.load_json_data(input_path)
+            return DatasetConverter.load_json_data(sanitized_path)
         elif ext == '.jsonl':
-            return DatasetConverter.load_jsonl_data(input_path)
+            return DatasetConverter.load_jsonl_data(sanitized_path)
         else:
             raise ValueError("Unsupported file format")
 
@@ -23,7 +46,7 @@ class DatasetConverter:
         """
         data = []
         try:
-            with open(input_path, 'r', encoding='utf-8') as f:
+            with open(input_path, 'r', encoding='utf-8', errors='replace') as f:
                 file_content = f.read()
                 try:
                     data = json.loads(file_content)
@@ -43,15 +66,7 @@ class DatasetConverter:
                                 print(f"Skipping invalid JSON line: {line}")
                                 data.extend(DatasetConverter.fallback_parse_line(line))
         except UnicodeDecodeError:
-            print("Unicode Decode Error. Attempting with different encoding.")
-            with open(input_path, 'r', encoding='utf-16') as f:
-                file_content = f.read()
-                try:
-                    data = json.loads(file_content)
-                    if not isinstance(data, list):
-                        data = [data]
-                except json.JSONDecodeError:
-                    print("JSON Decode Error after retry.")
+            print("Unicode Decode Error. Ensure file is encoded in UTF-8.")
         return data
 
     @staticmethod
@@ -61,7 +76,7 @@ class DatasetConverter:
         """
         data = []
         try:
-            with open(input_path, 'r', encoding='utf-8') as f:
+            with open(input_path, 'r', encoding='utf-8', errors='replace') as f:
                 for line in f:
                     line = line.strip()
                     if line:
@@ -71,16 +86,7 @@ class DatasetConverter:
                             print(f"Skipping invalid JSON line: {line}")
                             data.extend(DatasetConverter.fallback_parse_line(line))
         except UnicodeDecodeError:
-            print("Unicode Decode Error. Attempting with different encoding.")
-            with open(input_path, 'r', encoding='utf-16') as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            data.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            print(f"Skipping invalid JSON line: {line}")
-                            data.extend(DatasetConverter.fallback_parse_line(line))
+            print("Unicode Decode Error. Ensure file is encoded in UTF-8.")
         return data
 
     @staticmethod

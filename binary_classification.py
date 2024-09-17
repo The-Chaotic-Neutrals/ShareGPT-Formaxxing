@@ -3,9 +3,9 @@ import jsonlines
 import json
 import os
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
+import re
 
 MODEL_NAME = "protectai/distilroberta-base-rejection-v1"
 
@@ -65,7 +65,7 @@ def filter_conversations(input_file_entry, threshold_entry, batch_size_entry, st
     base_name = os.path.splitext(os.path.basename(input_file))[0]
     output_file = os.path.join(output_dir, f"{base_name}-classified.jsonl")
 
-    # Perform filtering in a separate thread to keep the UI responsive
+    # Perform filtering in the main thread to debug the issue
     update_status("Filtering started...", status_bar)
     try:
         global total_positive_count, total_negative_count
@@ -79,28 +79,28 @@ def filter_conversations(input_file_entry, threshold_entry, batch_size_entry, st
 def run_filter(input_file, output_file, threshold, batch_size, status_bar, positive_count_label, negative_count_label):
     """Run the filtering process on the input file."""
     try:
-        with jsonlines.open(input_file) as reader:
-            total_lines = sum(1 for _ in jsonlines.open(input_file))
+        with open(input_file, 'r', encoding='utf-8') as infile:
+            # Ensure input data is valid UTF-8 and clean non-printable characters
+            lines = infile.readlines()
+            valid_lines = [clean_text(line) for line in lines if validate_utf8(line)]
+        
+        with jsonlines.open(input_file, mode='r') as reader:
+            total_lines = len(valid_lines)
             update_status(f"Total lines: {total_lines}", status_bar)
 
-            # Use a thread pool for parallel processing of conversations
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = []
+            # Sequentially process each batch
+            with open(output_file, mode='w', encoding='utf-8') as writer:
+                batch = []
+                for line in valid_lines:
+                    conversation = json.loads(line)
+                    batch.append(conversation)
+                    if len(batch) >= batch_size:
+                        process_batch(batch, threshold, writer, status_bar, positive_count_label, negative_count_label)
+                        batch = []
 
-                with open(output_file, mode='w') as writer:
-                    batch = []
-                    for i, conversation in enumerate(reader):
-                        batch.append(conversation)
-                        if len(batch) >= batch_size:
-                            futures.append(executor.submit(process_batch, batch, threshold, writer, status_bar, positive_count_label, negative_count_label))
-                            batch = []
-
-                    # Process remaining batch
-                    if batch:
-                        futures.append(executor.submit(process_batch, batch, threshold, writer, status_bar, positive_count_label, negative_count_label))
-
-                    for future in futures:
-                        future.result()  # Ensure all futures are completed
+                # Process remaining batch
+                if batch:
+                    process_batch(batch, threshold, writer, status_bar, positive_count_label, negative_count_label)
 
         update_status(f"Filtering complete. Output file: {output_file}", status_bar)
 
@@ -113,8 +113,18 @@ def process_batch(batch, threshold, writer, status_bar, positive_count_label, ne
         for conversation in batch:
             result = process_conversation(conversation, threshold, status_bar, positive_count_label, negative_count_label)
             if result:
-                # Convert result to JSON string and write to file
-                writer.write(json.dumps(result) + '\n')
+                # Validate and clean up the result
+                valid_result = validate_json(result)
+                if valid_result:
+                    # Convert result to JSON string
+                    json_str = json.dumps(valid_result, ensure_ascii=False)
+                    # Clean the JSON string for UTF-8 validity
+                    json_str = clean_text(json_str)
+                    if validate_utf8(json_str):
+                        # Write to file
+                        writer.write(json_str + '\n')
+                    else:
+                        update_status("Error: JSON string is not valid UTF-8.", status_bar)
     except Exception as e:
         update_status(f"Error processing batch: {e}", status_bar)
 
@@ -125,7 +135,9 @@ def process_conversation(conversation, threshold, status_bar, positive_count_lab
     sentences = []
     for turn in conversation.get('conversations', []):
         if turn.get('from') == 'gpt':
-            doc = nlp(turn.get('value', ''))
+            # Clean the conversation value
+            value = clean_text(turn.get('value', ''))
+            doc = nlp(value)
             sentences.extend(extract_sentences(doc))
 
     # Classify sentences and check against threshold
@@ -138,6 +150,7 @@ def process_conversation(conversation, threshold, status_bar, positive_count_lab
     global total_positive_count, total_negative_count
     total_positive_count += positive_count
     total_negative_count += negative_count
+    
     update_counts(total_positive_count, total_negative_count, positive_count_label, negative_count_label)
 
     if positive_count > 0:
@@ -147,7 +160,7 @@ def process_conversation(conversation, threshold, status_bar, positive_count_lab
 
 def extract_sentences(doc):
     """Extract sentences from a Spacy Doc object."""
-    return [sent.text.strip() for sent in doc.sents]
+    return [clean_text(sent.text.strip()) for sent in doc.sents]  # Clean sentences here
 
 def update_status(message, status_bar):
     """Update the status bar with a message."""
@@ -169,3 +182,47 @@ def predict(texts):
     predictions = torch.sigmoid(logits).cpu().numpy()
     results = [{"positive": float(pred[1]), "negative": float(pred[0])} for pred in predictions]
     return results
+
+def validate_json(conversation):
+    """Validate and clean up the JSON object."""
+    if not isinstance(conversation, dict):
+        return None
+
+    # Remove any keys that might invalidate the JSON
+    valid_keys = {'conversations'}
+    cleaned_conversation = {k: v for k, v in conversation.items() if k in valid_keys}
+    
+    if 'conversations' in cleaned_conversation:
+        # Ensure 'conversations' key contains a list of valid entries
+        cleaned_conversation['conversations'] = [
+            turn for turn in cleaned_conversation['conversations']
+            if isinstance(turn, dict) and 'from' in turn and 'value' in turn
+        ]
+    
+    return cleaned_conversation if cleaned_conversation else None
+
+def clean_text(text):
+    """Clean up unwanted characters from the text."""
+    # Remove non-printable and control characters
+    text = re.sub(r'[^\x00-\x7F]+', '', text)  # Remove non-ASCII characters
+    text = ''.join(c for c in text if c.isprintable())  # Remove non-printable characters
+    text = re.sub(r'[\x00-\x1F\x7F]', '', text)  # Remove ASCII control characters
+    return text
+
+def validate_utf8(text):
+    """Ensure text is valid UTF-8."""
+    try:
+        text.encode('utf-8')
+        return True
+    except UnicodeEncodeError:
+        return False
+
+def validate_utf8_byte_level(file_path):
+    """Ensure the file content is valid UTF-8 at the byte level."""
+    try:
+        with open(file_path, 'rb') as file:
+            content = file.read()
+            content.decode('utf-8')
+        return True
+    except UnicodeDecodeError:
+        return False

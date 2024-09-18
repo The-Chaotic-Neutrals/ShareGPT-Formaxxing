@@ -16,7 +16,6 @@ torchaudio
 tqdm
 transformers
 wordcloud
-CuPy
 python-Levenshtein
 pyspellchecker
 textblob

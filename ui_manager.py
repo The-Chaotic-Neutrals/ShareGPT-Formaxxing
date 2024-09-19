@@ -10,7 +10,8 @@ from music_player_app import MusicPlayerApp
 from binary_classification_app import BinaryClassificationApp
 from deduplication_app import DeduplicationApp
 from ngram_analyzer_app import NgramAnalyzerApp
-from grammar_maxxer_app import GrammarMaxxerApp  # Updated import to GrammarMaxxerApp
+from grammar_maxxer_app import GrammarMaxxerApp
+from safetensormaxxer_app import SafetensorMaxxerApp
 import os
 
 class UIManager:
@@ -19,7 +20,6 @@ class UIManager:
         self.root.title("Chaotic Neutral's ShareGPT Formaxxing-Tool")
         self.theme = Theme.DARK
         self.style = ttk.Style()
-        self.wordcloud_window = None  # Variable to keep track of the word cloud window
         self.setup_ui()
 
     def setup_ui(self):
@@ -72,19 +72,24 @@ class UIManager:
         """Open the N-gram Analyzer application in a separate window."""        
         ngram_window = tk.Toplevel(self.root)
         ngram_window.title("N-gram Analyzer App")
-        theme = self.theme
-        NgramAnalyzerApp(ngram_window, theme)
+        NgramAnalyzerApp(ngram_window, self.theme)
 
     def open_text_correction_app(self):
-        """Open the GrammarMaxxer application."""  # Updated method description
-        GrammarMaxxerApp(self.root, self.theme)  # Updated class name
+        """Open the GrammarMaxxer application."""
+        GrammarMaxxerApp(self.root, self.theme)
+
+    def open_safetensormaxxer_app(self):
+        """Open the SafetensorMaxxer application.""" 
+        safetensor_window = tk.Toplevel(self.root)
+        safetensor_window.title("SafetensorMaxxer App")
+        SafetensorMaxxerApp(safetensor_window, self.theme)
 
     def create_options_ui(self):
         """Create and place the UI elements for options."""
         options_frame = tk.Frame(self.root, bg=self.theme.get('bg', 'white'))
-        options_frame.grid(row=0, column=0, columnspan=9, pady=20, sticky='ew')
+        options_frame.grid(row=0, column=0, columnspan=10, pady=20, sticky='ew')
 
-        for i in range(9):
+        for i in range(10):  # Adjusted to 10 columns
             options_frame.columnconfigure(i, weight=1)
 
         buttons = [
@@ -96,7 +101,8 @@ class UIManager:
             ("Binary Classification", self.open_binary_classification_app),
             ("Deduplication", self.open_deduplication_app),
             ("N-gram Analyzer", self.open_ngram_analyzer_app),
-            ("GrammarMaxxer", self.open_text_correction_app)  # Updated button label
+            ("GrammarMaxxer", self.open_text_correction_app),
+            ("SafetensorMaxxer", self.open_safetensormaxxer_app)
         ]
 
         for index, (text, command) in enumerate(buttons):

@@ -61,6 +61,17 @@ class DatasetFilterApp:
             messagebox.showerror("Input Error", "Please select a dataset file.")
             return
 
+        print(f"Selected file path: {file_path}")  # Debug statement
+
+        # Check if the file is readable
+        try:
+            with open(file_path, 'r') as f:
+                sample_data = [json.loads(line) for line in f][:5]  # Read first 5 lines for a sample
+            print(f"Sample data: {sample_data}")  # Debug statement
+        except Exception as e:
+            messagebox.showerror("File Error", f"Could not read file: {str(e)}")
+            return
+
         try:
             output_message = filter_dataset(file_path, Path(__file__).parent.absolute())
             self.result_label.config(text=output_message)

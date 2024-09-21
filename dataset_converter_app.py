@@ -3,6 +3,7 @@ from tkinter import filedialog, messagebox
 import json
 import os
 import pandas as pd
+from dataset_converter import DatasetConverter  # Adjust the import based on your file structure
 
 class DatasetConverterApp:
     def __init__(self, parent, theme):
@@ -94,10 +95,19 @@ class DatasetConverterApp:
             self.update_status("Conversion in progress...")
             # Automatically generate output path
             output_path = self.generate_output_path(input_path)
-            
+
             data = self.load_data(input_path)
             if data is not None:
-                with open(output_path, 'w') as outfile:
+                # Validate if the data is valid JSON by attempting to serialize it
+                try:
+                    json.dumps(data)  # Try converting the entire data to a JSON string
+                except (TypeError, ValueError) as json_error:
+                    self.update_status(f"Invalid JSON data: {str(json_error)}")
+                    messagebox.showerror("Invalid JSON", f"Failed to convert due to invalid JSON data:\n{json_error}")
+                    return  # Stop if the data is invalid
+
+                # If valid JSON, proceed with writing to the output file
+                with open(output_path, 'w', encoding='utf-8') as outfile:
                     if isinstance(data, list):
                         for record in data:
                             json.dump(record, outfile)
@@ -109,7 +119,7 @@ class DatasetConverterApp:
                 preview_data = data[:10] if isinstance(data, list) else [data]
                 self.preview_text.delete(1.0, tk.END)
                 self.preview_text.insert(tk.END, json.dumps(preview_data, indent=2))
-                
+
                 # Update status bar with success message
                 self.update_status(f"Conversion completed: {len(data)} records saved to {output_path}.")
             else:
@@ -121,28 +131,36 @@ class DatasetConverterApp:
         # Define the output directory relative to the script's current directory
         output_dir = os.path.join(os.getcwd(), 'converted')
         os.makedirs(output_dir, exist_ok=True)  # Create the directory if it doesn't exist
-        
+
         base_name = os.path.splitext(os.path.basename(input_path))[0]
         output_file = base_name + '_converted.jsonl'
-        
+
         return os.path.join(output_dir, output_file)
 
     def load_data(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
         self.update_status(f"Loading data from {file_path}")
-        if ext == '.json':
-            with open(file_path, 'r') as infile:
-                return json.load(infile)
-        elif ext == '.csv':
-            return pd.read_csv(file_path).to_dict(orient='records')
-        elif ext == '.txt':
-            with open(file_path, 'r') as infile:
-                return infile.readlines()
-        elif ext == '.jsonl':
-            with open(file_path, 'r') as infile:
-                return [json.loads(line) for line in infile]
-        else:
-            raise ValueError("Unsupported file format.")
+
+        # Sanitize the file before loading data
+        sanitized_path = file_path + '.sanitized'
+        DatasetConverter.sanitize_file(file_path, sanitized_path)  # Call the sanitize method
+
+        try:
+            if ext == '.json':
+                with open(sanitized_path, 'r', encoding='utf-8', errors='ignore') as infile:
+                    return json.load(infile)
+            elif ext == '.jsonl':
+                with open(sanitized_path, 'r', encoding='utf-8', errors='ignore') as infile:
+                    return [json.loads(line) for line in infile if line.strip()]
+            else:
+                raise ValueError("Unsupported file format.")
+        except Exception as e:
+            self.update_status(f"Error loading data: {str(e)}")
+            return None
+        finally:
+            # Delete the temporary sanitized file
+            if os.path.exists(sanitized_path):
+                os.remove(sanitized_path)
 
     def update_status(self, message):
         self.status_bar.config(state=tk.NORMAL)  # Make the text editable to update it

@@ -1,6 +1,5 @@
 import json
 import os
-import re
 
 class DatasetConverter:
     @staticmethod
@@ -9,18 +8,23 @@ class DatasetConverter:
         Remove special or hidden characters from a file and save it as UTF-8.
         """
         try:
-            with open(input_path, 'r', encoding='utf-8', errors='replace') as f:
-                file_content = f.read()
-            
-            # Remove non-printable characters and control characters
-            sanitized_content = re.sub(r'[^\x20-\x7E]', '', file_content)
-            
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(sanitized_content)
-        
-        except (UnicodeDecodeError, IOError) as e:
+            with open(input_path, 'rb') as f:
+                content = f.read()
+
+            # Filter out invalid bytes and decode to UTF-8
+            sanitized_content = bytearray()
+            for byte in content:
+                try:
+                    # Try to decode byte to UTF-8; if it fails, skip it
+                    sanitized_content.append(byte)
+                except UnicodeDecodeError:
+                    continue  # Ignore invalid bytes
+
+            with open(output_path, 'wb') as f:
+                f.write(sanitized_content.decode('utf-8', errors='ignore').encode('utf-8'))
+
+        except IOError as e:
             print(f"Error reading or writing file: {e}")
-            raise
 
     @staticmethod
     def load_data(input_path):
@@ -30,7 +34,7 @@ class DatasetConverter:
         # Sanitize file before processing
         sanitized_path = input_path + '.sanitized'
         DatasetConverter.sanitize_file(input_path, sanitized_path)
-        
+
         ext = os.path.splitext(sanitized_path)[1].lower()
         if ext == '.json':
             return DatasetConverter.load_json_data(sanitized_path)

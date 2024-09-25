@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from DeslopTool import filter_dataset
 from pathlib import Path
+from DeslopTool import filter_dataset  # Import the filtering functionality
 
 class DeslopToolApp:
     def __init__(self, master, theme):
@@ -12,12 +12,13 @@ class DeslopToolApp:
         self.root.title("Deslop Tool")
 
         self.set_icon()
-
         self.root.configure(bg=self.theme['bg'])
 
         self.filter_files = []  # List to store selected filter files
+        self.last_filter_file_path = Path('last_filter_file.txt')  # File to store last filter file path
 
-        self.create_widgets()
+        self.create_widgets()  # Create the widgets first
+        self.load_last_filter_file()  # Load last filter file at startup
 
     def set_icon(self):
         icon_path = "icon.ico"
@@ -25,6 +26,20 @@ class DeslopToolApp:
             self.root.iconbitmap(icon_path)
         else:
             print("Icon file not found.")
+
+    def load_last_filter_file(self):
+        """Load the last selected filter file path from a text file."""
+        if self.last_filter_file_path.exists():
+            with open(self.last_filter_file_path, 'r') as f:
+                last_filter_file = f.read().strip()
+                if last_filter_file:
+                    self.filter_files.append(last_filter_file)  # Pre-fill the last filter file
+                    self.last_filter_label.config(text=f"Last Selected Filter File: {last_filter_file}")  # Update label
+
+    def save_last_filter_file(self, filter_file):
+        """Save the last selected filter file path to a text file."""
+        with open(self.last_filter_file_path, 'w') as f:
+            f.write(filter_file)
 
     def create_widgets(self):
         self.label = tk.Label(self.root, text="Dataset File:", bg=self.theme['bg'], fg=self.theme['fg'])
@@ -39,11 +54,15 @@ class DeslopToolApp:
         self.filter_button = tk.Button(self.root, text="Select Filter Files...", command=self.select_filter_files, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
         self.filter_button.grid(row=1, column=0, columnspan=3, pady=10)
 
+        # Initialize last_filter_label here
+        self.last_filter_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
+        self.last_filter_label.grid(row=2, column=0, columnspan=3, padx=10, pady=10)
+
         self.process_button = tk.Button(self.root, text="Process Dataset", command=self.process_dataset, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
-        self.process_button.grid(row=2, column=0, columnspan=3, pady=10)
+        self.process_button.grid(row=3, column=0, columnspan=3, pady=10)
 
         self.result_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.result_label.grid(row=3, column=0, columnspan=3, padx=10, pady=10)
+        self.result_label.grid(row=4, column=0, columnspan=3, padx=10, pady=10)
 
     def select_file(self):
         file_path = filedialog.askopenfilename(
@@ -54,16 +73,18 @@ class DeslopToolApp:
             self.dataset_entry.insert(0, file_path)
 
     def select_filter_files(self):
-        filter_files = filedialog.askopenfilenames(
-            filetypes=[("YAML, JSON, or Text files", "*.yaml;*.yml;*.json;*.txt")]
+        file_paths = filedialog.askopenfilenames(
+            filetypes=[("Text files", "*.txt")]
         )
-        if filter_files:
-            self.filter_files = list(filter_files)
-            messagebox.showinfo("Filter Files Selected", f"{len(self.filter_files)} filter files selected.")
+        if file_paths:
+            self.filter_files = list(file_paths)
+            last_filter_file = self.filter_files[-1]  # Get the last selected filter file
+            self.save_last_filter_file(last_filter_file)  # Save the last selected filter file
+            self.last_filter_label.config(text=f"Last Selected Filter File: {last_filter_file}")  # Update label
 
     def process_dataset(self):
-        file_path = self.dataset_entry.get().strip()
-        if not file_path:
+        dataset_file = self.dataset_entry.get().strip()
+        if not dataset_file:
             messagebox.showerror("Input Error", "Please select a dataset file.")
             return
 
@@ -72,9 +93,9 @@ class DeslopToolApp:
             return
 
         try:
-            output_message = filter_dataset(file_path, Path(__file__).parent.absolute(), self.filter_files)
+            output_message = filter_dataset(dataset_file, self.filter_files)  # Call the filter function
             self.result_label.config(text=output_message)
-        except ValueError as e:
+        except Exception as e:
             messagebox.showerror("Processing Error", str(e))
 
 def run_app():

@@ -1,71 +1,81 @@
 import json
-import os
 from pathlib import Path
-import yaml
-import polars as pl
 
-def filter_dataset(input_path, output_dir, filter_files):
-    try:
-        # Read the JSON Lines file
-        with open(input_path, 'r') as file:
-            data = [json.loads(line) for line in file]
+def load_jsonl(file_path):
+    data = []
+    with open(file_path, 'r') as file:
+        for line in file:
+            data.append(json.loads(line))
+    return data
 
-        # Combine all filter criteria from selected YAML/JSON/TXT files
-        combined_filter_criteria = []
-        for filter_file in filter_files:
-            with open(filter_file, 'r') as f:
-                if filter_file.endswith(('.yaml', '.yml')):
-                    criteria = yaml.safe_load(f)
-                elif filter_file.endswith('.json'):
-                    criteria = json.load(f)
-                elif filter_file.endswith('.txt'):
-                    criteria = [json.loads(line.strip()) for line in f if line.strip()]
-                else:
-                    continue
-                combined_filter_criteria.extend(criteria)
+def load_filter_criteria(filter_files):
+    filter_criteria = []
+    for filter_file in filter_files:
+        with open(filter_file, 'r') as f:
+            filter_criteria.extend(line.strip() for line in f if line.strip())
+    return filter_criteria
 
-        # Define a function to check if a conversation matches any filter criteria
-        def matches_criteria(conversation):
-            if isinstance(conversation, str):
-                try:
-                    conversation = json.loads(conversation)
-                except json.JSONDecodeError:
-                    return False
-            if isinstance(conversation, list):
-                return any(
-                    all(
-                        key in msg and msg[key] == value
-                        for key, value in criteria.items()
-                    )
-                    for msg in conversation
-                    for criteria in combined_filter_criteria
-                )
-            return False
+def filter_conversations(conversations, filter_criteria):
+    filtered_conversations = []
+    filtered_count = 0  # Count of filtered conversations
+    total_matched_phrases = 0  # Total number of matched phrases
+    removed_conversation_count = 0  # Count of removed conversation keys
 
-        # Convert the data to a Polars DataFrame
-        df = pl.DataFrame(data)
+    for conversation in conversations:
+        should_filter = False
+        for msg in conversation.get("conversations", []):
+            if msg["from"] == "gpt":
+                # Check for matched phrases
+                matched_phrases = [phrase for phrase in filter_criteria if phrase in msg["value"]]
+                total_matched_phrases += len(matched_phrases)  # Count matched phrases
 
-        # Create a boolean column based on the filter criteria
-        df = df.with_columns(
-            pl.col('conversations').map_elements(matches_criteria, return_dtype=pl.Boolean).alias('matches_criteria')
-        )
+                if matched_phrases:
+                    should_filter = True
+                    break
+            
+        if should_filter:
+            filtered_count += 1  # Increment the filtered count
+            removed_conversation_count += 1  # Increment removed conversation count
+        else:
+            filtered_conversations.append(conversation)
 
-        # Filter the data based on the new boolean column (keep non-matching entries)
-        filtered_data = df.filter(~pl.col('matches_criteria'))  # Invert the condition to keep non-matching entries
+    return filtered_conversations, filtered_count, total_matched_phrases, removed_conversation_count
 
-        # Create the deslop directory if it doesn't exist
-        deslop_dir = Path(output_dir) / "deslop"
-        deslop_dir.mkdir(exist_ok=True)
+def write_filtered_jsonl(filtered_data, output_file_path):
+    with open(output_file_path, 'w') as file:
+        for conversation in filtered_data:
+            json.dump(conversation, file)
+            file.write('\n')  # Write a newline after each JSON object
 
-        # Save the filtered data as JSONL
-        output_file = deslop_dir / f"{Path(input_path).stem}_deslop.jsonl"
+def filter_dataset(dataset_file, filter_files):
+    # Load filter criteria
+    filter_criteria = load_filter_criteria(filter_files)
 
-        with output_file.open('w') as f:
-            for row in filtered_data.drop('matches_criteria').to_dicts():
-                json.dump(row, f)
-                f.write('\n')
+    # Load dataset
+    data = load_jsonl(dataset_file)
 
-        return f"Filtered data saved to {output_file}\nOriginal size: {len(df)}\nFiltered size: {len(filtered_data)}"
+    # Filter conversations
+    filtered_data, filtered_count, total_matched_phrases, removed_conversation_count = filter_conversations(data, filter_criteria)
 
-    except Exception as e:
-        raise ValueError(f"Error during filtering: {str(e)}")
+    # Create output folder if it doesn't exist
+    output_folder = Path(dataset_file).parent / "deslopped"
+    output_folder.mkdir(exist_ok=True)  # Create folder if it doesn't exist
+
+    # Prepare output file path
+    dataset_name = Path(dataset_file).stem  # Get the stem (name without extension)
+    output_file_path = output_folder / f"{dataset_name}_deslopped.jsonl"  # Create new output file name
+
+    # Write filtered conversations to the output file
+    write_filtered_jsonl(filtered_data, output_file_path)
+
+    # Prepare output message
+    output_message = (
+        f"Total original conversations: {len(data)}\n"
+        f"Total filtered conversations: {filtered_count}\n"
+        f"Remaining conversations after filtering: {len(filtered_data)}\n"
+        f"Total matched phrases: {total_matched_phrases}\n"
+        f"Total conversations removed: {removed_conversation_count}\n"
+        f"Filtered output written to: {output_file_path}"
+    )
+
+    return output_message

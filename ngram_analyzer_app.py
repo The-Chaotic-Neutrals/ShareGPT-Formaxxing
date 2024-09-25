@@ -179,7 +179,7 @@ class NgramAnalyzerApp:
             print(f"Icon could not be set: {e}")
 
 def tokenize(string):
-    return re.findall(r'\w+|[^\w\s]', string)
+    return re.findall(r'\b\S+\b', string.lower())
 
 def count_ngrams(lines, min_length=3, max_length=5):
     lengths = range(min_length, max_length + 1)

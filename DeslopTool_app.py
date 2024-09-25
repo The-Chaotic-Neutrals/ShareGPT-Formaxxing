@@ -1,7 +1,22 @@
+import json
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from pathlib import Path
 from DeslopTool import filter_dataset  # Import the filtering functionality
+
+def load_jsonl(file_path):
+    data = []
+    with open(file_path, 'r') as file:
+        for line in file:
+            data.append(json.loads(line))
+    return data
+
+def load_filter_criteria(filter_files):
+    filter_criteria = []
+    for filter_file in filter_files:
+        with open(filter_file, 'r') as f:
+            filter_criteria.extend(line.strip() for line in f if line.strip())
+    return filter_criteria
 
 class DeslopToolApp:
     def __init__(self, master, theme):
@@ -58,11 +73,18 @@ class DeslopToolApp:
         self.last_filter_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
         self.last_filter_label.grid(row=2, column=0, columnspan=3, padx=10, pady=10)
 
+        # Add threshold input
+        self.threshold_label = tk.Label(self.root, text="Threshold (as a multiple of average):", bg=self.theme['bg'], fg=self.theme['fg'])
+        self.threshold_label.grid(row=3, column=0, padx=10, pady=10, sticky='w')
+
+        self.threshold_entry = tk.Entry(self.root, width=10, bg=self.theme['entry_bg'], fg=self.theme['entry_fg'], insertbackground=self.theme['entry_fg'])
+        self.threshold_entry.grid(row=3, column=1, padx=10, pady=10)
+
         self.process_button = tk.Button(self.root, text="Process Dataset", command=self.process_dataset, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
-        self.process_button.grid(row=3, column=0, columnspan=3, pady=10)
+        self.process_button.grid(row=4, column=0, columnspan=3, pady=10)
 
         self.result_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.result_label.grid(row=4, column=0, columnspan=3, padx=10, pady=10)
+        self.result_label.grid(row=5, column=0, columnspan=3, padx=10, pady=10)
 
     def select_file(self):
         file_path = filedialog.askopenfilename(
@@ -92,11 +114,52 @@ class DeslopToolApp:
             messagebox.showerror("Input Error", "Please select at least one filter file.")
             return
 
+        threshold_value = self.threshold_entry.get().strip()
+        
         try:
-            output_message = filter_dataset(dataset_file, self.filter_files)  # Call the filter function
+            # Calculate the average number of matched phrases first
+            average_results = self.calculate_average_phrases(dataset_file, self.filter_files)
+            average_matched = average_results['average']
+
+            if threshold_value:  # If a threshold is provided
+                threshold_multiplier = float(threshold_value)
+                threshold = average_matched * threshold_multiplier
+                output_message = filter_dataset(dataset_file, self.filter_files, threshold)  # Call the filter function with calculated threshold
+            else:  # No threshold provided
+                output_message = f"Average matched phrases per conversation: {average_matched:.2f}\n" \
+                                 f"Total conversations: {average_results['total_conversations']}\n" \
+                                 f"Conversations with phrases above average: {average_results['above_average']}\n"
+
             self.result_label.config(text=output_message)
         except Exception as e:
             messagebox.showerror("Processing Error", str(e))
+
+    def calculate_average_phrases(self, dataset_file, filter_files):
+        """Calculate the average number of matched phrases in each conversation."""
+        filter_criteria = load_filter_criteria(filter_files)
+        data = load_jsonl(dataset_file)
+
+        total_phrases = 0
+        total_conversations = len(data)
+        above_average_count = 0  # Counter for conversations above average
+
+        for conversation in data:
+            matched_count = sum(
+                sum(1 for phrase in filter_criteria if phrase in msg["value"])
+                for msg in conversation.get("conversations", []) if msg["from"] == "gpt"
+            )
+            total_phrases += matched_count
+            
+            if matched_count > total_phrases / total_conversations if total_conversations > 0 else 0:
+                above_average_count += 1
+
+        average = total_phrases / total_conversations if total_conversations > 0 else 0
+
+        return {
+            "average": average,
+            "total_conversations": total_conversations,
+            "above_average": above_average_count
+        }
 
 def run_app():
     root = tk.Tk()

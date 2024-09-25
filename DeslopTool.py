@@ -15,29 +15,37 @@ def load_filter_criteria(filter_files):
             filter_criteria.extend(line.strip() for line in f if line.strip())
     return filter_criteria
 
-def filter_conversations(conversations, filter_criteria):
+def filter_conversations(conversations, filter_criteria, threshold=None):
     filtered_conversations = []
-    filtered_count = 0  # Count of filtered conversations
     total_matched_phrases = 0  # Total number of matched phrases
     removed_conversation_count = 0  # Count of removed conversation keys
 
+    # Calculate total matched phrases in each conversation
+    matched_counts = []
+    
     for conversation in conversations:
-        should_filter = False
+        total_phrases_in_conversation = 0  # Total matched phrases in this conversation
         for msg in conversation.get("conversations", []):
             if msg["from"] == "gpt":
-                # Check for matched phrases
+                # Count matched phrases
                 matched_phrases = [phrase for phrase in filter_criteria if phrase in msg["value"]]
-                total_matched_phrases += len(matched_phrases)  # Count matched phrases
+                matched_count = len(matched_phrases)  # Count matched phrases in the current message
+                total_phrases_in_conversation += matched_count  # Accumulate total matched phrases
 
-                if matched_phrases:
-                    should_filter = True
-                    break
-            
-        if should_filter:
-            filtered_count += 1  # Increment the filtered count
+        matched_counts.append(total_phrases_in_conversation)  # Store matched count for the current conversation
+        total_matched_phrases += total_phrases_in_conversation  # Count matched phrases overall
+
+    # Calculate average matched phrases per conversation
+    average_matched_phrases = total_matched_phrases / len(conversations) if conversations else 0
+
+    # Apply threshold filtering based on the average if a threshold is provided
+    for idx, conversation in enumerate(conversations):
+        if threshold is not None and matched_counts[idx] >= average_matched_phrases * threshold:
             removed_conversation_count += 1  # Increment removed conversation count
         else:
             filtered_conversations.append(conversation)
+
+    filtered_count = removed_conversation_count  # Total filtered conversations
 
     return filtered_conversations, filtered_count, total_matched_phrases, removed_conversation_count
 
@@ -47,7 +55,7 @@ def write_filtered_jsonl(filtered_data, output_file_path):
             json.dump(conversation, file)
             file.write('\n')  # Write a newline after each JSON object
 
-def filter_dataset(dataset_file, filter_files):
+def filter_dataset(dataset_file, filter_files, threshold=None):
     # Load filter criteria
     filter_criteria = load_filter_criteria(filter_files)
 
@@ -55,10 +63,10 @@ def filter_dataset(dataset_file, filter_files):
     data = load_jsonl(dataset_file)
 
     # Filter conversations
-    filtered_data, filtered_count, total_matched_phrases, removed_conversation_count = filter_conversations(data, filter_criteria)
+    filtered_data, filtered_count, total_matched_phrases, removed_conversation_count = filter_conversations(data, filter_criteria, threshold)
 
-    # Create output folder if it doesn't exist
-    output_folder = Path(dataset_file).parent / "deslopped"
+    # Create output folder in the same directory as the main app
+    output_folder = Path(__file__).parent / "deslopped"  # Use __file__ to get the current script's directory
     output_folder.mkdir(exist_ok=True)  # Create folder if it doesn't exist
 
     # Prepare output file path

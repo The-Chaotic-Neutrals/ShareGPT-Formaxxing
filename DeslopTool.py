@@ -35,6 +35,10 @@ def filter_conversations(conversations, filter_criteria, threshold=None):
         matched_counts.append(total_phrases_in_conversation)  # Store matched count for the current conversation
         total_matched_phrases += total_phrases_in_conversation  # Count matched phrases overall
 
+    # Check if total matched phrases is zero; if so, return original conversations
+    if total_matched_phrases == 0:
+        return conversations, 0, total_matched_phrases, 0
+
     # Calculate average matched phrases per conversation
     average_matched_phrases = total_matched_phrases / len(conversations) if conversations else 0
 

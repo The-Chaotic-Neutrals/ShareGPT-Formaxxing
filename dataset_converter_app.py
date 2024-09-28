@@ -2,7 +2,6 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import json
 import os
-import pandas as pd
 from dataset_converter import DatasetConverter  # Adjust the import based on your file structure
 
 class DatasetConverterApp:
@@ -96,36 +95,37 @@ class DatasetConverterApp:
             # Automatically generate output path
             output_path = self.generate_output_path(input_path)
 
-            data = self.load_data(input_path)
-            if data is not None:
-                # Validate if the data is valid JSON by attempting to serialize it
-                try:
-                    json.dumps(data)  # Try converting the entire data to a JSON string
-                except (TypeError, ValueError) as json_error:
-                    self.update_status(f"Invalid JSON data: {str(json_error)}")
-                    messagebox.showerror("Invalid JSON", f"Failed to convert due to invalid JSON data:\n{json_error}")
-                    return  # Stop if the data is invalid
+            # Load data using the updated DatasetConverter class
+            data = DatasetConverter.load_data(input_path)
 
-                # If valid JSON, proceed with writing to the output file
-                with open(output_path, 'w', encoding='utf-8') as outfile:
-                    if isinstance(data, list):
-                        for record in data:
-                            json.dump(record, outfile)
-                            outfile.write('\n')
-                    else:
-                        json.dump(data, outfile, indent=2)
+            # Debug: Check if data is loaded correctly
+            if not data:
+                self.update_status("Error: No data found in the file.")
+                messagebox.showerror("Error", "No data loaded from the file.")
+                return
 
-                # Preview first 10 records if available
-                preview_data = data[:10] if isinstance(data, list) else [data]
-                self.preview_text.delete(1.0, tk.END)
-                self.preview_text.insert(tk.END, json.dumps(preview_data, indent=2))
+            # Debug: Log the first few entries of the loaded data
+            print(f"Loaded data preview (first 5 records): {json.dumps(data[:5], indent=2) if isinstance(data, list) else data}")
 
-                # Update status bar with success message
-                self.update_status(f"Conversion completed: {len(data)} records saved to {output_path}.")
-            else:
-                self.update_status("No data processed.")
+            # Write processed data to output file
+            with open(output_path, 'w', encoding='utf-8') as outfile:
+                if isinstance(data, list):
+                    for record in data:
+                        json.dump(record, outfile, ensure_ascii=False)  # Set ensure_ascii to False
+                        outfile.write('\n')
+                else:
+                    json.dump(data, outfile, ensure_ascii=False, indent=2)  # Set ensure_ascii to False
+
+            # Preview the first 10 records for display
+            preview_data = data[:10] if isinstance(data, list) else [data]
+            self.preview_text.delete(1.0, tk.END)
+            self.preview_text.insert(tk.END, json.dumps(preview_data, ensure_ascii=False, indent=2))
+
+            # Update status bar with success message
+            self.update_status(f"Conversion completed: Data saved to {output_path}.")
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
     def generate_output_path(self, input_path):
         # Define the output directory relative to the script's current directory

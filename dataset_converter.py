@@ -1,56 +1,29 @@
 import json
 import os
+from fuzzywuzzy import fuzz
 
 class DatasetConverter:
     @staticmethod
-    def sanitize_file(input_path, output_path):
-        """
-        Remove special or hidden characters from a file and save it as UTF-8.
-        """
-        try:
-            with open(input_path, 'rb') as f:
-                content = f.read()
-
-            # Filter out invalid bytes and decode to UTF-8
-            sanitized_content = bytearray()
-            for byte in content:
-                try:
-                    # Try to decode byte to UTF-8; if it fails, skip it
-                    sanitized_content.append(byte)
-                except UnicodeDecodeError:
-                    continue  # Ignore invalid bytes
-
-            with open(output_path, 'wb') as f:
-                f.write(sanitized_content.decode('utf-8', errors='ignore').encode('utf-8'))
-
-        except IOError as e:
-            print(f"Error reading or writing file: {e}")
-
-    @staticmethod
-    def load_data(input_path):
+    def load_data(input_path: str) -> list:
         """
         Load data from a file based on its extension.
         """
-        # Sanitize file before processing
-        sanitized_path = input_path + '.sanitized'
-        DatasetConverter.sanitize_file(input_path, sanitized_path)
-
-        ext = os.path.splitext(sanitized_path)[1].lower()
+        ext = os.path.splitext(input_path)[1].lower()
         if ext == '.json':
-            return DatasetConverter.load_json_data(sanitized_path)
+            return DatasetConverter.load_json_data(input_path)
         elif ext == '.jsonl':
-            return DatasetConverter.load_jsonl_data(sanitized_path)
+            return DatasetConverter.load_jsonl_data(input_path)
         else:
             raise ValueError("Unsupported file format")
 
     @staticmethod
-    def load_json_data(input_path):
+    def load_json_data(input_path: str) -> list:
         """
         Load data from a JSON file, handling arrays of JSON objects and ignoring extra data.
         """
         data = []
         try:
-            with open(input_path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(input_path, 'r', encoding='utf-8') as f:  # Directly open with UTF-8 encoding
                 file_content = f.read()
                 try:
                     data = json.loads(file_content)
@@ -74,13 +47,13 @@ class DatasetConverter:
         return data
 
     @staticmethod
-    def load_jsonl_data(input_path):
+    def load_jsonl_data(input_path: str) -> list:
         """
         Load data from a JSONL file, handling each line as a separate JSON object.
         """
         data = []
         try:
-            with open(input_path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(input_path, 'r', encoding='utf-8') as f:  # Directly open with UTF-8 encoding
                 for line in f:
                     line = line.strip()
                     if line:
@@ -94,7 +67,7 @@ class DatasetConverter:
         return data
 
     @staticmethod
-    def detect_format(sample_text):
+    def detect_format(sample_text: str) -> str:
         """
         Detect the format of the dataset based on a sample text.
         """
@@ -104,7 +77,7 @@ class DatasetConverter:
             return 'unknown'
 
     @staticmethod
-    def process_data(data, output_path):
+    def process_data(data: list, output_path: str) -> list:
         """
         Process data and write conversations to an output file.
         """
@@ -121,12 +94,17 @@ class DatasetConverter:
             for entry in data:
                 conversations = DatasetConverter.extract_conversations(entry)
                 if conversations:
-                    f.write(json.dumps({"conversations": conversations}) + '\n')
+                    formatted_entry = {"conversations": conversations}
+                    f.write(json.dumps(formatted_entry, ensure_ascii=False) + '\n')  # Write without escaping non-ASCII
                     conversations_found = True
                     if len(preview_entries) < 3:
-                        preview_entries.append({"conversations": conversations})
+                        preview_entries.append(formatted_entry)  # Store formatted entry for preview
 
-        status_message = f"Conversations completed successfully. Format detected: {detected_format}" if conversations_found else f"No conversations found for this dataset. Format detected: {detected_format}"
+        status_message = (
+            f"Conversations completed successfully. Format detected: {detected_format}"
+            if conversations_found
+            else f"No conversations found for this dataset. Format detected: {detected_format}"
+        )
         print(status_message)
 
         DatasetConverter.validate_jsonl(output_path)
@@ -134,7 +112,7 @@ class DatasetConverter:
         return preview_entries
 
     @staticmethod
-    def process_plaintext_line(line):
+    def process_plaintext_line(line: str) -> list:
         """
         Convert a formatted plain text line into a list of conversations.
         """
@@ -146,7 +124,7 @@ class DatasetConverter:
         return conversations
 
     @staticmethod
-    def extract_conversations(entry):
+    def extract_conversations(entry: dict) -> list:
         """
         Extract conversations from an entry based on different keys and roles.
         """
@@ -175,7 +153,7 @@ class DatasetConverter:
         return conversations
 
     @staticmethod
-    def process_completion(completion, conversations):
+    def process_completion(completion: dict, conversations: list):
         """
         Process completion data and add it to the list of conversations.
         """
@@ -192,7 +170,7 @@ class DatasetConverter:
                 pass
 
     @staticmethod
-    def add_conversation(message, conversations):
+    def add_conversation(message: dict, conversations: list):
         """
         Add a conversation message to the list of conversations.
         """
@@ -204,7 +182,7 @@ class DatasetConverter:
         conversations.append({"from": role, "value": message.get('content', '')})
 
     @staticmethod
-    def fallback_parse_line(line):
+    def fallback_parse_line(line: str) -> list:
         """
         Fallback method to handle lines that cannot be parsed as JSON.
         This method tries to infer a structured format from raw lines using fuzzy matching and string searches.
@@ -239,7 +217,7 @@ class DatasetConverter:
         return conversations
 
     @staticmethod
-    def validate_jsonl(output_path):
+    def validate_jsonl(output_path: str):
         """
         Validate the final output to ensure it is proper JSONL.
         """

@@ -180,10 +180,15 @@ class DeslopToolApp:
             messagebox.showerror("Input Error", "Please select at least one filter file.")
             return
 
+        filter_criteria = load_filter_criteria(self.filter_files) or []
+        if not filter_criteria:
+            messagebox.showerror("Input Error", "Filter criteria are empty. Please check your filter files.")
+            return
+
         threshold_value = self.threshold_entry.get().strip()
         
         try:
-            average_results = self.calculate_average_phrases(dataset_file, self.filter_files)
+            average_results = self.calculate_average_phrases(dataset_file, filter_criteria)
             average_matched = average_results['average']
 
             if threshold_value:
@@ -204,8 +209,7 @@ class DeslopToolApp:
         await self.slop_filter.filter_conversations(dataset_file, output_jsonl_filepath)
         self.result_label.config(text=f"Filtered conversations saved to {output_jsonl_filepath}")
 
-    def calculate_average_phrases(self, dataset_file, filter_files):
-        filter_criteria = load_filter_criteria(filter_files)
+    def calculate_average_phrases(self, dataset_file, filter_criteria):
         data = load_jsonl(dataset_file)
 
         total_phrases = 0
@@ -213,13 +217,24 @@ class DeslopToolApp:
         above_average_count = 0
 
         for conversation in data:
+            # Ensure conversation is a dictionary
+            if not isinstance(conversation, dict):
+                print(f"Skipping non-dictionary conversation: {conversation}")
+                continue
+
+            # Get the conversation list, ensure it's a list
+            conversation_list = conversation.get("conversations", [])
+            if not isinstance(conversation_list, list):
+                print(f"Invalid conversation format: {conversation_list}")
+                continue
+
             matched_count = sum(
-                sum(1 for phrase in filter_criteria if phrase in msg["value"])
-                for msg in conversation.get("conversations", []) if msg["from"] == "gpt"
+                sum(1 for phrase in filter_criteria if phrase in (msg.get("value") or ""))
+                for msg in conversation_list if msg.get("from") == "gpt"
             )
             total_phrases += matched_count
             
-            if matched_count > total_phrases / total_conversations if total_conversations > 0 else 0:
+            if matched_count > (total_phrases / total_conversations if total_conversations > 0 else 0):
                 above_average_count += 1
 
         average = total_phrases / total_conversations if total_conversations > 0 else 0

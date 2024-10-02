@@ -31,7 +31,8 @@ def filter_conversations(conversations, filter_criteria, threshold=None):
     for conversation in conversations:
         total_phrases_in_conversation = 0  # Total matched phrases in this conversation
         for msg in conversation.get("conversations", []):
-            if msg["from"] == "gpt":
+            # Check for valid "from" and "value" keys, and handle None safely
+            if msg.get("from") == "gpt" and msg.get("value"):
                 # Count matched phrases
                 matched_phrases = [phrase for phrase in filter_criteria if phrase in msg["value"]]
                 matched_count = len(matched_phrases)  # Count matched phrases in the current message

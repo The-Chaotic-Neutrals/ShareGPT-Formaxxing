@@ -3,6 +3,10 @@ from tkinter import filedialog, messagebox
 import json
 import os
 from dataset_converter import DatasetConverter  # Adjust the import based on your file structure
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DatasetConverterApp:
     def __init__(self, parent, theme):
@@ -84,7 +88,9 @@ class DatasetConverterApp:
     def on_convert_button_click(self):
         input_path = self.entry_input_file.get()
         if input_path:
+            self.convert_button.config(state=tk.DISABLED)  # Disable button
             self.convert_dataset(input_path)
+            self.convert_button.config(state=tk.NORMAL)  # Re-enable button
         else:
             self.update_status("No input file selected.")
             messagebox.showerror("Input Error", "Please select an input file.")
@@ -92,40 +98,43 @@ class DatasetConverterApp:
     def convert_dataset(self, input_path):
         try:
             self.update_status("Conversion in progress...")
+            logging.info(f"Starting conversion for {input_path}")
+
             # Automatically generate output path
             output_path = self.generate_output_path(input_path)
 
-            # Load data using the updated DatasetConverter class
-            data = DatasetConverter.load_data(input_path)
+            # Load data without sanitization
+            data = self.load_data(input_path)
 
-            # Debug: Check if data is loaded correctly
+            # Check if data is loaded correctly
             if not data:
-                self.update_status("Error: No data found in the file.")
-                messagebox.showerror("Error", "No data loaded from the file.")
-                return
-
-            # Debug: Log the first few entries of the loaded data
-            print(f"Loaded data preview (first 5 records): {json.dumps(data[:5], indent=2) if isinstance(data, list) else data}")
+                raise ValueError("No data found in the file.")
 
             # Write processed data to output file
-            with open(output_path, 'w', encoding='utf-8') as outfile:
-                if isinstance(data, list):
-                    for record in data:
-                        json.dump(record, outfile, ensure_ascii=False)  # Set ensure_ascii to False
-                        outfile.write('\n')
-                else:
-                    json.dump(data, outfile, ensure_ascii=False, indent=2)  # Set ensure_ascii to False
+            self.write_output_file(output_path, data)
 
-            # Preview the first 10 records for display
-            preview_data = data[:10] if isinstance(data, list) else [data]
-            self.preview_text.delete(1.0, tk.END)
-            self.preview_text.insert(tk.END, json.dumps(preview_data, ensure_ascii=False, indent=2))
+            # Update the preview
+            self.update_preview(data)
 
             # Update status bar with success message
             self.update_status(f"Conversion completed: Data saved to {output_path}.")
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
+
+    def write_output_file(self, output_path, data):
+        with open(output_path, 'w', encoding='utf-8') as outfile:
+            if isinstance(data, list):
+                for record in data:
+                    json.dump(record, outfile, ensure_ascii=False)
+                    outfile.write('\n')
+            else:
+                json.dump(data, outfile, ensure_ascii=False, indent=2)
+
+    def update_preview(self, data):
+        preview_data = data[:10] if isinstance(data, list) else [data]
+        self.preview_text.delete(1.0, tk.END)
+        self.preview_text.insert(tk.END, json.dumps(preview_data, ensure_ascii=False, indent=2))
 
     def generate_output_path(self, input_path):
         # Define the output directory relative to the script's current directory
@@ -141,26 +150,18 @@ class DatasetConverterApp:
         ext = os.path.splitext(file_path)[1].lower()
         self.update_status(f"Loading data from {file_path}")
 
-        # Sanitize the file before loading data
-        sanitized_path = file_path + '.sanitized'
-        DatasetConverter.sanitize_file(file_path, sanitized_path)  # Call the sanitize method
-
         try:
             if ext == '.json':
-                with open(sanitized_path, 'r', encoding='utf-8', errors='ignore') as infile:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as infile:
                     return json.load(infile)
             elif ext == '.jsonl':
-                with open(sanitized_path, 'r', encoding='utf-8', errors='ignore') as infile:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as infile:
                     return [json.loads(line) for line in infile if line.strip()]
             else:
                 raise ValueError("Unsupported file format.")
         except Exception as e:
             self.update_status(f"Error loading data: {str(e)}")
             return None
-        finally:
-            # Delete the temporary sanitized file
-            if os.path.exists(sanitized_path):
-                os.remove(sanitized_path)
 
     def update_status(self, message):
         self.status_bar.config(state=tk.NORMAL)  # Make the text editable to update it

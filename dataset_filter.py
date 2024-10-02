@@ -1,43 +1,61 @@
 import json
 from pathlib import Path
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 def filter_dataset(input_path, output_dir):
     try:
-        # Read the JSON Lines file
-        with open(input_path, 'r') as file:
-            data = [json.loads(line) for line in file]
-
-        print(f"Sample data: {data[:5]}")  # Inspect the input data
-
-        # Function to filter conversations
-        filtered_data = []
-        
-        for item in data:
-            conversations = item.get("conversations", [])
-            
-            # Check if both roles are present
-            roles = set(msg['from'] for msg in conversations)
-            if 'human' in roles and 'gpt' in roles:
-                # Check and remove the last human message if it's the last one
-                if conversations and conversations[-1]['from'] == 'human':
-                    conversations = conversations[:-1]  # Remove the last message
-                
-                print(f"Filtered conversations: {conversations}")  # Debugging output
-                filtered_data.append({"conversations": conversations})
-
-        # Create the Filtered directory if it doesn't exist
-        filtered_dir = Path(output_dir) / "filtered"
+        # Prepare paths
+        input_path = Path(input_path)
+        output_dir = Path(output_dir)
+        filtered_dir = output_dir / "filtered"
         filtered_dir.mkdir(exist_ok=True)
+        output_file = filtered_dir / f"{input_path.stem}_filtered.jsonl"
+        
+        filtered_data_count = 0
+        original_data_count = 0
 
-        # Save the filtered data as JSONL
-        output_file = filtered_dir / f"{Path(input_path).stem}_filtered.jsonl"
+        # Use 'utf-8' with error ignoring to handle any non-decodable characters
+        with open(input_path, 'r', encoding='utf-8', errors='ignore') as infile, \
+             output_file.open('w', encoding='utf-8') as outfile:
+            
+            for line in infile:
+                original_data_count += 1
+                line = line.strip()
 
-        with output_file.open('w') as f:
-            for row in filtered_data:
-                json.dump(row, f)
-                f.write('\n')
+                if not line:
+                    continue  # Skip empty lines
 
-        return f"Filtered data saved to {output_file}\nOriginal size: {len(data)}\nFiltered size: {len(filtered_data)}"
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError as e:
+                    # Log the error and skip the problematic line
+                    logging.error(f"JSON decode error at line {original_data_count}: {e}")
+                    continue
+                
+                # Process conversations
+                conversations = item.get("conversations", [])
+                
+                # Check if both roles are present
+                roles = set(msg.get('from') for msg in conversations)
+                if 'human' in roles and 'gpt' in roles:
+                    # Remove the last human message if it's the last one
+                    if conversations and conversations[-1].get('from') == 'human':
+                        conversations = conversations[:-1]
+                    
+                    # Write filtered conversation to output file
+                    filtered_item = {"conversations": conversations}
+                    json.dump(filtered_item, outfile, ensure_ascii=False)
+                    outfile.write('\n')
+                    filtered_data_count += 1
+        
+        logging.info(f"Filtered data saved to {output_file}")
+        logging.info(f"Original size: {original_data_count}")
+        logging.info(f"Filtered size: {filtered_data_count}")
+
+        return f"Filtered data saved to {output_file}\nOriginal size: {original_data_count}\nFiltered size: {filtered_data_count}"
 
     except Exception as e:
+        logging.error("Unexpected error during filtering", exc_info=True)
         raise ValueError(f"Error during filtering: {str(e)}")

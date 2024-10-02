@@ -2,7 +2,6 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import os
 import json
-import polars as pl
 from pathlib import Path
 from dataset_filter import filter_dataset
 
@@ -65,15 +64,26 @@ class DatasetFilterApp:
 
         # Check if the file is readable
         try:
-            with open(file_path, 'r') as f:
-                sample_data = [json.loads(line) for line in f][:5]  # Read first 5 lines for a sample
+            with open(file_path, 'r', encoding='utf-8') as f:
+                # Read first 5 lines as a sample with encoding and error handling
+                sample_data = [json.loads(line) for line in f][:5]
             print(f"Sample data: {sample_data}")  # Debug statement
+        except UnicodeDecodeError:
+            messagebox.showerror("File Error", "Unicode decoding error. Please make sure the file is UTF-8 encoded.")
+            return
+        except json.JSONDecodeError:
+            messagebox.showerror("File Error", "JSON parsing error. The file may contain invalid JSON.")
+            return
         except Exception as e:
             messagebox.showerror("File Error", f"Could not read file: {str(e)}")
             return
 
         try:
+            # Process the dataset using the filter_dataset function
             output_message = filter_dataset(file_path, Path(__file__).parent.absolute())
             self.result_label.config(text=output_message)
         except ValueError as e:
             messagebox.showerror("Processing Error", str(e))
+        except Exception as e:
+            # Catch any unexpected exceptions
+            messagebox.showerror("Processing Error", f"An unexpected error occurred: {str(e)}")

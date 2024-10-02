@@ -109,7 +109,8 @@ class DeduplicationApp:
             self.duplicate_count = 0
             self.unique_conversations.clear()  # Clear previous unique identifiers
 
-            with jsonlines.open(input_file) as reader:
+            # Open input and output files with explicit encoding handling
+            with jsonlines.open(input_file, mode='r') as reader:
                 with jsonlines.open(output_file, mode='w') as writer:
                     for conversation in reader:
                         # Generate a unique identifier for deduplication
@@ -123,6 +124,12 @@ class DeduplicationApp:
                         writer.write(conversation)
 
             self.update_status(f"Deduplication complete. Output file: {output_file}")
+        except UnicodeDecodeError as e:
+            logging.error(f"Unicode decoding error: {e}", exc_info=True)
+            self.update_status(f"Unicode decoding error: {e}")
+        except jsonlines.jsonlines.InvalidLineError as e:
+            logging.error(f"Invalid JSONL format: {e}", exc_info=True)
+            self.update_status(f"Invalid JSONL format: {e}")
         except Exception as e:
             logging.error(f"Error processing file: {e}", exc_info=True)
             self.update_status(f"Error processing file: {e}")

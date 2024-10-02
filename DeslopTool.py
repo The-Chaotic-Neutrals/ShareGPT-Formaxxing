@@ -3,15 +3,20 @@ from pathlib import Path
 
 def load_jsonl(file_path):
     data = []
-    with open(file_path, 'r') as file:
+    # Open file with UTF-8 encoding and error handling
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as file:
         for line in file:
-            data.append(json.loads(line))
+            try:
+                data.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                print(f"Skipping invalid JSON line: {line}. Error: {e}")
     return data
 
 def load_filter_criteria(filter_files):
     filter_criteria = []
     for filter_file in filter_files:
-        with open(filter_file, 'r') as f:
+        # Open filter files with UTF-8 encoding
+        with open(filter_file, 'r', encoding='utf-8', errors='replace') as f:
             filter_criteria.extend(line.strip() for line in f if line.strip())
     return filter_criteria
 
@@ -54,9 +59,10 @@ def filter_conversations(conversations, filter_criteria, threshold=None):
     return filtered_conversations, filtered_count, total_matched_phrases, removed_conversation_count
 
 def write_filtered_jsonl(filtered_data, output_file_path):
-    with open(output_file_path, 'w') as file:
+    # Write to file with UTF-8 encoding
+    with open(output_file_path, 'w', encoding='utf-8', errors='replace') as file:
         for conversation in filtered_data:
-            json.dump(conversation, file)
+            json.dump(conversation, file, ensure_ascii=False)
             file.write('\n')  # Write a newline after each JSON object
 
 def filter_dataset(dataset_file, filter_files, threshold=None):

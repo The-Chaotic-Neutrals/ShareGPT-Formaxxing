@@ -13,27 +13,32 @@ MODEL_NAME = "protectai/distilroberta-base-rejection-v1"
 nlp = None
 tokenizer = None
 model = None
-device = 'cpu'
+device = 'gpu'
 
 def initialize_models():
     """Initialize Spacy and Transformer models."""
-    global nlp, tokenizer, model
+    global nlp, tokenizer, model, device
     nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
     nlp.add_pipe("sentencizer")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
 
+    # Move model to appropriate device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
 def update_device_preference(gpu_var, status_bar):
     """Update the device preference based on user selection."""
     global device
     if gpu_var.get() and torch.cuda.is_available():
-        device = 'cuda'
+        device = torch.device('cuda')
         update_status("Using GPU", status_bar)
     else:
-        device = 'cpu'
+        device = torch.device('cpu')
         update_status("Using CPU", status_bar)
-    model.to(device)
+
+    model.to(device)  # Ensure the model is moved to the correct device
 
 def filter_conversations(input_file_entry, threshold_entry, batch_size_entry, status_bar, positive_count_label, negative_count_label):
     """Filter conversations based on the specified criteria."""
@@ -175,11 +180,15 @@ def update_counts(positive_count, negative_count, positive_count_label, negative
 
 def predict(texts):
     """Predict the classifications for a batch of texts."""
+    # Encode and move input tensors to the same device as the model
     encoded_inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt").to(device)
+    
     with torch.no_grad():
+        # Ensure model is using the same device as the input tensors
         outputs = model(**encoded_inputs)
+
     logits = outputs.logits
-    predictions = torch.sigmoid(logits).cpu().numpy()
+    predictions = torch.sigmoid(logits).cpu().numpy()  # Move results to CPU for processing
     results = [{"positive": float(pred[1]), "negative": float(pred[0])} for pred in predictions]
     return results
 

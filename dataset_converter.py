@@ -23,7 +23,7 @@ class DatasetConverter:
         """
         data = []
         try:
-            with open(input_path, 'r', encoding='utf-8') as f:  # Directly open with UTF-8 encoding
+            with open(input_path, 'r', encoding='utf-8') as f:
                 file_content = f.read()
                 try:
                     data = json.loads(file_content)
@@ -53,7 +53,7 @@ class DatasetConverter:
         """
         data = []
         try:
-            with open(input_path, 'r', encoding='utf-8') as f:  # Directly open with UTF-8 encoding
+            with open(input_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
                     if line:
@@ -67,66 +67,10 @@ class DatasetConverter:
         return data
 
     @staticmethod
-    def detect_format(sample_text: str) -> str:
-        """
-        Detect the format of the dataset based on a sample text.
-        """
-        if 'system:' in sample_text or 'user:' in sample_text or 'assistant:' in sample_text:
-            return 'plaintext'
-        else:
-            return 'unknown'
-
-    @staticmethod
-    def process_data(data: list, output_path: str) -> list:
-        """
-        Process data and write conversations to an output file.
-        """
-        preview_entries = []
-        conversations_found = False
-        detected_format = 'unknown'
-
-        # Detect format based on a sample entry
-        if data:
-            sample_entry = json.dumps(data[0])
-            detected_format = DatasetConverter.detect_format(sample_entry)
-
-        with open(output_path, 'w', encoding='utf-8') as f:
-            for entry in data:
-                conversations = DatasetConverter.extract_conversations(entry)
-                if conversations:
-                    formatted_entry = {"conversations": conversations}
-                    f.write(json.dumps(formatted_entry, ensure_ascii=False) + '\n')  # Write without escaping non-ASCII
-                    conversations_found = True
-                    if len(preview_entries) < 3:
-                        preview_entries.append(formatted_entry)  # Store formatted entry for preview
-
-        status_message = (
-            f"Conversations completed successfully. Format detected: {detected_format}"
-            if conversations_found
-            else f"No conversations found for this dataset. Format detected: {detected_format}"
-        )
-        print(status_message)
-
-        DatasetConverter.validate_jsonl(output_path)
-
-        return preview_entries
-
-    @staticmethod
-    def process_plaintext_line(line: str) -> list:
-        """
-        Convert a formatted plain text line into a list of conversations.
-        """
-        conversations = []
-        for role in ['system', 'user', 'assistant']:
-            if f'{role}:' in line:
-                value = line.split(f'{role}:', 1)[1].strip()
-                conversations.append({"from": role if role != 'assistant' else 'gpt', "value": value})
-        return conversations
-
-    @staticmethod
     def extract_conversations(entry: dict) -> list:
         """
         Extract conversations from an entry based on different keys and roles.
+        Ensures all outputs follow the required format.
         """
         conversations = []
         if 'conversations' in entry:
@@ -134,14 +78,13 @@ class DatasetConverter:
                 role = message.get('from')
                 if role == 'user':
                     role = 'human'
-                conversations.append({"from": role, "value": message.get('value', '')})
+                conversations.append({"from": role if role != 'assistant' else 'gpt', "value": message.get('value', '').strip()})  # Strip here
         else:
             if 'system' in entry:
-                conversations.append({"from": "system", "value": entry['system']})
+                conversations.append({"from": "system", "value": entry['system'].strip()})  # Strip here
             if 'completion' in entry:
                 DatasetConverter.process_completion(entry['completion'], conversations)
             elif 'messages' in entry:
-                # Handle cases with "messages" instead of "completion"
                 for message in entry.get('messages', []):
                     if isinstance(message, dict):
                         role = message.get('role')
@@ -149,7 +92,10 @@ class DatasetConverter:
                             role = 'human'
                         elif role == 'assistant':
                             role = 'gpt'
-                        conversations.append({"from": role, "value": message.get('content', '')})
+                        conversations.append({"from": role, "value": message.get('content', '').strip()})  # Strip here
+        # Ensure the output follows the specified format
+        if not conversations:
+            return [{"from": "system", "value": "No conversations found."}]
         return conversations
 
     @staticmethod
@@ -173,13 +119,15 @@ class DatasetConverter:
     def add_conversation(message: dict, conversations: list):
         """
         Add a conversation message to the list of conversations.
+        Ensures the output format is consistently:
+        {"from": "system/human/gpt", "value": "text"}
         """
         role = message.get('role')
         if role == 'user':
             role = 'human'
         elif role == 'assistant':
             role = 'gpt'
-        conversations.append({"from": role, "value": message.get('content', '')})
+        conversations.append({"from": role, "value": message.get('content', '').strip()})  # Strip here
 
     @staticmethod
     def fallback_parse_line(line: str) -> list:
@@ -187,13 +135,13 @@ class DatasetConverter:
         Fallback method to handle lines that cannot be parsed as JSON.
         This method tries to infer a structured format from raw lines using fuzzy matching and string searches.
         """
+        conversations = []
         # Example of simple keyword-based parsing
         keywords = {
             'system': 'system:',
             'user': 'user:',
             'assistant': 'assistant:',
         }
-        conversations = []
         
         for role, keyword in keywords.items():
             if keyword in line:
@@ -212,7 +160,7 @@ class DatasetConverter:
         
         if not conversations:
             # Default case if no structured information found
-            conversations.append({"raw_text": line})
+            conversations.append({"from": "unknown", "value": line.strip()})  # Ensure format consistency
         
         return conversations
 
@@ -231,3 +179,43 @@ class DatasetConverter:
                         print(f"Invalid JSON at line {i}: {line}")
                         raise ValueError(f"Invalid JSONL format detected at line {i}.")
         print("Validation completed: The output is proper JSONL.")
+
+    @staticmethod
+    def process_data(data: list, output_path: str) -> list:
+        """
+        Process data and write conversations to an output file.
+        Each line will start with the format {"conversations": [...]}.
+        """
+        preview_entries = []
+        conversations_found = False
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for entry in data:
+                conversations = DatasetConverter.extract_conversations(entry)
+                # Create the formatted entry with the required prefix
+                formatted_entry = {"conversations": conversations}
+                # Write it to the file with the required prefix
+                f.write(json.dumps(formatted_entry, ensure_ascii=False) + '\n')  # Write without escaping non-ASCII
+                conversations_found = True
+                if len(preview_entries) < 3:
+                    preview_entries.append(formatted_entry)  # Store formatted entry for preview
+
+        status_message = (
+            "Conversations completed successfully."
+            if conversations_found
+            else "No conversations found for this dataset."
+        )
+        print(status_message)
+
+        DatasetConverter.validate_jsonl(output_path)
+
+        return preview_entries
+
+# Example usage
+if __name__ == "__main__":
+    input_path = "input.json"  # Replace with your input file path
+    output_path = "output.jsonl"  # Replace with your desired output file path
+    converter = DatasetConverter()
+    data = converter.load_data(input_path)
+    preview = converter.process_data(data, output_path)
+    print("Preview of processed conversations:", preview)

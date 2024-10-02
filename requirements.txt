@@ -21,3 +21,5 @@ pyspellchecker
 textblob
 markdown2
 language_tool_python
+sentencepiece
+protobuf

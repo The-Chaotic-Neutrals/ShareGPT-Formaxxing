@@ -136,7 +136,9 @@ class DeduplicationApp:
 
     def generate_conversation_id(self, conversation):
         """Generate a unique identifier for a conversation based on its content."""
-        conversation_text = ''.join(turn.get('value', '') for turn in conversation.get('conversations', []))
+        conversation_text = ''.join(
+            turn['value'] for turn in conversation.get('conversations', []) if turn.get('value') is not None
+        )
         return hash(conversation_text)
 
 # Sample usage

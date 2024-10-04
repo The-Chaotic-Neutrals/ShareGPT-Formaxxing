@@ -1,4 +1,10 @@
 
 /venv
 /__pycache__
-classified/GU_Instruct-v4-ShareGPT-classified.jsonl
+last_filter_file.txt
+app.log
+/classified
+/converted
+/deduplicated
+/deslopped
+/filtered

@@ -42,8 +42,27 @@ python -c "import spacy; spacy.load('en_core_web_sm')" || (
     exit /b 1
 )
 
+:: Download the flash-attn wheel from GitHub
+echo Downloading flash-attn wheel...
+curl -L -o flash_attn-2.6.3+cu123torch2.4.0cxx11abiFALSE-cp311-cp311-win_amd64.whl ^
+https://github.com/bdashore3/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3+cu123torch2.4.0cxx11abiFALSE-cp311-cp311-win_amd64.whl || (
+    echo Failed to download flash-attn wheel. Exiting.
+    exit /b 1
+)
+
+:: Install the flash-attn wheel
+echo Installing flash-attn wheel...
+pip install flash_attn-2.6.3+cu123torch2.4.0cxx11abiFALSE-cp311-cp311-win_amd64.whl || (
+    echo Failed to install flash-attn wheel. Exiting.
+    exit /b 1
+)
+
+:: Clean up downloaded wheel file
+echo Cleaning up...
+del flash_attn-2.6.3+cu123torch2.4.0cxx11abiFALSE-cp311-cp311-win_amd64.whl
+
 :: Notify the user
-echo Virtual environment is set up, and requirements have been installed.
+echo Virtual environment is set up, and all requirements have been installed.
 
 :: Deactivate the virtual environment
 deactivate

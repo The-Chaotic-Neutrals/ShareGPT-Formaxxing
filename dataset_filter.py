@@ -3,7 +3,6 @@ import re
 import logging
 from pathlib import Path
 
-
 logging.basicConfig(level=logging.INFO)
 
 def ends_with_letter_number_comma(text):
@@ -42,22 +41,34 @@ def filter_dataset(input_path, output_dir):
                 # Process conversations
                 conversations = item.get("conversations", [])
 
-                # Check for blank turns and invalid endings
+                # Check for blank turns, invalid endings, and null 'gpt' values
                 has_blank_turn = False
                 has_invalid_ending = False
+                has_null_gpt_value = False
+                
                 for msg in conversations:
                     value = msg.get('value')
+                    role = msg.get('from')
+
+                    # Check for blank or non-string values
                     if value is None or not isinstance(value, str) or not value.strip():
                         has_blank_turn = True
                         break
+
+                    # Check for invalid endings
                     if ends_with_letter_number_comma(value):
                         has_invalid_ending = True
                         break
 
-                if has_blank_turn or has_invalid_ending:
-                    continue  # Skip this conversation
+                    # Check for null 'gpt' value
+                    if role == 'gpt' and value is None:
+                        has_null_gpt_value = True
+                        break
 
-                
+                # Skip conversations that fail any of the checks
+                if has_blank_turn or has_invalid_ending or has_null_gpt_value:
+                    continue
+
                 # Check if both roles are present
                 roles = set(msg.get('from') for msg in conversations)
                 if 'human' in roles and 'gpt' in roles:

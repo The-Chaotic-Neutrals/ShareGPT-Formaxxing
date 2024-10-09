@@ -5,8 +5,15 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
 
+# Adjusted regular expression to match exactly two letters inside brackets, e.g., [xx]
+tag_pattern = re.compile(r'\[[a-zA-Z]{2}\]')
+
 def ends_with_letter_number_comma(text):
     return bool(re.search(r'[a-zA-Z0-9,]$', text.strip()))
+
+def remove_two_letter_tags(text):
+    # Use regular expression to replace two-letter tags inside square brackets
+    return tag_pattern.sub('', text)
 
 def filter_dataset(input_path, output_dir):
     try:
@@ -41,14 +48,26 @@ def filter_dataset(input_path, output_dir):
                 # Process conversations
                 conversations = item.get("conversations", [])
 
-                # Check for blank turns, invalid endings, and null 'gpt' values
+                # Check for blank turns, invalid endings, null 'gpt' values, "[deleted by user]", and duplicate content
                 has_blank_turn = False
                 has_invalid_ending = False
                 has_null_gpt_value = False
+                has_deleted_by_user = False
                 
-                for msg in conversations:
+                filtered_conversations = []
+                for i, msg in enumerate(conversations):
                     value = msg.get('value')
                     role = msg.get('from')
+
+                    # Remove two-letter tags like [xx] from the message
+                    if value:
+                        value = remove_two_letter_tags(value)
+                        msg['value'] = value
+
+                    # Check if the message contains "[deleted by user]"
+                    if value and "[deleted by user]" in value:
+                        has_deleted_by_user = True
+                        break
 
                     # Check for blank or non-string values
                     if value is None or not isinstance(value, str) or not value.strip():
@@ -65,22 +84,35 @@ def filter_dataset(input_path, output_dir):
                         has_null_gpt_value = True
                         break
 
+                    # Remove duplicate system turns if the next human turn has the same value
+                    if role == 'system' and i < len(conversations) - 1:
+                        next_msg = conversations[i + 1]
+                        next_value = next_msg.get('value')
+
+                        # Ensure both values are cleaned (strip and lower) and check if they are identical
+                        if next_msg.get('from') == 'human' and value.strip().lower() == next_value.strip().lower():
+                            continue  # Skip this system message
+                    
+                    # Add non-duplicate, valid messages to the filtered list
+                    filtered_conversations.append(msg)
+
                 # Skip conversations that fail any of the checks
-                if has_blank_turn or has_invalid_ending or has_null_gpt_value:
+                if has_blank_turn or has_invalid_ending or has_null_gpt_value or has_deleted_by_user:
                     continue
 
                 # Check if both roles are present
-                roles = set(msg.get('from') for msg in conversations)
+                roles = set(msg.get('from') for msg in filtered_conversations)
                 if 'human' in roles and 'gpt' in roles:
                     # Remove the last human message if it's the last one
-                    if conversations and conversations[-1].get('from') == 'human':
-                        conversations = conversations[:-1]
+                    if filtered_conversations and filtered_conversations[-1].get('from') == 'human':
+                        filtered_conversations = filtered_conversations[:-1]
                     
                     # Write filtered conversation to output file
-                    filtered_item = {"conversations": conversations}
-                    json.dump(filtered_item, outfile, ensure_ascii=False)
-                    outfile.write('\n')
-                    filtered_data_count += 1
+                    if filtered_conversations:
+                        filtered_item = {"conversations": filtered_conversations}
+                        json.dump(filtered_item, outfile, ensure_ascii=False)
+                        outfile.write('\n')
+                        filtered_data_count += 1
         
         logging.info(f"Filtered data saved to {output_file}")
         logging.info(f"Original size: {original_data_count}")

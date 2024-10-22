@@ -20,6 +20,9 @@ class DatasetFilterApp:
         # Configure the top-level window
         self.root.configure(bg=self.theme['bg'])
 
+        # Initialize filtering method toggle variables
+        self.init_filtering_variables()
+
         # Create and place widgets
         self.create_widgets()
 
@@ -29,6 +32,15 @@ class DatasetFilterApp:
             self.root.iconbitmap(icon_path)
         else:
             print("Icon file not found.")
+
+    def init_filtering_variables(self):
+        # Initialize boolean variables for each filtering method
+        self.check_blank_turns = tk.BooleanVar(value=True)
+        self.check_invalid_endings = tk.BooleanVar(value=True)
+        self.check_null_gpt = tk.BooleanVar(value=True)
+        self.check_deleted_by_user = tk.BooleanVar(value=True)
+        self.check_duplicate_system = tk.BooleanVar(value=True)
+        self.remove_two_letter_tags = tk.BooleanVar(value=True)
 
     def create_widgets(self):
         self.label = tk.Label(self.root, text="Dataset File:", bg=self.theme['bg'], fg=self.theme['fg'])
@@ -40,11 +52,34 @@ class DatasetFilterApp:
         self.browse_button = tk.Button(self.root, text="Browse...", command=self.select_file, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
         self.browse_button.grid(row=0, column=2, padx=10, pady=10)
 
+        # Add checkboxes for each filtering method
+        self.add_checkboxes()
+
         self.process_button = tk.Button(self.root, text="Process Dataset", command=self.process_dataset, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
-        self.process_button.grid(row=1, column=0, columnspan=3, pady=10)
+        self.process_button.grid(row=8, column=0, columnspan=3, pady=10)
 
         self.result_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.result_label.grid(row=2, column=0, columnspan=3, padx=10, pady=10)
+        self.result_label.grid(row=9, column=0, columnspan=3, padx=10, pady=10)
+
+    def add_checkboxes(self):
+        # Create checkboxes for each filtering method
+        self.blank_turns_cb = tk.Checkbutton(self.root, text="Check Blank Turns", variable=self.check_blank_turns, bg=self.theme['bg'], fg=self.theme['fg'])
+        self.blank_turns_cb.grid(row=1, column=0, columnspan=2, sticky='w', padx=10, pady=2)
+
+        self.invalid_endings_cb = tk.Checkbutton(self.root, text="Check Invalid Endings", variable=self.check_invalid_endings, bg=self.theme['bg'], fg=self.theme['fg'])
+        self.invalid_endings_cb.grid(row=2, column=0, columnspan=2, sticky='w', padx=10, pady=2)
+
+        self.null_gpt_cb = tk.Checkbutton(self.root, text="Check Null GPT", variable=self.check_null_gpt, bg=self.theme['bg'], fg=self.theme['fg'])
+        self.null_gpt_cb.grid(row=3, column=0, columnspan=2, sticky='w', padx=10, pady=2)
+
+        self.deleted_by_user_cb = tk.Checkbutton(self.root, text="Check '[Deleted by User]'", variable=self.check_deleted_by_user, bg=self.theme['bg'], fg=self.theme['fg'])
+        self.deleted_by_user_cb.grid(row=4, column=0, columnspan=2, sticky='w', padx=10, pady=2)
+
+        self.duplicate_system_cb = tk.Checkbutton(self.root, text="Check Duplicate System", variable=self.check_duplicate_system, bg=self.theme['bg'], fg=self.theme['fg'])
+        self.duplicate_system_cb.grid(row=5, column=0, columnspan=2, sticky='w', padx=10, pady=2)
+
+        self.two_letter_tags_cb = tk.Checkbutton(self.root, text="Remove Two-Letter Tags", variable=self.remove_two_letter_tags, bg=self.theme['bg'], fg=self.theme['fg'])
+        self.two_letter_tags_cb.grid(row=6, column=0, columnspan=2, sticky='w', padx=10, pady=2)
 
     def select_file(self):
         file_path = filedialog.askopenfilename(
@@ -79,8 +114,17 @@ class DatasetFilterApp:
             return
 
         try:
-            # Process the dataset using the filter_dataset function
-            output_message = filter_dataset(file_path, Path(__file__).parent.absolute())
+            # Get the selected options from the checkboxes
+            output_message = filter_dataset(
+                file_path,
+                Path(__file__).parent.absolute(),
+                check_blank_turns=self.check_blank_turns.get(),
+                check_invalid_endings=self.check_invalid_endings.get(),
+                check_null_gpt=self.check_null_gpt.get(),
+                check_deleted_by_user=self.check_deleted_by_user.get(),
+                check_duplicate_system=self.check_duplicate_system.get(),
+                remove_two_letter_tags_flag=self.remove_two_letter_tags.get()
+            )
             self.result_label.config(text=output_message)
         except ValueError as e:
             messagebox.showerror("Processing Error", str(e))

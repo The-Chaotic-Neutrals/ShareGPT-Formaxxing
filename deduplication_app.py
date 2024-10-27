@@ -1,22 +1,24 @@
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
+from tkinter.ttk import Progressbar
 import jsonlines
 import os
 import logging
 from threading import Thread
+import hashlib
+from datasketch import MinHash, MinHashLSH
 
 class DeduplicationApp:
     def __init__(self, root, theme):
         self.root = root
         self.theme = theme
         self.duplicate_count = 0
-
-        # Set to store unique conversation identifiers (e.g., hashes)
-        self.unique_conversations = set()
+        self.unique_conversations = set()  # For SHA-256 deduplication
+        self.threshold = 0.8  # Similarity threshold for MinHash deduplication
+        self.use_min_hash = tk.BooleanVar()  # Variable to track deduplication method choice
 
         # Set up the user interface
         self.setup_ui()
-
         # Configure logging
         self.configure_logging()
 
@@ -34,7 +36,7 @@ class DeduplicationApp:
         self.window = tk.Toplevel(self.root)
         self.window.title("Deduplication App")
         self.window.configure(bg=self.theme.get('bg', 'white'))
-        self.window.iconbitmap('icon.ico')  # Ensure 'icon.ico' is in the same directory as your script
+        self.window.iconbitmap('icon.ico')  # Ensure 'icon.ico' is in the same directory
 
         # Main frame
         main_frame = tk.Frame(self.window, bg=self.theme.get('bg', 'white'))
@@ -53,6 +55,16 @@ class DeduplicationApp:
         self.input_file_button = tk.Button(self.file_frame, text="Browse", command=self.browse_input_file, bg=self.theme.get('button_bg', 'lightgrey'))
         self.input_file_button.pack(side=tk.LEFT, padx=5)
 
+        # Toggle for deduplication method
+        self.method_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
+        self.method_frame.pack(pady=5)
+        
+        self.dedup_method_label = tk.Label(self.method_frame, text="Choose Deduplication Method:", bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
+        self.dedup_method_label.pack(side=tk.LEFT, padx=5)
+
+        self.method_toggle = tk.Checkbutton(self.method_frame, text="Use Min-Hash Deduplication", variable=self.use_min_hash, bg=self.theme.get('bg', 'white'))
+        self.method_toggle.pack(side=tk.LEFT, padx=5)
+
         self.dedup_button = tk.Button(main_frame, text="Remove Duplicates", command=self.start_deduplication, bg=self.theme.get('button_bg', 'lightgrey'))
         self.dedup_button.pack(pady=10)
 
@@ -66,6 +78,10 @@ class DeduplicationApp:
 
         self.duplicate_count_label = tk.Label(self.count_frame, text="Duplicate Count: 0", bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
         self.duplicate_count_label.pack(side=tk.LEFT, padx=5)
+
+        # Progress bar
+        self.progress = Progressbar(main_frame, orient='horizontal', mode='determinate')
+        self.progress.pack(fill=tk.X, padx=10, pady=5)
 
     def update_status(self, message):
         """Update the status bar with a message."""
@@ -91,55 +107,96 @@ class DeduplicationApp:
         thread.start()
 
     def deduplicate_file(self):
-        """Remove duplicates from the input file and write to an output file."""
+        """Deduplicate using the selected method (SHA-256 or Min-Hash)."""
         input_file = self.input_file_entry.get()
         if not input_file.endswith('.jsonl'):
             self.update_status("Invalid file type. Please select a .jsonl file.")
             return
 
-        # Create output directory if it doesn't exist
+        # Prepare output file
         output_dir = "deduplicated"
         os.makedirs(output_dir, exist_ok=True)
-
         base_name = os.path.splitext(os.path.basename(input_file))[0]
         output_file = os.path.join(output_dir, f"{base_name}-deduplicated.jsonl")
 
         self.update_status("Deduplication started...")
-        try:
-            self.duplicate_count = 0
-            self.unique_conversations.clear()  # Clear previous unique identifiers
+        self.duplicate_count = 0
+        self.unique_conversations.clear()  # Clear previous unique identifiers
 
-            # Open input and output files with explicit encoding handling
-            with jsonlines.open(input_file, mode='r') as reader:
-                with jsonlines.open(output_file, mode='w') as writer:
-                    for conversation in reader:
-                        # Generate a unique identifier for deduplication
-                        conversation_id = self.generate_conversation_id(conversation)
-                        if conversation_id in self.unique_conversations:
-                            self.duplicate_count += 1
-                            logging.debug(f"Duplicate detected. Total duplicates: {self.duplicate_count}")
-                            self.update_duplicate_count(self.duplicate_count)
-                            continue
-                        self.unique_conversations.add(conversation_id)
-                        writer.write(conversation)
+        if self.use_min_hash.get():
+            self.lsh = MinHashLSH(threshold=self.threshold, num_perm=128)
+            self.perform_min_hash_deduplication(input_file, output_file)
+        else:
+            self.perform_sha256_deduplication(input_file, output_file)
+
+    def perform_sha256_deduplication(self, input_file, output_file):
+        """Exact deduplication using SHA-256 hashing."""
+        try:
+            with jsonlines.open(input_file, mode='r') as reader, jsonlines.open(output_file, mode='w') as writer:
+                total_lines = sum(1 for _ in open(input_file, 'r'))
+                for i, conversation in enumerate(reader):
+                    # Update progress
+                    self.progress['value'] = (i / total_lines) * 100
+                    self.root.update_idletasks()
+
+                    conversation_id = self.generate_sha256_hash(conversation)
+                    if conversation_id in self.unique_conversations:
+                        self.duplicate_count += 1
+                        self.update_duplicate_count(self.duplicate_count)
+                        continue
+
+                    self.unique_conversations.add(conversation_id)
+                    writer.write(conversation)
 
             self.update_status(f"Deduplication complete. Output file: {output_file}")
-        except UnicodeDecodeError as e:
-            logging.error(f"Unicode decoding error: {e}", exc_info=True)
-            self.update_status(f"Unicode decoding error: {e}")
-        except jsonlines.jsonlines.InvalidLineError as e:
-            logging.error(f"Invalid JSONL format: {e}", exc_info=True)
-            self.update_status(f"Invalid JSONL format: {e}")
+            messagebox.showinfo("Deduplication Complete", f"Output saved to {output_file}")
         except Exception as e:
-            logging.error(f"Error processing file: {e}", exc_info=True)
-            self.update_status(f"Error processing file: {e}")
+            logging.error(f"Error during SHA-256 deduplication: {e}", exc_info=True)
 
-    def generate_conversation_id(self, conversation):
-        """Generate a unique identifier for a conversation based on its content."""
-        conversation_text = ''.join(
-            turn['value'] for turn in conversation.get('conversations', []) if turn.get('value') is not None
-        )
-        return hash(conversation_text)
+    def perform_min_hash_deduplication(self, input_file, output_file):
+        """Near-duplicate detection using MinHash deduplication."""
+        try:
+            with jsonlines.open(input_file, mode='r') as reader, jsonlines.open(output_file, mode='w') as writer:
+                total_lines = sum(1 for _ in open(input_file, 'r'))
+                for i, conversation in enumerate(reader):
+                    # Update progress
+                    self.progress['value'] = (i / total_lines) * 100
+                    self.root.update_idletasks()
+
+                    conversation_text = ''.join(turn['value'] for turn in conversation.get('conversations', []) if turn.get('value') is not None)
+                    shingles = self.shingle_text(conversation_text)
+                    m = self.generate_min_hash(shingles)
+
+                    # Check if similar signature already exists
+                    if any(self.lsh.query(m)):
+                        self.duplicate_count += 1
+                        self.update_duplicate_count(self.duplicate_count)
+                        continue
+
+                    # Add to LSH and write unique conversation to output
+                    self.lsh.insert(conversation_text, m)
+                    writer.write(conversation)
+
+            self.update_status(f"Deduplication complete. Output file: {output_file}")
+            messagebox.showinfo("Deduplication Complete", f"Output saved to {output_file}")
+        except Exception as e:
+            logging.error(f"Error during MinHash deduplication: {e}", exc_info=True)
+
+    def shingle_text(self, text, k=5):
+        """Generate k-shingles for text."""
+        return set(text[i:i+k] for i in range(len(text) - k + 1))
+
+    def generate_sha256_hash(self, conversation):
+        """Generate a SHA-256 hash for a conversation."""
+        conversation_text = ''.join(turn['value'] for turn in conversation.get('conversations', []) if turn.get('value') is not None)
+        return hashlib.sha256(conversation_text.encode('utf-8')).hexdigest()
+
+    def generate_min_hash(self, shingles):
+        """Generate a MinHash signature from shingles."""
+        m = MinHash(num_perm=128)
+        for shingle in shingles:
+            m.update(shingle.encode('utf-8'))
+        return m
 
 # Sample usage
 if __name__ == "__main__":

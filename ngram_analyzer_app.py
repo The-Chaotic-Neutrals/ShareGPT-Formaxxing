@@ -182,8 +182,15 @@ class NgramAnalyzerApp:
 
                 ax.barh([' '.join(gram) for gram in grams], counts, label=f'{n}-grams', color=colors(i))
 
+            # Set label colors
             ax.set_xlabel('Frequency', color=self.theme.get('fg', 'gold'))
+            ax.set_ylabel('N-grams', color=self.theme.get('fg', 'gold'))
             ax.set_title('Top 10 Most Common N-grams', color=self.theme.get('fg', 'gold'))
+
+            # Set tick parameters to use the gold color for x and y ticks
+            ax.tick_params(axis='x', colors=self.theme.get('fg', 'gold'))
+            ax.tick_params(axis='y', colors=self.theme.get('fg', 'gold'))
+
             ax.legend()
 
             # Adjust margins to avoid clipping

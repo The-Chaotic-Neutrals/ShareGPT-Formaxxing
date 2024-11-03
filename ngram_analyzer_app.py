@@ -8,6 +8,15 @@ import threading
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from nltk.corpus import stopwords
+import nltk
+
+# Attempt to download stopwords if not already available
+try:
+    STOP_WORDS = set(stopwords.words("english"))
+except LookupError:
+    nltk.download("stopwords")
+    STOP_WORDS = set(stopwords.words("english"))
 
 class NgramAnalyzerApp:
     def __init__(self, root, theme):
@@ -59,13 +68,27 @@ class NgramAnalyzerApp:
         self.max_length_entry.pack(side=tk.LEFT, padx=5)
         self.max_length_entry.insert(0, '5')  # Default value
 
+        # Exclude Stop Words checkbox
+        self.stopwords_var = tk.BooleanVar(value=False)
+        self.stopwords_checkbox = tk.Checkbutton(self.root, text="Exclude Stop Words", variable=self.stopwords_var, bg=self.theme.get('bg', 'black'), fg=self.theme.get('fg', 'gold'), selectcolor=self.theme.get('entry_bg', 'black'))
+        self.stopwords_checkbox.grid(row=3, column=0, pady=5, sticky='w')
+
+        # Exclude Numerical Tokens checkbox
+        self.numerical_var = tk.BooleanVar(value=False)
+        self.numerical_checkbox = tk.Checkbutton(self.root, text="Exclude Numerical Tokens", variable=self.numerical_var, bg=self.theme.get('bg', 'black'), fg=self.theme.get('fg', 'gold'), selectcolor=self.theme.get('entry_bg', 'black'))
+        self.numerical_checkbox.grid(row=4, column=0, pady=5, sticky='w')
+
         # Analyze button
         self.analyze_button = tk.Button(self.root, text="Analyze", command=self.start_analysis, bg=self.theme.get('button_bg', 'black'), fg=self.theme.get('button_fg', 'gold'))
-        self.analyze_button.grid(row=3, column=0, pady=10)
+        self.analyze_button.grid(row=5, column=0, pady=10)
+
+        # Clear button
+        self.clear_button = tk.Button(self.root, text="Clear", command=self.clear_results, bg=self.theme.get('button_bg', 'black'), fg=self.theme.get('button_fg', 'gold'))
+        self.clear_button.grid(row=5, column=1, pady=10)
 
         # Results area
         self.results_area = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, width=80, height=20, bg=self.theme.get('entry_bg', 'black'), fg=self.theme.get('entry_fg', 'gold'))
-        self.results_area.grid(row=4, column=0, padx=10, pady=10)
+        self.results_area.grid(row=6, column=0, padx=10, pady=10, columnspan=2)
 
         # Set the icon for the root window
         self.set_icon(self.root)
@@ -85,16 +108,32 @@ class NgramAnalyzerApp:
         input_filename = self.input_file_entry.get()
         selected_role = self.role_var.get()
         role_filter = ['human', 'gpt', 'system'] if selected_role == 'all' else [selected_role]
-        min_length = int(self.min_length_entry.get())
-        max_length = int(self.max_length_entry.get())
+        
+        # Validate numeric input for lengths
+        try:
+            min_length = int(self.min_length_entry.get())
+            max_length = int(self.max_length_entry.get())
+            if min_length < 1 or max_length < min_length:
+                raise ValueError("Invalid length range.")
+        except ValueError as e:
+            self.root.after(0, self.show_error, str(e))
+            return
+
+        exclude_stopwords = self.stopwords_var.get()
+        exclude_numerical = self.numerical_var.get()
 
         # Clear results area
         self.results_area.delete(1.0, tk.END)
 
         # Start analysis
         start_time = time.time()
-        ngrams = count_ngrams(process_jsonl(input_filename, role_filter), min_length, max_length)
-        results = self.format_results(ngrams)
+        try:
+            ngrams = count_ngrams(process_jsonl(input_filename, role_filter), min_length, max_length, exclude_stopwords, exclude_numerical)
+            results = self.format_results(ngrams)
+        except Exception as e:
+            self.root.after(0, self.show_error, f"Error during processing: {str(e)}")
+            return
+
         elapsed_time = time.time() - start_time
 
         # Display results
@@ -171,6 +210,23 @@ class NgramAnalyzerApp:
         # Schedule the plot creation to run in the main thread
         self.root.after(0, create_plot)
 
+    def clear_results(self):
+        """Clear all inputs and results."""
+        self.input_file_entry.delete(0, tk.END)
+        self.role_var.set('all')
+        self.min_length_entry.delete(0, tk.END)
+        self.min_length_entry.insert(0, '3')
+        self.max_length_entry.delete(0, tk.END)
+        self.max_length_entry.insert(0, '5')
+        self.stopwords_var.set(False)
+        self.numerical_var.set(False)
+        self.results_area.delete(1.0, tk.END)
+
+    def show_error(self, message):
+        """Display an error message in the results area."""
+        self.results_area.delete(1.0, tk.END)
+        self.results_area.insert(tk.END, f"Error: {message}\n")
+
     def set_icon(self, window):
         """Set the icon for the given window."""
         try:
@@ -178,13 +234,50 @@ class NgramAnalyzerApp:
         except Exception as e:
             print(f"Icon could not be set: {e}")
 
-def tokenize(string):
-    return re.findall(r'\b\S+\b', string.lower())
+def tokenize(string, exclude_stopwords, exclude_numerical):
+    words = re.findall(r'\b\S+\b', string.lower())
+    if exclude_stopwords:
+        words = [word for word in words if word not in STOP_WORDS]
+    if exclude_numerical:
+        words = [word for word in words if not word.isdigit()]
+    return words
 
-def count_ngrams(lines, min_length=3, max_length=5):
+def count_ngrams(lines, min_length=3, max_length=5, exclude_stopwords=False, exclude_numerical=False):
     lengths = range(min_length, max_length + 1)
     ngrams = {length: collections.Counter() for length in lengths}
-    queue = collections.deque(maxlen=max_length)
+
+    for line in lines:
+        # Split the line into words and apply filters
+        words = tokenize(line, exclude_stopwords, exclude_numerical)
+        if not words:
+            continue
+
+        # Process each possible n-gram length
+        for n in lengths:
+            # Generate n-grams for current length
+            for i in range(len(words) - n + 1):
+                # Check if the n-gram contains repeated words
+                current_slice = words[i:i + n]
+                if len(set(current_slice)) == 1 and len(current_slice) > 2:
+                    # Skip if all words in the n-gram are the same
+                    continue
+                
+                # Check for alternating patterns (like "ha ha ha")
+                if len(current_slice) > 2:
+                    is_alternating = True
+                    pattern = current_slice[:2]  # Get first two words as pattern
+                    for j in range(2, len(current_slice)):
+                        if current_slice[j] != pattern[j % 2]:
+                            is_alternating = False
+                            break
+                    if is_alternating:
+                        continue
+
+                ngram = tuple(current_slice)
+                if len(ngram) == n:  # Only count complete n-grams
+                    ngrams[n][ngram] += 1
+
+    return ngrams
 
     def add_queue():
         current = tuple(queue)
@@ -193,14 +286,17 @@ def count_ngrams(lines, min_length=3, max_length=5):
                 ngrams[length][current[:length]] += 1
 
     for line in lines:
-        for word in tokenize(line):
+        # Reset the queue for each line
+        queue.clear()
+        for word in tokenize(line, exclude_stopwords, exclude_numerical):
             queue.append(word)
             if len(queue) >= max_length:
                 add_queue()
 
-    while len(queue) > min_length:
-        queue.popleft()
-        add_queue()
+        # Ensure we process remaining words in the queue after the line ends
+        while len(queue) > min_length:
+            queue.popleft()
+            add_queue()
 
     return ngrams
 

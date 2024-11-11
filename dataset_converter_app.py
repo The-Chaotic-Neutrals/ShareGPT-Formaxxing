@@ -25,10 +25,10 @@ class DatasetConverterApp:
             print("Icon file not found.")
 
     def setup_ui(self):
-        self.top.geometry("600x350")
+        self.top.geometry("600x400")
 
         # Input file selection
-        self.entry_input_file = self.create_labeled_entry("Input File:", self.select_input_file, row=0)
+        self.entry_input_file = self.create_labeled_entry("Input Files:", self.select_input_files, row=0)
 
         # Convert button
         self.convert_button = tk.Button(
@@ -69,99 +69,59 @@ class DatasetConverterApp:
 
         return entry
 
-    def select_input_file(self):
+    def select_input_files(self):
         filetypes = [
             ("All Supported Files", "*.json;*.jsonl"),
             ("JSON files", "*.json"),
             ("JSON Lines files", "*.jsonl")
         ]
         try:
-            file_path = filedialog.askopenfilename(filetypes=filetypes)
-            if file_path:
+            file_paths = filedialog.askopenfilenames(filetypes=filetypes)
+            if file_paths:
                 self.entry_input_file.delete(0, tk.END)
-                self.entry_input_file.insert(0, file_path)
-                self.update_status(f"Selected file: {file_path}")
+                self.entry_input_file.insert(0, "; ".join(file_paths))
+                self.update_status(f"Selected files: {', '.join(file_paths)}")
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
             messagebox.showerror("File Selection Error", f"An error occurred: {str(e)}")
 
     def on_convert_button_click(self):
-        input_path = self.entry_input_file.get()
-        if input_path:
+        input_paths = self.entry_input_file.get().split("; ")
+        if input_paths:
             self.convert_button.config(state=tk.DISABLED)  # Disable button
-            self.convert_dataset(input_path)
+            self.convert_multiple_datasets(input_paths)
             self.convert_button.config(state=tk.NORMAL)  # Re-enable button
         else:
-            self.update_status("No input file selected.")
-            messagebox.showerror("Input Error", "Please select an input file.")
+            self.update_status("No input files selected.")
+            messagebox.showerror("Input Error", "Please select input files.")
 
-    def convert_dataset(self, input_path):
+    def convert_multiple_datasets(self, input_paths):
         try:
             self.update_status("Conversion in progress...")
-            logging.info(f"Starting conversion for {input_path}")
+            logging.info(f"Starting conversion for {', '.join(input_paths)}")
 
-            # Automatically generate output path
-            output_path = self.generate_output_path(input_path)
+            # Generate output directory
+            output_dir = os.path.join(os.getcwd(), 'converted')
+            os.makedirs(output_dir, exist_ok=True)  # Create the directory if it doesn't exist
 
-            # Load data without sanitization
-            data = self.load_data(input_path)
+            # Process each file
+            for input_path in input_paths:
+                self.update_status(f"Processing file: {input_path}")
+                logging.info(f"Processing file: {input_path}")
 
-            # Check if data is loaded correctly
-            if not data:
-                raise ValueError("No data found in the file.")
+                # Process each file
+                preview_entries = DatasetConverter.process_multiple_files([input_path], output_dir)
+                self.update_preview(preview_entries.get(os.path.basename(input_path), []))
 
-            # Write processed data to output file
-            self.write_output_file(output_path, data)
-
-            # Update the preview
-            self.update_preview(data)
-
-            # Update status bar with success message
-            self.update_status(f"Conversion completed: Data saved to {output_path}.")
+            self.update_status(f"Conversion completed for all selected files.")
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
-    def write_output_file(self, output_path, data):
-        with open(output_path, 'w', encoding='utf-8') as outfile:
-            if isinstance(data, list):
-                for record in data:
-                    json.dump(record, outfile, ensure_ascii=False)
-                    outfile.write('\n')
-            else:
-                json.dump(data, outfile, ensure_ascii=False, indent=2)
-
-    def update_preview(self, data):
-        preview_data = data[:10] if isinstance(data, list) else [data]
+    def update_preview(self, preview_entries):
+        preview_data = preview_entries[:10] if isinstance(preview_entries, list) else [preview_entries]
         self.preview_text.delete(1.0, tk.END)
         self.preview_text.insert(tk.END, json.dumps(preview_data, ensure_ascii=False, indent=2))
-
-    def generate_output_path(self, input_path):
-        # Define the output directory relative to the script's current directory
-        output_dir = os.path.join(os.getcwd(), 'converted')
-        os.makedirs(output_dir, exist_ok=True)  # Create the directory if it doesn't exist
-
-        base_name = os.path.splitext(os.path.basename(input_path))[0]
-        output_file = base_name + '_converted.jsonl'
-
-        return os.path.join(output_dir, output_file)
-
-    def load_data(self, file_path):
-        ext = os.path.splitext(file_path)[1].lower()
-        self.update_status(f"Loading data from {file_path}")
-
-        try:
-            if ext == '.json':
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as infile:
-                    return json.load(infile)
-            elif ext == '.jsonl':
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as infile:
-                    return [json.loads(line) for line in infile if line.strip()]
-            else:
-                raise ValueError("Unsupported file format.")
-        except Exception as e:
-            self.update_status(f"Error loading data: {str(e)}")
-            return None
 
     def update_status(self, message):
         self.status_bar.config(state=tk.NORMAL)  # Make the text editable to update it

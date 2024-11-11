@@ -211,11 +211,25 @@ class DatasetConverter:
 
         return preview_entries
 
+    @staticmethod
+    def process_multiple_files(input_paths: list, output_dir: str) -> dict:
+        """
+        Process multiple files separately and output them as separate JSONL files.
+        """
+        preview_entries = {}
+        for input_path in input_paths:
+            filename = os.path.basename(input_path)
+            output_path = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}.jsonl")
+            print(f"Processing file: {filename}")
+            data = DatasetConverter.load_data(input_path)
+            preview = DatasetConverter.process_data(data, output_path)
+            preview_entries[filename] = preview
+        return preview_entries
+
 # Example usage
 if __name__ == "__main__":
-    input_path = "input.json"  # Replace with your input file path
-    output_path = "output.jsonl"  # Replace with your desired output file path
+    input_paths = ["input1.json", "input2.json"]  # List of input files
+    output_dir = "output"  # Directory where separate output files will be saved
     converter = DatasetConverter()
-    data = converter.load_data(input_path)
-    preview = converter.process_data(data, output_path)
+    preview = converter.process_multiple_files(input_paths, output_dir)
     print("Preview of processed conversations:", preview)

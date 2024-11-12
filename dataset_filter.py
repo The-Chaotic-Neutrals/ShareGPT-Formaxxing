@@ -1,12 +1,9 @@
-import json
+import json 
 import re
 import logging
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
-
-# Adjusted regular expression to match exactly two letters inside brackets, e.g., [xx]
-tag_pattern = re.compile(r'\[[a-zA-Z]{2}\]')
 
 def ends_with_letter_number_comma(text):
     # Check if text is a valid string before processing
@@ -14,19 +11,11 @@ def ends_with_letter_number_comma(text):
         return bool(re.search(r'[a-zA-Z0-9,]$', text.strip()))
     return False  # Return False if text is None or not a string
 
-def remove_two_letter_tags(text):
-    # Use regular expression to replace two-letter tags inside square brackets
-    if isinstance(text, str):
-        return tag_pattern.sub('', text)
-    return text
-
 def filter_dataset(input_path, output_dir, 
                    check_blank_turns=True, 
                    check_invalid_endings=True, 
                    check_null_gpt=True, 
-                   check_deleted_by_user=True, 
-                   check_duplicate_system=True, 
-                   remove_two_letter_tags_flag=True):
+                   check_duplicate_system=True):  # Removed deleted-by-user and two-letter tag removal params
     
     try:
         # Prepare paths
@@ -64,22 +53,11 @@ def filter_dataset(input_path, output_dir,
                 has_blank_turn = False
                 has_invalid_ending = False
                 has_null_gpt_value = False
-                has_deleted_by_user = False
                 
                 filtered_conversations = []
                 for i, msg in enumerate(conversations):
                     value = msg.get('value')
                     role = msg.get('from')
-
-                    # Remove two-letter tags like [xx] from the message (if enabled)
-                    if remove_two_letter_tags_flag and value:
-                        value = remove_two_letter_tags(value)
-                        msg['value'] = value
-
-                    # Check if the message contains "[deleted by user]" (if enabled)
-                    if check_deleted_by_user and value and "[deleted by user]" in value:
-                        has_deleted_by_user = True
-                        break
 
                     # Check for blank or non-string values (if enabled)
                     if check_blank_turns and (value is None or not isinstance(value, str) or not value.strip()):
@@ -109,7 +87,7 @@ def filter_dataset(input_path, output_dir,
                     filtered_conversations.append(msg)
 
                 # Skip conversations that fail any of the checks
-                if has_blank_turn or has_invalid_ending or has_null_gpt_value or has_deleted_by_user:
+                if has_blank_turn or has_invalid_ending or has_null_gpt_value:
                     continue
 
                 # Check if both roles are present

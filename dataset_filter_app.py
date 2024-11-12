@@ -1,4 +1,4 @@
-import tkinter as tk
+import tkinter as tk 
 from tkinter import filedialog, messagebox
 import os
 import json
@@ -38,9 +38,7 @@ class DatasetFilterApp:
         self.check_blank_turns = tk.BooleanVar(value=True)
         self.check_invalid_endings = tk.BooleanVar(value=True)
         self.check_null_gpt = tk.BooleanVar(value=True)
-        self.check_deleted_by_user = tk.BooleanVar(value=True)
         self.check_duplicate_system = tk.BooleanVar(value=True)
-        self.remove_two_letter_tags = tk.BooleanVar(value=True)
 
     def create_widgets(self):
         self.label = tk.Label(self.root, text="Dataset File:", bg=self.theme['bg'], fg=self.theme['fg'])
@@ -56,10 +54,10 @@ class DatasetFilterApp:
         self.add_checkboxes()
 
         self.process_button = tk.Button(self.root, text="Process Dataset", command=self.process_dataset, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
-        self.process_button.grid(row=8, column=0, columnspan=3, pady=10)
+        self.process_button.grid(row=7, column=0, columnspan=3, pady=10)
 
         self.result_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.result_label.grid(row=9, column=0, columnspan=3, padx=10, pady=10)
+        self.result_label.grid(row=8, column=0, columnspan=3, padx=10, pady=10)
 
     def add_checkboxes(self):
         # Create checkboxes for each filtering method
@@ -72,14 +70,8 @@ class DatasetFilterApp:
         self.null_gpt_cb = tk.Checkbutton(self.root, text="Check Null GPT", variable=self.check_null_gpt, bg=self.theme['bg'], fg=self.theme['fg'])
         self.null_gpt_cb.grid(row=3, column=0, columnspan=2, sticky='w', padx=10, pady=2)
 
-        self.deleted_by_user_cb = tk.Checkbutton(self.root, text="Check '[Deleted by User]'", variable=self.check_deleted_by_user, bg=self.theme['bg'], fg=self.theme['fg'])
-        self.deleted_by_user_cb.grid(row=4, column=0, columnspan=2, sticky='w', padx=10, pady=2)
-
         self.duplicate_system_cb = tk.Checkbutton(self.root, text="Check Duplicate System", variable=self.check_duplicate_system, bg=self.theme['bg'], fg=self.theme['fg'])
-        self.duplicate_system_cb.grid(row=5, column=0, columnspan=2, sticky='w', padx=10, pady=2)
-
-        self.two_letter_tags_cb = tk.Checkbutton(self.root, text="Remove Two-Letter Tags", variable=self.remove_two_letter_tags, bg=self.theme['bg'], fg=self.theme['fg'])
-        self.two_letter_tags_cb.grid(row=6, column=0, columnspan=2, sticky='w', padx=10, pady=2)
+        self.duplicate_system_cb.grid(row=4, column=0, columnspan=2, sticky='w', padx=10, pady=2)
 
     def select_file(self):
         file_path = filedialog.askopenfilename(
@@ -121,9 +113,7 @@ class DatasetFilterApp:
                 check_blank_turns=self.check_blank_turns.get(),
                 check_invalid_endings=self.check_invalid_endings.get(),
                 check_null_gpt=self.check_null_gpt.get(),
-                check_deleted_by_user=self.check_deleted_by_user.get(),
-                check_duplicate_system=self.check_duplicate_system.get(),
-                remove_two_letter_tags_flag=self.remove_two_letter_tags.get()
+                check_duplicate_system=self.check_duplicate_system.get()
             )
             self.result_label.config(text=output_message)
         except ValueError as e:

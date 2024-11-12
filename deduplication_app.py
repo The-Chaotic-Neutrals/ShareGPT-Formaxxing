@@ -1,8 +1,9 @@
-import tkinter as tk
+import tkinter as tk 
 from tkinter import filedialog, messagebox
 from tkinter.ttk import Progressbar
 import jsonlines
 import os
+import json
 import logging
 from threading import Thread
 import hashlib
@@ -132,8 +133,11 @@ class DeduplicationApp:
     def perform_sha256_deduplication(self, input_file, output_file):
         """Exact deduplication using SHA-256 hashing."""
         try:
-            with jsonlines.open(input_file, mode='r') as reader, jsonlines.open(output_file, mode='w') as writer:
-                total_lines = sum(1 for _ in open(input_file, 'r'))
+            with open(input_file, mode='r', encoding='utf-8') as f_in, \
+                 open(output_file, mode='w', encoding='utf-8') as f_out:
+                reader = jsonlines.Reader(f_in)
+                total_lines = sum(1 for _ in f_in)
+                f_in.seek(0)  # Reset file pointer to the beginning
                 for i, conversation in enumerate(reader):
                     # Update progress
                     self.progress['value'] = (i / total_lines) * 100
@@ -146,7 +150,7 @@ class DeduplicationApp:
                         continue
 
                     self.unique_conversations.add(conversation_id)
-                    writer.write(conversation)
+                    f_out.write(json.dumps(conversation, ensure_ascii=False) + '\n')
 
             self.update_status(f"Deduplication complete. Output file: {output_file}")
             messagebox.showinfo("Deduplication Complete", f"Output saved to {output_file}")
@@ -156,8 +160,11 @@ class DeduplicationApp:
     def perform_min_hash_deduplication(self, input_file, output_file):
         """Near-duplicate detection using MinHash deduplication."""
         try:
-            with jsonlines.open(input_file, mode='r') as reader, jsonlines.open(output_file, mode='w') as writer:
-                total_lines = sum(1 for _ in open(input_file, 'r'))
+            with open(input_file, mode='r', encoding='utf-8') as f_in, \
+                 open(output_file, mode='w', encoding='utf-8') as f_out:
+                reader = jsonlines.Reader(f_in)
+                total_lines = sum(1 for _ in f_in)
+                f_in.seek(0)  # Reset file pointer to the beginning
                 for i, conversation in enumerate(reader):
                     # Update progress
                     self.progress['value'] = (i / total_lines) * 100
@@ -175,7 +182,7 @@ class DeduplicationApp:
 
                     # Add to LSH and write unique conversation to output
                     self.lsh.insert(conversation_text, m)
-                    writer.write(conversation)
+                    f_out.write(json.dumps(conversation, ensure_ascii=False) + '\n')
 
             self.update_status(f"Deduplication complete. Output file: {output_file}")
             messagebox.showinfo("Deduplication Complete", f"Output saved to {output_file}")

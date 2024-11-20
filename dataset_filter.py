@@ -1,6 +1,7 @@
-import json 
+import json
 import re
 import logging
+import argparse
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
@@ -113,3 +114,42 @@ def filter_dataset(input_path, output_dir,
     except Exception as e:
         logging.error("Unexpected error during filtering", exc_info=True)
         raise ValueError(f"Error during filtering: {str(e)}")
+
+def update_status(message):
+    print(message)
+
+def update_progress(current, total):
+    progress = (current / total) * 100
+    print(f"Progress: {progress:.2f}%")
+
+def main():
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description="Dataset filtering tool for conversations")
+    parser.add_argument('input_file', type=str, help="Input JSONL file with conversations")
+    parser.add_argument('output_dir', type=str, help="Output directory for filtered conversations")
+    
+    # Filtering options (all are boolean flags)
+    parser.add_argument('--check_blank_turns', action='store_true', default=True, 
+                        help="Enable blank turn filtering (default: enabled)")
+    parser.add_argument('--check_invalid_endings', action='store_true', default=True, 
+                        help="Enable invalid ending filtering (default: enabled)")
+    parser.add_argument('--check_null_gpt', action='store_true', default=True, 
+                        help="Enable filtering of null GPT responses (default: enabled)")
+    parser.add_argument('--check_duplicate_system', action='store_true', default=True, 
+                        help="Enable duplicate system message filtering (default: enabled)")
+    
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Perform filtering based on the provided arguments
+    filter_dataset(
+        input_path=args.input_file,
+        output_dir=args.output_dir,
+        check_blank_turns=args.check_blank_turns,
+        check_invalid_endings=args.check_invalid_endings,
+        check_null_gpt=args.check_null_gpt,
+        check_duplicate_system=args.check_duplicate_system
+    )
+
+if __name__ == "__main__":
+    main()

@@ -1,3 +1,7 @@
 -Synthmaxxer
 -Synthmaxxer local support
 -Tabular Dataset Viewer
+-Multi-turn_maxxer
+-redo-ui
+-better cli support
+-handling for multi-modal datasets

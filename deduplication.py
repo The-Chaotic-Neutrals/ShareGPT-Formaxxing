@@ -2,6 +2,7 @@ import os
 import json
 import hashlib
 import logging
+import argparse
 from datasketch import MinHash, MinHashLSH
 import jsonlines
 
@@ -92,3 +93,33 @@ class Deduplication:
         for shingle in shingles:
             m.update(shingle.encode('utf-8'))
         return m
+
+def update_status(message):
+    print(message)
+
+def update_progress(current, total):
+    progress = (current / total) * 100
+    print(f"Progress: {progress:.2f}%")
+
+def main():
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description="Deduplication tool for conversations")
+    parser.add_argument('input_file', type=str, help="Input JSONL file with conversations")
+    parser.add_argument('output_file', type=str, help="Output JSONL file for deduplicated conversations")
+    parser.add_argument('--method', choices=['sha256', 'minhash'], default='sha256', help="Deduplication method to use (default: sha256)")
+    parser.add_argument('--threshold', type=float, default=0.8, help="Threshold for MinHash deduplication (default: 0.8)")
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Initialize deduplication object
+    dedup = Deduplication(threshold=args.threshold)
+
+    # Perform deduplication
+    if args.method == 'sha256':
+        dedup.perform_sha256_deduplication(args.input_file, args.output_file, update_status, update_progress)
+    elif args.method == 'minhash':
+        dedup.perform_min_hash_deduplication(args.input_file, args.output_file, update_status, update_progress)
+
+if __name__ == "__main__":
+    main()

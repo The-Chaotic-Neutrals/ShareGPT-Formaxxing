@@ -1,5 +1,5 @@
-import tkinter as tk 
-from tkinter import filedialog, messagebox
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 import os
 import json
 from pathlib import Path
@@ -9,11 +9,11 @@ class DatasetFilterApp:
     def __init__(self, master, theme):
         self.master = master
         self.theme = theme
-        
+
         # Create a new top-level window
         self.root = tk.Toplevel(self.master)
         self.root.title("DataMaxxer")
-        
+
         # Set the icon for the DataMaxxer window
         self.set_icon()
 
@@ -22,6 +22,9 @@ class DatasetFilterApp:
 
         # Initialize filtering method toggle variables
         self.init_filtering_variables()
+
+        # Create custom styles for checkboxes
+        self.create_custom_styles()
 
         # Create and place widgets
         self.create_widgets()
@@ -39,6 +42,28 @@ class DatasetFilterApp:
         self.check_invalid_endings = tk.BooleanVar(value=True)
         self.check_null_gpt = tk.BooleanVar(value=True)
         self.check_duplicate_system = tk.BooleanVar(value=True)
+        self.allow_empty_system_role = tk.BooleanVar(value=True)  # New option for allowing empty system role
+
+    def create_custom_styles(self):
+        style = ttk.Style(self.root)
+        style.theme_use('default')  # Use default theme as the base
+
+        # Configure the default style for the checkbutton
+        style.configure(
+            "CustomCheckbutton.TCheckbutton",
+            background=self.theme['bg'],  # Background color
+            foreground=self.theme['fg'],  # Text color
+            font=("Helvetica", 10),        # Font style
+            relief="flat"                  # Flat appearance
+        )
+
+        # Configure hover and active states to match the background color
+        style.map(
+            "CustomCheckbutton.TCheckbutton",
+            background=[("active", self.theme['bg'])],  # Maintain background on hover
+            foreground=[("active", self.theme['fg'])],  # Maintain foreground on hover
+            indicatorcolor=[("selected", "#4CAF50"), ("!selected", "#FF6347")],  # Green when selected, red when not
+        )
 
     def create_widgets(self):
         self.label = tk.Label(self.root, text="Dataset File:", bg=self.theme['bg'], fg=self.theme['fg'])
@@ -54,24 +79,38 @@ class DatasetFilterApp:
         self.add_checkboxes()
 
         self.process_button = tk.Button(self.root, text="Process Dataset", command=self.process_dataset, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
-        self.process_button.grid(row=7, column=0, columnspan=3, pady=10)
+        self.process_button.grid(row=8, column=0, columnspan=3, pady=10)
 
         self.result_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.result_label.grid(row=8, column=0, columnspan=3, padx=10, pady=10)
+        self.result_label.grid(row=9, column=0, columnspan=3, padx=10, pady=10)
 
     def add_checkboxes(self):
         # Create checkboxes for each filtering method
-        self.blank_turns_cb = tk.Checkbutton(self.root, text="Check Blank Turns", variable=self.check_blank_turns, bg=self.theme['bg'], fg=self.theme['fg'])
+        self.blank_turns_cb = ttk.Checkbutton(
+            self.root, text="Check Blank Turns", variable=self.check_blank_turns, style="CustomCheckbutton.TCheckbutton"
+        )
         self.blank_turns_cb.grid(row=1, column=0, columnspan=2, sticky='w', padx=10, pady=2)
 
-        self.invalid_endings_cb = tk.Checkbutton(self.root, text="Check Invalid Endings", variable=self.check_invalid_endings, bg=self.theme['bg'], fg=self.theme['fg'])
+        self.invalid_endings_cb = ttk.Checkbutton(
+            self.root, text="Check Invalid Endings", variable=self.check_invalid_endings, style="CustomCheckbutton.TCheckbutton"
+        )
         self.invalid_endings_cb.grid(row=2, column=0, columnspan=2, sticky='w', padx=10, pady=2)
 
-        self.null_gpt_cb = tk.Checkbutton(self.root, text="Check Null GPT", variable=self.check_null_gpt, bg=self.theme['bg'], fg=self.theme['fg'])
+        self.null_gpt_cb = ttk.Checkbutton(
+            self.root, text="Check Null GPT", variable=self.check_null_gpt, style="CustomCheckbutton.TCheckbutton"
+        )
         self.null_gpt_cb.grid(row=3, column=0, columnspan=2, sticky='w', padx=10, pady=2)
 
-        self.duplicate_system_cb = tk.Checkbutton(self.root, text="Check Duplicate System", variable=self.check_duplicate_system, bg=self.theme['bg'], fg=self.theme['fg'])
+        self.duplicate_system_cb = ttk.Checkbutton(
+            self.root, text="Check Duplicate System", variable=self.check_duplicate_system, style="CustomCheckbutton.TCheckbutton"
+        )
         self.duplicate_system_cb.grid(row=4, column=0, columnspan=2, sticky='w', padx=10, pady=2)
+
+        # Add a new checkbox for allowing empty system role
+        self.allow_empty_system_cb = ttk.Checkbutton(
+            self.root, text="Allow Empty System Role", variable=self.allow_empty_system_role, style="CustomCheckbutton.TCheckbutton"
+        )
+        self.allow_empty_system_cb.grid(row=5, column=0, columnspan=2, sticky='w', padx=10, pady=2)
 
     def select_file(self):
         file_path = filedialog.askopenfilename(
@@ -113,7 +152,8 @@ class DatasetFilterApp:
                 check_blank_turns=self.check_blank_turns.get(),
                 check_invalid_endings=self.check_invalid_endings.get(),
                 check_null_gpt=self.check_null_gpt.get(),
-                check_duplicate_system=self.check_duplicate_system.get()
+                check_duplicate_system=self.check_duplicate_system.get(),
+                allow_empty_system_role=self.allow_empty_system_role.get()  # Pass new option
             )
             self.result_label.config(text=output_message)
         except ValueError as e:

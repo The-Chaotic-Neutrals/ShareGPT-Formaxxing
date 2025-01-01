@@ -7,17 +7,32 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO)
 
 def ends_with_letter_number_comma(text):
-    # Check if text is a valid string before processing
+    """Check if a text ends with a letter, number, or comma."""
     if isinstance(text, str):
         return bool(re.search(r'[a-zA-Z0-9,]$', text.strip()))
-    return False  # Return False if text is None or not a string
+    return False
 
 def filter_dataset(input_path, output_dir, 
                    check_blank_turns=True, 
                    check_invalid_endings=True, 
                    check_null_gpt=True, 
-                   check_duplicate_system=True):  # Removed deleted-by-user and two-letter tag removal params
-    
+                   check_duplicate_system=True, 
+                   allow_empty_system_role=True):
+    """
+    Filters a dataset of conversations based on specified criteria.
+
+    Parameters:
+        input_path (str): Path to the input JSONL file.
+        output_dir (str): Directory to save the filtered dataset.
+        check_blank_turns (bool): Remove conversations with blank turns.
+        check_invalid_endings (bool): Remove conversations with invalid endings.
+        check_null_gpt (bool): Remove conversations with null GPT responses.
+        check_duplicate_system (bool): Remove duplicate system messages.
+        allow_empty_system_role (bool): Allow conversations with empty system role.
+
+    Returns:
+        str: Summary of filtering results.
+    """
     try:
         # Prepare paths
         input_path = Path(input_path)
@@ -29,7 +44,6 @@ def filter_dataset(input_path, output_dir,
         filtered_data_count = 0
         original_data_count = 0
 
-        # Use 'utf-8' with error ignoring to handle any non-decodable characters
         with open(input_path, 'r', encoding='utf-8', errors='ignore') as infile, \
              output_file.open('w', encoding='utf-8') as outfile:
             
@@ -43,14 +57,10 @@ def filter_dataset(input_path, output_dir,
                 try:
                     item = json.loads(line)
                 except json.JSONDecodeError as e:
-                    # Log the error and skip the problematic line
                     logging.error(f"JSON decode error at line {original_data_count}: {e}")
                     continue
                 
-                # Process conversations
                 conversations = item.get("conversations", [])
-
-                # Track reasons for filtering out conversations
                 has_blank_turn = False
                 has_invalid_ending = False
                 has_null_gpt_value = False
@@ -60,45 +70,53 @@ def filter_dataset(input_path, output_dir,
                     value = msg.get('value')
                     role = msg.get('from')
 
-                    # Check for blank or non-string values (if enabled)
-                    if check_blank_turns and (value is None or not isinstance(value, str) or not value.strip()):
-                        has_blank_turn = True
-                        break
+                    # Check blank turns
+                    if check_blank_turns:
+                        if role == "system":
+                            if value is not None and not isinstance(value, str):
+                                has_blank_turn = True
+                                break
+                        else:
+                            if not (isinstance(value, str) and value.strip()):
+                                has_blank_turn = True
+                                break
 
-                    # Check for invalid endings (if enabled)
+                    # Check invalid endings
                     if check_invalid_endings and value and ends_with_letter_number_comma(value):
                         has_invalid_ending = True
                         break
 
-                    # Check for null 'gpt' value (if enabled)
+                    # Check null GPT responses
                     if check_null_gpt and role == 'gpt' and value is None:
                         has_null_gpt_value = True
                         break
 
-                    # Remove duplicate system turns if the next human turn has the same value (if enabled)
+                    # Check for duplicate system messages
                     if check_duplicate_system and role == 'system' and i < len(conversations) - 1:
                         next_msg = conversations[i + 1]
                         next_value = next_msg.get('value')
-
-                        # Ensure both values are cleaned (strip and lower) and check if they are identical
                         if next_msg.get('from') == 'human' and value and next_value and value.strip().lower() == next_value.strip().lower():
-                            continue  # Skip this system message
-                        
-                    # Add non-duplicate, valid messages to the filtered list
+                            continue
+
+                    # Check for empty system role if allowed
+                    if role == "system" and not allow_empty_system_role and not value:
+                        has_blank_turn = True
+                        break
+
                     filtered_conversations.append(msg)
 
-                # Skip conversations that fail any of the checks
+                # Skip conversations that fail checks
                 if has_blank_turn or has_invalid_ending or has_null_gpt_value:
                     continue
 
-                # Check if both roles are present
+                # Ensure valid roles exist in the conversation
                 roles = set(msg.get('from') for msg in filtered_conversations)
                 if 'human' in roles and 'gpt' in roles:
                     # Remove the last human message if it's the last one
                     if filtered_conversations and filtered_conversations[-1].get('from') == 'human':
                         filtered_conversations = filtered_conversations[:-1]
                     
-                    # Write filtered conversation to output file
+                    # Write valid conversations
                     if filtered_conversations:
                         filtered_item = {"conversations": filtered_conversations}
                         json.dump(filtered_item, outfile, ensure_ascii=False)
@@ -116,40 +134,37 @@ def filter_dataset(input_path, output_dir,
         raise ValueError(f"Error during filtering: {str(e)}")
 
 def update_status(message):
+    """Update status message."""
     print(message)
 
 def update_progress(current, total):
+    """Update progress."""
     progress = (current / total) * 100
     print(f"Progress: {progress:.2f}%")
 
 def main():
-    # Set up argument parser
     parser = argparse.ArgumentParser(description="Dataset filtering tool for conversations")
     parser.add_argument('input_file', type=str, help="Input JSONL file with conversations")
     parser.add_argument('output_dir', type=str, help="Output directory for filtered conversations")
-    
-    # Filtering options (all are boolean flags)
-    parser.add_argument('--check_blank_turns', action='store_true', default=True, 
-                        help="Enable blank turn filtering (default: enabled)")
-    parser.add_argument('--check_invalid_endings', action='store_true', default=True, 
-                        help="Enable invalid ending filtering (default: enabled)")
-    parser.add_argument('--check_null_gpt', action='store_true', default=True, 
-                        help="Enable filtering of null GPT responses (default: enabled)")
-    parser.add_argument('--check_duplicate_system', action='store_true', default=True, 
-                        help="Enable duplicate system message filtering (default: enabled)")
-    
-    # Parse arguments
+    parser.add_argument('--check_blank_turns', action='store_true', default=True, help="Enable blank turn filtering")
+    parser.add_argument('--check_invalid_endings', action='store_true', default=True, help="Enable invalid ending filtering")
+    parser.add_argument('--check_null_gpt', action='store_true', default=True, help="Enable null GPT response filtering")
+    parser.add_argument('--check_duplicate_system', action='store_true', default=True, help="Enable duplicate system message filtering")
+    parser.add_argument('--allow_empty_system_role', action='store_true', default=True, help="Allow empty system role filtering")
+
     args = parser.parse_args()
 
-    # Perform filtering based on the provided arguments
-    filter_dataset(
+    # Perform filtering
+    result = filter_dataset(
         input_path=args.input_file,
         output_dir=args.output_dir,
         check_blank_turns=args.check_blank_turns,
         check_invalid_endings=args.check_invalid_endings,
         check_null_gpt=args.check_null_gpt,
-        check_duplicate_system=args.check_duplicate_system
+        check_duplicate_system=args.check_duplicate_system,
+        allow_empty_system_role=args.allow_empty_system_role
     )
+    print(result)
 
 if __name__ == "__main__":
     main()

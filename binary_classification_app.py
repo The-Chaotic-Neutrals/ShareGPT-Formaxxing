@@ -60,7 +60,7 @@ class BinaryClassificationApp:
         self.threshold_label.pack(pady=5)
 
         self.threshold_entry = tk.Entry(main_frame, width=10)
-        self.threshold_entry.insert(0, '0.9')
+        self.threshold_entry.insert(0, '0.75')
         self.threshold_entry.pack(pady=5)
 
         # Batch size input

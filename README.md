@@ -2,7 +2,7 @@ Launch with python Main.py either in cmd/terminal or via the provided bat/sh fil
 
 PR's Welcome.
 
-Datamaxxer CLI - info below.
+Datamaxxer CLI (dataset_filter.py) - info below.
 | **Argument**                  | **Description**                                                                                   | **Type**                | **Default**      |
 |-------------------------------|---------------------------------------------------------------------------------------------------|-------------------------|------------------|
 | `input_file`                   | Path to the input JSONL file containing conversations to be filtered.                             | `str`                   | Required         |

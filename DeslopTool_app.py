@@ -42,6 +42,7 @@ class DeslopToolApp:
         self.selected_filter_method = tk.IntVar(value=1)
         self.batch_size = tk.IntVar(value=32)  # Default batch size
         self.force_gpu = tk.BooleanVar(value=False)  # Option to force GPU usage
+        self.save_slop_file = tk.BooleanVar(value=False)  # Option to save slop file
 
         # Create widgets and update device status
         self.create_widgets()
@@ -102,20 +103,46 @@ class DeslopToolApp:
         self.batch_entry = tk.Entry(self.root, width=10, textvariable=self.batch_size, bg=self.theme['entry_bg'], fg=self.theme['entry_fg'], insertbackground=self.theme['entry_fg'])
         self.batch_entry.grid(row=4, column=1, padx=10, pady=10)
 
-        # Toggle between filtering methods
-        self.method_label = tk.Label(self.root, text="Select Filtering Method:", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.method_label.grid(row=5, column=0, columnspan=3, pady=10)
+        # Create a frame for the selection buttons
+        self.selection_frame = tk.Frame(self.root, bg=self.theme['bg'])
+        self.selection_frame.grid(row=5, column=0, columnspan=3, pady=10)
 
-        # Updated label names
-        self.original_method_radio = tk.Radiobutton(self.root, text="String Matching Filter", variable=self.selected_filter_method, value=1, bg=self.theme['bg'], fg=self.theme['fg'])
-        self.original_method_radio.grid(row=6, column=0, pady=10)
+        # Add styled radiobuttons for filtering methods
+        self.string_match_radiobutton = tk.Radiobutton(
+            self.selection_frame,
+            text="String Matching Filter",
+            variable=self.selected_filter_method,
+            value=1,
+            command=self.update_button_styles,
+            bg='#333333', fg='gold', font=("Arial", 12, "bold"),
+            indicatoron=0, width=20, relief="solid"
+        )
+        self.string_match_radiobutton.pack(side=tk.LEFT, padx=10, pady=5)
 
-        self.new_method_radio = tk.Radiobutton(self.root, text="Classifier Removal", variable=self.selected_filter_method, value=2, bg=self.theme['bg'], fg=self.theme['fg'])
-        self.new_method_radio.grid(row=6, column=1, pady=10)
+        self.classifier_radiobutton = tk.Radiobutton(
+            self.selection_frame,
+            text="Classifier Removal",
+            variable=self.selected_filter_method,
+            value=2,
+            command=self.update_button_styles,
+            bg='#333333', fg='gold', font=("Arial", 12, "bold"),
+            indicatoron=0, width=20, relief="solid"
+        )
+        self.classifier_radiobutton.pack(side=tk.LEFT, padx=10, pady=5)
 
-        # Checkbox to force GPU usage
-        self.force_gpu_checkbox = tk.Checkbutton(self.root, text="Force GPU", variable=self.force_gpu, bg=self.theme['bg'], fg=self.theme['fg'], command=self.update_device_status)
-        self.force_gpu_checkbox.grid(row=7, column=0, pady=10)
+        # Add styled checkbox for GPU toggle
+        self.force_gpu_checkbox = tk.Checkbutton(
+            self.selection_frame,
+            text="Force GPU",
+            variable=self.force_gpu,
+            command=self.update_device_status,
+            bg='#333333', fg='gold', font=("Arial", 12, "bold"),
+            indicatoron=0, width=15, relief="solid"
+        )
+        self.force_gpu_checkbox.pack(side=tk.LEFT, padx=10, pady=5)
+
+        # Update button styles initially
+        self.update_button_styles()
 
         # Display device information
         self.device_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
@@ -126,6 +153,23 @@ class DeslopToolApp:
 
         self.result_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
         self.result_label.grid(row=10, column=0, columnspan=3, padx=10, pady=10)
+
+    def update_button_styles(self):
+        """Update the styles of the radiobuttons and checkbox based on the selection."""
+        # Update the filtering method buttons
+        if self.selected_filter_method.get() == 1:  # String Matching Filter selected
+            self.string_match_radiobutton.config(bg='white', fg='black')
+            self.classifier_radiobutton.config(bg='#333333', fg='gold')
+        elif self.selected_filter_method.get() == 2:  # Classifier Removal selected
+            self.string_match_radiobutton.config(bg='#333333', fg='gold')
+            self.classifier_radiobutton.config(bg='white', fg='black')
+
+        # Update the GPU checkbox style based on its state
+        if self.force_gpu.get():
+            self.force_gpu_checkbox.config(bg='white', fg='black')
+        else:
+            self.force_gpu_checkbox.config(bg='#333333', fg='gold')
+
 
     def select_file(self):
         file_path = filedialog.askopenfilename(
@@ -205,7 +249,12 @@ class DeslopToolApp:
             messagebox.showerror("Processing Error", str(e))
 
     async def process_with_slop_filter(self, dataset_file, device):
-        output_jsonl_filepath = Path(dataset_file).stem + "_filtered.jsonl"
+        # Create the 'deslopped' directory if it doesn't exist
+        output_dir = Path('./deslopped')
+        output_dir.mkdir(parents=True, exist_ok=True)  # Create directory if it doesn't exist
+       
+       # Define the output file path inside the 'deslopped' directory with the '_deslopped.jsonl' extension
+        output_jsonl_filepath = output_dir / (Path(dataset_file).stem + "_deslopped.jsonl")
         await self.slop_filter.filter_conversations(dataset_file, output_jsonl_filepath)
         self.result_label.config(text=f"Filtered conversations saved to {output_jsonl_filepath}")
 

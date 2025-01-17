@@ -94,7 +94,7 @@ def filter_dataset(dataset_file, filter_files, threshold=None):
         f"Remaining conversations after filtering: {len(filtered_data)}\n"
         f"Total matched phrases: {total_matched_phrases}\n"
         f"Total conversations removed: {removed_conversation_count}\n"
-        f"Filtered output written to: {output_file_path}"
+        f"Filtered output written to: {output_file_path}\n"
     )
-
+    
     return output_message

@@ -62,14 +62,12 @@ class Deduplication:
                     shingles = self.shingle_text(conversation_text)
                     m = self.generate_min_hash(shingles)
 
-                    # Check if similar signature already exists
-                    if any(self.lsh.query(m)):
-                        self.duplicate_count += 1
-                        continue
-
-                    # Add to LSH and write unique conversation to output
-                    self.lsh.insert(conversation_text, m)
-                    f_out.write(json.dumps(conversation, ensure_ascii=False) + '\n')
+                    # Check if similar signature already exists using query before insert
+                    if not self.lsh.query(m):  # If no similar signature exists, insert
+                        self.lsh.insert(conversation_text, m)  # Insert the MinHash signature
+                        f_out.write(json.dumps(conversation, ensure_ascii=False) + '\n')
+                    else:
+                        self.duplicate_count += 1  # Increment duplicate counter if it's a duplicate
 
             update_status(f"Deduplication complete. Output file: {output_file}")
         except Exception as e:

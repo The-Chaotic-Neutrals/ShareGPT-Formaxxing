@@ -1,3 +1,4 @@
+numpy==1.26.4
 aiofiles
 fuzzywuzzy
 jsonlines
@@ -10,9 +11,6 @@ pygame
 PyYAML
 Requests
 spacy
-torch
-torchvision  
-torchaudio
 tqdm
 transformers
 wordcloud
@@ -24,3 +22,6 @@ language_tool_python
 sentencepiece
 protobuf
 datasketch
+rensa
+sentence-transformers
+faiss-cpu

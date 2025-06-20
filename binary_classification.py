@@ -13,79 +13,112 @@ from onnxruntime.quantization import quantize_dynamic, QuantType
 from transformers.onnx import export
 from transformers.onnx.features import FeaturesManager
 
-MODEL_NAME = "protectai/distilroberta-base-rejection-v1"
+# Silence TorchDynamo warnings
+logging.getLogger("torch._dynamo").setLevel(logging.ERROR)
 
-# Initialize global variables
+# Filter mode constants
+FILTER_MODE_RP = "rp"
+FILTER_MODE_NORMAL = "normal"
+
+# Model names
+MODEL_NAMES = {
+    FILTER_MODE_RP: "Dans-DiscountModels/Dans-Classifier-RP-Validity-V1.0.0-396m",
+    FILTER_MODE_NORMAL: "protectai/distilroberta-base-rejection-v1"
+}
+
+# Global state
 nlp = None
-tokenizer = None
-session = None
-model = None
+tokenizers = {}
+models = {}
+sessions = {}
+onnx_initialized = {}
 device = 'gpu'
 use_onnx = False
+filter_mode = FILTER_MODE_RP
+
+total_input_count = 0
+total_kept_count = 0
+total_positive_count = 0
+total_negative_count = 0
+
+def get_model_name():
+    return MODEL_NAMES[filter_mode]
+
+def set_filter_mode(mode):
+    global filter_mode
+    if mode not in MODEL_NAMES:
+        raise ValueError(f"Invalid filter mode: {mode}")
+    filter_mode = mode
+    initialize_models()
+
+def get_class_indices():
+    if filter_mode == FILTER_MODE_RP:
+        return 0, 1  # 0 = refusal, 1 = safe
+    else:
+        return 1, 0  # 1 = refusal, 0 = safe
 
 def initialize_models():
-    """Initialize Spacy, Tokenizer, and model based on device preference."""
-    global nlp, tokenizer, session, model, device, use_onnx
+    import torch._dynamo
+    global nlp, tokenizers, models, sessions, device, use_onnx, onnx_initialized
 
-    nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
-    nlp.add_pipe("sentencizer")
-
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    if nlp is None:
+        nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+        nlp.add_pipe("sentencizer")
 
     device = 'gpu' if torch.cuda.is_available() else 'cpu'
     use_onnx = (device == 'cpu')
+    model_name = get_model_name()
+
+    if model_name not in tokenizers:
+        tokenizers[model_name] = AutoTokenizer.from_pretrained(model_name)
 
     if use_onnx:
-        providers = ["CPUExecutionProvider"]
-        onnx_dir = Path("onnx_model")
-        onnx_fp = onnx_dir / "model.onnx"
-        quant_fp = onnx_dir / "model-quant.onnx"
-
-        if not quant_fp.exists():
+        if model_name not in sessions and not onnx_initialized.get(model_name):
+            onnx_dir = Path("onnx_model") / model_name.replace('/', '_')
+            onnx_fp = onnx_dir / "model.onnx"
+            quant_fp = onnx_dir / "model-quant.onnx"
             os.makedirs(onnx_dir, exist_ok=True)
-            model_tmp = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
-            model_tmp.eval()
 
-            model_kind, onnx_config_cls = FeaturesManager.check_supported_model_or_raise(model_tmp)
-            onnx_config = onnx_config_cls(model_tmp.config)
+            if not quant_fp.exists():
+                model_tmp = AutoModelForSequenceClassification.from_pretrained(model_name)
+                model_tmp.eval()
+                model_kind, onnx_config_cls = FeaturesManager.check_supported_model_or_raise(model_tmp)
+                onnx_config = onnx_config_cls(model_tmp.config)
+                export(
+                    preprocessor=tokenizers[model_name],
+                    model=model_tmp,
+                    config=onnx_config,
+                    opset=14,
+                    output=onnx_fp
+                )
+                quantize_dynamic(
+                    model_input=str(onnx_fp),
+                    model_output=str(quant_fp),
+                    weight_type=QuantType.QInt8
+                )
 
-            export(
-                preprocessor=tokenizer,
-                model=model_tmp,
-                config=onnx_config,
-                opset=14,
-                output=onnx_fp
-            )
-
-            quantize_dynamic(
-                model_input=str(onnx_fp),
-                model_output=str(quant_fp),
-                weight_type=QuantType.QInt8
-            )
-
-        sess_options = ort.SessionOptions()
-        sess_options.intra_op_num_threads = os.cpu_count()
-        sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
-        session = ort.InferenceSession(str(quant_fp), sess_options, providers=providers)
+            sess_options = ort.SessionOptions()
+            sess_options.intra_op_num_threads = os.cpu_count()
+            sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
+            sessions[model_name] = ort.InferenceSession(str(quant_fp), sess_options, providers=["CPUExecutionProvider"])
+            onnx_initialized[model_name] = True
     else:
-        model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
-        model.eval()
-        model.to(torch.device("cuda"))
+        if model_name not in models:
+            if "RP-Validity" in model_name or filter_mode == FILTER_MODE_RP:
+                torch._dynamo.config.suppress_errors = True
+            models[model_name] = AutoModelForSequenceClassification.from_pretrained(model_name).eval().to(torch.device("cuda"))
 
 def update_device_preference(gpu_var, status_bar):
-    global device, session, model, use_onnx
+    global device, use_onnx
     if gpu_var.get() and torch.cuda.is_available():
         device = 'gpu'
         use_onnx = False
         update_status("Using GPU", status_bar)
-        model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
-        model.eval()
-        model.to(torch.device("cuda"))
     else:
         device = 'cpu'
         use_onnx = True
         update_status("Using CPU", status_bar)
-        initialize_models()
+    initialize_models()
 
 def filter_conversations(input_file_entry, threshold_entry, batch_size_entry, status_bar, positive_count_label, negative_count_label):
     input_file = input_file_entry.get()
@@ -123,9 +156,11 @@ def run_filter_streaming(input_file, output_file, threshold, batch_size, status_
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         writer = open(output_file, 'w', encoding='utf-8')
 
-        global total_positive_count, total_negative_count
+        global total_positive_count, total_negative_count, total_input_count, total_kept_count
         total_positive_count = 0
         total_negative_count = 0
+        total_input_count = 0
+        total_kept_count = 0
 
         update_status("Streaming and filtering started...", status_bar)
 
@@ -133,6 +168,7 @@ def run_filter_streaming(input_file, output_file, threshold, batch_size, status_
         microbatch_size = max(1, batch_size // 4)
 
         for item in dataset:
+            total_input_count += 1
             item_cleaned = validate_json(item)
             if item_cleaned:
                 batch.append(item_cleaned)
@@ -144,22 +180,28 @@ def run_filter_streaming(input_file, output_file, threshold, batch_size, status_
             _process_streaming_batch(batch, threshold, microbatch_size, writer, status_bar, positive_count_label, negative_count_label)
 
         writer.close()
-        update_status(f"Filtering complete. Output file: {output_file}", status_bar)
+
+        removed = total_input_count - total_kept_count
+        update_status(
+            f"Filtering complete. Kept: {total_kept_count} | Removed: {removed} | Total: {total_input_count}. Output: {output_file}",
+            status_bar
+        )
 
     except Exception as e:
         update_status(f"Streaming error: {e}", status_bar)
 
 def _process_streaming_batch(batch, threshold, microbatch_size, writer, status_bar, positive_count_label, negative_count_label):
+    global total_kept_count
     for conversation in batch:
         result = process_conversation(conversation, threshold, microbatch_size, status_bar, positive_count_label, negative_count_label)
         if result:
+            total_kept_count += 1
             json_str = json.dumps(result, ensure_ascii=False)
             json_str = clean_text(json_str)
             if validate_utf8(json_str):
                 writer.write(json_str + "\n")
 
 def process_conversation(conversation, threshold, microbatch_size, status_bar, positive_count_label, negative_count_label):
-    keep_conversation = True
     sentences = []
     for turn in conversation.get('conversations', []):
         if turn.get('from') == 'gpt':
@@ -178,8 +220,10 @@ def process_conversation(conversation, threshold, microbatch_size, status_bar, p
 
     update_counts(total_positive_count, total_negative_count, positive_count_label, negative_count_label)
 
-    if positive_count > 0:
-        keep_conversation = False
+    if filter_mode == FILTER_MODE_RP:
+        keep_conversation = (positive_count > 0)  # keep refusals
+    else:
+        keep_conversation = (positive_count == 0)  # keep safe only
 
     return conversation if keep_conversation else None
 
@@ -197,24 +241,26 @@ def update_counts(positive_count, negative_count, positive_count_label, negative
 
 def predict(texts, microbatch_size=4):
     results = []
+    model_name = get_model_name()
+    positive_idx, negative_idx = get_class_indices()
+
     for i in range(0, len(texts), microbatch_size):
         chunk = texts[i:i + microbatch_size]
 
         if use_onnx:
-            inputs = tokenizer(chunk, padding=True, truncation=True, return_tensors="np", max_length=512)
+            inputs = tokenizers[model_name](chunk, padding=True, truncation=True, return_tensors="np", max_length=512)
             inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
-
-            outputs = session.run(None, inputs)
+            outputs = sessions[model_name].run(None, inputs)
             logits = torch.tensor(outputs[0])
         else:
-            inputs = tokenizer(chunk, padding=True, truncation=True, return_tensors="pt", max_length=512).to(model.device)
+            inputs = tokenizers[model_name](chunk, padding=True, truncation=True, return_tensors="pt", max_length=512).to(models[model_name].device)
             with torch.no_grad():
-                logits = model(**inputs).logits
+                logits = models[model_name](**inputs).logits
 
         predictions = torch.sigmoid(logits).cpu().numpy()
 
         results.extend([
-            {"positive": float(pred[1]), "negative": float(pred[0])}
+            {"positive": float(pred[positive_idx]), "negative": float(pred[negative_idx])}
             for pred in predictions
         ])
 

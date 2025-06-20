@@ -19,6 +19,8 @@ class BinaryClassificationApp:
         self.total_negative_count = 0
         self.input_files = []
 
+        self.gpu_var = tk.BooleanVar(value=True)  # ✅ Initialize before use
+
         initialize_models()
         self.setup_ui()
         self.configure_logging()
@@ -50,7 +52,7 @@ class BinaryClassificationApp:
 
         self.input_file_button = tk.Button(
             self.file_frame, text="Browse", command=self.browse_input_file,
-            bg=self.theme.get('button_bg', 'lightgrey'))
+            bg=self.theme.get('button_bg', 'lightgrey'), fg='gold')  # ✅ Gold text
         self.input_file_button.pack(side=tk.LEFT, padx=5)
 
         self.filter_button = tk.Button(
@@ -93,12 +95,20 @@ class BinaryClassificationApp:
             bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
         self.negative_count_label.pack(side=tk.LEFT, padx=5)
 
-        self.gpu_var = tk.BooleanVar()
-        self.gpu_checkbox = tk.Checkbutton(
-            main_frame, text="Prefer GPU", variable=self.gpu_var,
-            command=self.update_device_preference,
-            bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
-        self.gpu_checkbox.pack(pady=10)
+        # ✅ Red/Green GPU Toggle Button
+        self.gpu_enabled = True
+        self.gpu_button = tk.Button(
+            main_frame,
+            text="GPU: ON",
+            bg="green",
+            fg="white",
+            font=("Arial", 10, "bold"),
+            width=12,
+            relief="raised",
+            bd=2,
+            command=self.toggle_gpu
+        )
+        self.gpu_button.pack(pady=10)
 
         self.mode_var = tk.StringVar(value=FILTER_MODE_RP)
         self.mode_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
@@ -161,6 +171,14 @@ class BinaryClassificationApp:
         self.negative_count_label.config(text="Negative Count: 0")
         self.class_logic_label.config(text=self.get_classification_logic_text())
         self.status_bar.config(text="Status: Filter mode switched.")
+
+    def toggle_gpu(self):
+        self.gpu_enabled = not self.gpu_enabled
+        new_text = "GPU: ON" if self.gpu_enabled else "GPU: OFF"
+        new_bg = "green" if self.gpu_enabled else "red"
+        self.gpu_button.config(text=new_text, bg=new_bg)
+        self.gpu_var.set(self.gpu_enabled)
+        self.update_device_preference()
 
     def update_device_preference(self):
         update_device_preference(self.gpu_var, self.status_bar)

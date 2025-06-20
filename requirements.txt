@@ -26,3 +26,5 @@ rensa
 sentence-transformers
 faiss-cpu
 datasets
+onnxruntime
+onnx

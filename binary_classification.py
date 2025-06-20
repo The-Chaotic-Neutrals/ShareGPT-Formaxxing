@@ -6,45 +6,86 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 import re
 from datasets import load_dataset
+from pathlib import Path
+import numpy as np
+import onnxruntime as ort
+from onnxruntime.quantization import quantize_dynamic, QuantType
+from transformers.onnx import export
+from transformers.onnx.features import FeaturesManager
 
 MODEL_NAME = "protectai/distilroberta-base-rejection-v1"
 
 # Initialize global variables
 nlp = None
 tokenizer = None
+session = None
 model = None
 device = 'gpu'
+use_onnx = False
 
 def initialize_models():
-    """Initialize Spacy and Transformer models."""
-    global nlp, tokenizer, model, device
+    """Initialize Spacy, Tokenizer, and model based on device preference."""
+    global nlp, tokenizer, session, model, device, use_onnx
+
     nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
     nlp.add_pipe("sentencizer")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = 'gpu' if torch.cuda.is_available() else 'cpu'
+    use_onnx = (device == 'cpu')
 
-    if device.type == "cuda":
-        model = AutoModelForSequenceClassification.from_pretrained(
-            MODEL_NAME,
-            torch_dtype=torch.float16
-        )
+    if use_onnx:
+        providers = ["CPUExecutionProvider"]
+        onnx_dir = Path("onnx_model")
+        onnx_fp = onnx_dir / "model.onnx"
+        quant_fp = onnx_dir / "model-quant.onnx"
+
+        if not quant_fp.exists():
+            os.makedirs(onnx_dir, exist_ok=True)
+            model_tmp = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+            model_tmp.eval()
+
+            model_kind, onnx_config_cls = FeaturesManager.check_supported_model_or_raise(model_tmp)
+            onnx_config = onnx_config_cls(model_tmp.config)
+
+            export(
+                preprocessor=tokenizer,
+                model=model_tmp,
+                config=onnx_config,
+                opset=14,
+                output=onnx_fp
+            )
+
+            quantize_dynamic(
+                model_input=str(onnx_fp),
+                model_output=str(quant_fp),
+                weight_type=QuantType.QInt8
+            )
+
+        sess_options = ort.SessionOptions()
+        sess_options.intra_op_num_threads = os.cpu_count()
+        sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
+        session = ort.InferenceSession(str(quant_fp), sess_options, providers=providers)
     else:
         model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
-
-    model.to(device)
-    model.eval()
+        model.eval()
+        model.to(torch.device("cuda"))
 
 def update_device_preference(gpu_var, status_bar):
-    global device
+    global device, session, model, use_onnx
     if gpu_var.get() and torch.cuda.is_available():
-        device = torch.device('cuda')
+        device = 'gpu'
+        use_onnx = False
         update_status("Using GPU", status_bar)
+        model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+        model.eval()
+        model.to(torch.device("cuda"))
     else:
-        device = torch.device('cpu')
+        device = 'cpu'
+        use_onnx = True
         update_status("Using CPU", status_bar)
-    model.to(device)
+        initialize_models()
 
 def filter_conversations(input_file_entry, threshold_entry, batch_size_entry, status_bar, positive_count_label, negative_count_label):
     input_file = input_file_entry.get()
@@ -155,24 +196,23 @@ def update_counts(positive_count, negative_count, positive_count_label, negative
         negative_count_label.after(0, lambda: negative_count_label.config(text=f"Negative Count: {negative_count}"))
 
 def predict(texts, microbatch_size=4):
-    model.eval()
     results = []
-
     for i in range(0, len(texts), microbatch_size):
         chunk = texts[i:i + microbatch_size]
-        encoded_inputs = tokenizer(
-            chunk,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt"
-        ).to(device)
 
-        with torch.no_grad():
-            outputs = model(**encoded_inputs)
+        if use_onnx:
+            inputs = tokenizer(chunk, padding=True, truncation=True, return_tensors="np", max_length=512)
+            inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
 
-        logits = outputs.logits
+            outputs = session.run(None, inputs)
+            logits = torch.tensor(outputs[0])
+        else:
+            inputs = tokenizer(chunk, padding=True, truncation=True, return_tensors="pt", max_length=512).to(model.device)
+            with torch.no_grad():
+                logits = model(**inputs).logits
+
         predictions = torch.sigmoid(logits).cpu().numpy()
+
         results.extend([
             {"positive": float(pred[1]), "negative": float(pred[0])}
             for pred in predictions

@@ -25,3 +25,4 @@ datasketch
 rensa
 sentence-transformers
 faiss-cpu
+datasets

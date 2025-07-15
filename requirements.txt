@@ -28,3 +28,5 @@ faiss-cpu
 datasets
 onnxruntime
 onnx
+customtkinter
+pyqt5

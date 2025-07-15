@@ -35,7 +35,6 @@ echo %BLUE_BG%%WHITE_FG%%BOLD%%EMPTY_LINE%%RESET%
 echo %BLUE_BG%%WHITE_FG%%BOLD%%BOTTOM_BORDER%%RESET%
 echo.
 
-:: *** ESCAPE PARENTHESES AND AMPERSAND HERE ***
 echo %YELLOW_FG%%BOLD%    1) Setup Environment ^(Delete ^& Reinstall^) %RESET%
 echo %GREEN_FG%%BOLD%     2) Start Program with Updates (Upgrade)%RESET%
 echo %CYAN_FG%%BOLD%      3) Start Program without Updates (Run)%RESET%
@@ -71,13 +70,24 @@ python -m venv venv
 
 call venv\Scripts\activate.bat
 
-python -m pip install --upgrade pip
+:: ✅ Safely upgrade pip
+python -m pip install --upgrade pip --no-cache-dir
 
-pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
+:: Install torch stack
+python -m pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
 
-pip install -r requirements.txt
+:: Install requirements
+python -m pip install -r requirements.txt
 
+:: Install SpaCy model
 python -m spacy download en_core_web_sm
+
+:: 🎯 Download and install fastText wheel
+echo %CYAN_FG%Downloading fastText wheel...%RESET%
+powershell -Command "(New-Object Net.WebClient).DownloadFile('https://github.com/mdrehan4all/fasttext_wheels_for_windows/raw/main/fasttext-0.9.2-cp311-cp311-win_amd64.whl','fasttext-0.9.2-cp311-cp311-win_amd64.whl')"
+
+echo %CYAN_FG%Installing fastText...%RESET%
+python -m pip install fasttext-0.9.2-cp311-cp311-win_amd64.whl
 
 python -c "import spacy; spacy.load('en_core_web_sm')"
 
@@ -92,14 +102,24 @@ echo %CYAN_FG%Starting program with updates...%RESET%
 
 call venv\Scripts\activate.bat
 
+:: ✅ Upgrade pip first
+python -m pip install --upgrade pip --no-cache-dir
+
 echo Upgrading Python packages from requirements.txt...
-pip install --upgrade -r requirements.txt
+python -m pip install --upgrade -r requirements.txt
 
 echo Updating PyTorch packages (explicit versions)...
-pip install --upgrade torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
+python -m pip install --upgrade torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
 
 echo Updating SpaCy model...
 python -m spacy download en_core_web_sm
+
+:: 🎯 Download and install fastText wheel (reinstall)
+echo %CYAN_FG%Downloading fastText wheel...%RESET%
+powershell -Command "(New-Object Net.WebClient).DownloadFile('https://github.com/mdrehan4all/fasttext_wheels_for_windows/raw/main/fasttext-0.9.2-cp311-cp311-win_amd64.whl','fasttext-0.9.2-cp311-cp311-win_amd64.whl')"
+
+echo %CYAN_FG%Installing fastText...%RESET%
+python -m pip install --upgrade fasttext-0.9.2-cp311-cp311-win_amd64.whl
 
 echo Starting the program...
 start python main.py

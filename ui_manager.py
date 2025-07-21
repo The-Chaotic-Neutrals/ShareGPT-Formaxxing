@@ -53,7 +53,6 @@ class UIManager:
     def open_dataset_converter_app(self): DatasetConverterApp(self.root, self.theme)
     def open_filter_app(self): DatasetFilterApp(self.root, self.theme)
     def open_deslop_tool(self): DeslopToolApp(self.root, self.theme)
-    def open_wordcloud_generator_app(self): GenerateWordCloudApp(self.root, self.theme)
     def open_binary_classification_app(self): BinaryClassificationApp(self.root, self.theme)
     def open_deduplication_app(self): DeduplicationApp(self.root, self.theme)
 
@@ -109,6 +108,16 @@ class UIManager:
                 qt_app = QApplication(sys.argv)
             win = TokenMaxxerV3App()
             win.show()
+            qt_app.exec_()
+        threading.Thread(target=launch, daemon=True).start()
+
+    # Updated: WordCloud Generator (PyQt5)
+    def open_wordcloud_generator_app(self):
+        def launch():
+            qt_app = QApplication.instance()
+            if qt_app is None:
+                qt_app = QApplication(sys.argv)
+            app = GenerateWordCloudApp(None, self.theme)
             qt_app.exec_()
         threading.Thread(target=launch, daemon=True).start()
 

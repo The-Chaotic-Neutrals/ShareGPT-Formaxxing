@@ -1,58 +1,75 @@
-import tkinter as tk
-from tkinter import filedialog
-from PIL import ImageTk
+import sys
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QGridLayout, QLabel, QLineEdit, QPushButton, QFileDialog
+from PyQt5.QtGui import QIcon, QImage, QPixmap
+from PyQt5.QtCore import pyqtSignal, QObject
+from PIL import Image
 import os
 import threading
 from WordCloudGenerator import WordCloudGenerator
 
-class GenerateWordCloudApp:
-    def __init__(self, master, theme):
-        self.master = master
+class GenerateWordCloudApp(QObject):
+    status_updated = pyqtSignal(str)
+    image_ready = pyqtSignal(object)  # PIL Image
+
+    def __init__(self, parent, theme):
+        super().__init__()
         self.theme = theme
         self.icon_path = "icon.ico"
         self.generator = WordCloudGenerator(theme, self.update_status)
-        self.window = tk.Toplevel(master)
-        self.window.title("Generate Word Cloud")
+        self.window = QMainWindow(parent)
+        self.window.setWindowTitle("Generate Word Cloud")
+        self.status_updated.connect(self._update_status)
+        self.image_ready.connect(self.show_image)
         self.setup_ui()
         self.set_icon()
+        self.window.show()
 
     def setup_ui(self):
-        self.window.configure(bg=self.theme['bg'])
-        self.window.columnconfigure(0, weight=1)
-        self.window.columnconfigure(1, weight=3)
-        self.window.columnconfigure(2, weight=1)
-        
-        self.label = tk.Label(self.window, text="Select JSONL File:", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.label.grid(row=0, column=0, padx=10, pady=10, sticky='e')
-        
-        self.entry_file = tk.Entry(self.window, bg=self.theme['entry_bg'], fg=self.theme['entry_fg'])
-        self.entry_file.grid(row=0, column=1, padx=10, pady=10, sticky='ew')
+        central = QWidget()
+        self.window.setCentralWidget(central)
+        layout = QGridLayout()
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 3)
+        layout.setColumnStretch(2, 1)
 
-        self.browse_button = tk.Button(self.window, text="Browse", command=self.select_file, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
-        self.browse_button.grid(row=0, column=2, padx=10, pady=10)
+        label = QLabel("Select JSONL File:")
+        label.setStyleSheet(f"background-color: {self.theme['bg']}; color: {self.theme['fg']};")
+        layout.addWidget(label, 0, 0)
 
-        self.generate_button = tk.Button(self.window, text="Generate Word Cloud", command=self.start_wordcloud_generation, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
-        self.generate_button.grid(row=1, column=0, columnspan=3, pady=20)
+        self.entry_file = QLineEdit()
+        self.entry_file.setStyleSheet(f"background-color: {self.theme['entry_bg']}; color: {self.theme['entry_fg']};")
+        layout.addWidget(self.entry_file, 0, 1)
 
-        self.status_var = tk.StringVar()
-        self.status_label = tk.Label(self.window, textvariable=self.status_var, anchor='w', relief=tk.SUNKEN, bg=self.theme['bg'], fg=self.theme['fg'])
-        self.status_label.grid(row=2, column=0, columnspan=3, sticky='ew')
+        browse_button = QPushButton("Browse")
+        browse_button.clicked.connect(self.select_file)
+        browse_button.setStyleSheet(f"background-color: {self.theme['button_bg']}; color: {self.theme['button_fg']};")
+        layout.addWidget(browse_button, 0, 2)
+
+        generate_button = QPushButton("Generate Word Cloud")
+        generate_button.clicked.connect(self.start_wordcloud_generation)
+        generate_button.setStyleSheet(f"background-color: {self.theme['button_bg']}; color: {self.theme['button_fg']};")
+        layout.addWidget(generate_button, 1, 0, 1, 3)
+
+        self.status_label = QLabel()
+        self.status_label.setStyleSheet(f"background-color: {self.theme['bg']}; color: {self.theme['fg']};")
+        layout.addWidget(self.status_label, 2, 0, 1, 3)
+
+        central.setLayout(layout)
+        central.setStyleSheet(f"background-color: {self.theme['bg']};")
 
     def set_icon(self):
         if os.path.exists(self.icon_path):
-            self.window.iconbitmap(self.icon_path)
+            self.window.setWindowIcon(QIcon(self.icon_path))
         else:
             print("Icon file not found.")
 
     def select_file(self):
-        filetypes = [("JSON Lines files", "*.jsonl")]
-        file_path = filedialog.askopenfilename(filetypes=filetypes)
+        file_path, _ = QFileDialog.getOpenFileName(self.window, "Select JSONL File", "", "JSON Lines files (*.jsonl)")
         if file_path:
-            self.entry_file.delete(0, tk.END)
-            self.entry_file.insert(0, file_path)
+            self.entry_file.setText(file_path)
 
     def start_wordcloud_generation(self):
-        file_path = self.entry_file.get()
+        file_path = self.entry_file.text()
         if os.path.isfile(file_path):
             # Run the word cloud generation in a background thread
             threading.Thread(target=self.generate_wordcloud, args=(file_path,), daemon=True).start()
@@ -60,30 +77,37 @@ class GenerateWordCloudApp:
             self.update_status("Input Error: The file does not exist.")
 
     def generate_wordcloud(self, file_path):
-        img_tk = self.generator.generate_wordcloud(file_path)
-        if img_tk:
-            self.window.after(0, self.show_image, img_tk)
+        # Assuming WordCloudGenerator.generate_wordcloud now returns a PIL Image (modify the generator accordingly if needed)
+        pil_image = self.generator.generate_wordcloud(file_path)
+        if pil_image:
+            self.image_ready.emit(pil_image)
 
-    def show_image(self, img_tk):
-        top = tk.Toplevel(self.window)
-        top.title("Word Cloud")
-        top.geometry("616x308")
-        top.configure(bg=self.theme['bg'])
+    def show_image(self, pil_image):
+        # Convert PIL Image to QPixmap
+        data = pil_image.convert("RGBA").tobytes("raw", "RGBA")
+        qim = QImage(data, pil_image.size[0], pil_image.size[1], QImage.Format_RGBA8888)
+        pix = QPixmap.fromImage(qim)
+
+        top = QMainWindow(self.window)
+        top.setWindowTitle("Word Cloud")
+        top.resize(616, 308)
+        top.setStyleSheet(f"background-color: {self.theme['bg']};")
         if os.path.exists(self.icon_path):
-            top.iconbitmap(self.icon_path)
-        
-        frame = tk.Frame(top, bg=self.theme['bg'])
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        label = tk.Label(frame, image=img_tk, bg=self.theme['bg'])
-        label.image = img_tk
-        label.pack()
+            top.setWindowIcon(QIcon(self.icon_path))
+
+        label = QLabel()
+        label.setPixmap(pix)
+        top.setCentralWidget(label)
+        top.show()
 
     def update_status(self, message):
-        self.window.after(0, self.status_var.set, message)
+        self.status_updated.emit(message)
+
+    def _update_status(self, message):
+        self.status_label.setText(message)
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    app = QApplication(sys.argv)
 
     # Define a simple theme
     theme = {
@@ -95,5 +119,5 @@ if __name__ == "__main__":
         'button_fg': '#ffffff'
     }
 
-    app = GenerateWordCloudApp(root, theme)
-    root.mainloop()
+    generate_app = GenerateWordCloudApp(None, theme)
+    sys.exit(app.exec_())

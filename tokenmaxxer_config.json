@@ -1,6 +1,8 @@
 {
-  "last_model": "Nitral-AI/12BGT-U",
+  "last_model": "Nitral-AI/Irixxed-Magcap-12B-Slerp",
   "recent_models": [
+    "Nitral-AI/Irixxed-Magcap-12B-Slerp",
+    "Nitral-AI/512k8bmst",
     "Nitral-AI/12BGT-U"
   ]
 }

@@ -1,11 +1,9 @@
-import io
+# import io
 import json
 import os
 import re
-import matplotlib.pyplot as plt
 from wordcloud import WordCloud
 from PIL import Image
-from PIL import ImageTk
 
 class WordCloudGenerator:
     def __init__(self, theme, update_status_callback):
@@ -21,38 +19,23 @@ class WordCloudGenerator:
                 return
 
             self.update_status("Generating word cloud...")
-            wordcloud = WordCloud(width=616, height=308, background_color='#2e2e2e').generate(text)
+            wordcloud = WordCloud(width=616, height=308, background_color=self.theme['bg']).generate(text)
             
-            # Save the word cloud to an image stream
-            image_stream = io.BytesIO()
-            self.save_wordcloud_image(wordcloud, image_stream)
+            # Get the word cloud as a PIL Image
+            pil_image = wordcloud.to_image()
             
             # Save the image to file
             output_dir = "wordclouds"
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, "wordcloud.png")
-            image_stream.seek(0)
-            img = Image.open(image_stream)
-            img.save(output_path)
+            pil_image.save(output_path)
             
-            # Convert image to Tkinter format
-            img_tk = ImageTk.PhotoImage(img)
-
             # Update GUI with the generated image and status
             self.update_status(f"Word cloud generated and saved to {output_path}.")
-            return img_tk
+            return pil_image
             
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
-
-    def save_wordcloud_image(self, wordcloud, image_stream):
-        """ Save the word cloud image to the given stream """
-        # Ensure figure creation and saving happens in the main thread
-        plt.figure(figsize=(8, 4))
-        plt.imshow(wordcloud, interpolation='bilinear')
-        plt.axis('off')
-        plt.savefig(image_stream, format='png', bbox_inches='tight', pad_inches=0)
-        plt.close()
 
     def load_and_process_text(self, file_path):
         text = ''

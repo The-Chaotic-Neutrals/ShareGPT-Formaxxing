@@ -1,11 +1,12 @@
 import sys
+import os
+import threading
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QGridLayout, QLabel, QLineEdit, QPushButton, QFileDialog
 from PyQt5.QtGui import QIcon, QImage, QPixmap
 from PyQt5.QtCore import pyqtSignal, QObject
 from PIL import Image
-import os
-import threading
 from WordCloudGenerator import WordCloudGenerator
+from theme import Theme  # <--- Import your exact theme here
 
 class GenerateWordCloudApp(QObject):
     status_updated = pyqtSignal(str)
@@ -71,19 +72,16 @@ class GenerateWordCloudApp(QObject):
     def start_wordcloud_generation(self):
         file_path = self.entry_file.text()
         if os.path.isfile(file_path):
-            # Run the word cloud generation in a background thread
             threading.Thread(target=self.generate_wordcloud, args=(file_path,), daemon=True).start()
         else:
             self.update_status("Input Error: The file does not exist.")
 
     def generate_wordcloud(self, file_path):
-        # Assuming WordCloudGenerator.generate_wordcloud now returns a PIL Image (modify the generator accordingly if needed)
         pil_image = self.generator.generate_wordcloud(file_path)
         if pil_image:
             self.image_ready.emit(pil_image)
 
     def show_image(self, pil_image):
-        # Convert PIL Image to QPixmap
         data = pil_image.convert("RGBA").tobytes("raw", "RGBA")
         qim = QImage(data, pil_image.size[0], pil_image.size[1], QImage.Format_RGBA8888)
         pix = QPixmap.fromImage(qim)
@@ -108,16 +106,5 @@ class GenerateWordCloudApp(QObject):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
-    # Define a simple theme
-    theme = {
-        'bg': '#f0f0f0',
-        'fg': '#000000',
-        'entry_bg': '#ffffff',
-        'entry_fg': '#000000',
-        'button_bg': '#007bff',
-        'button_fg': '#ffffff'
-    }
-
-    generate_app = GenerateWordCloudApp(None, theme)
+    generate_app = GenerateWordCloudApp(None, Theme.DARK)  # <--- Using your exact theme here
     sys.exit(app.exec_())

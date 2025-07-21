@@ -1,7 +1,6 @@
 import sys
 import threading
 import os
-import threading
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QTextEdit, QFileDialog, QVBoxLayout, QHBoxLayout, QComboBox
@@ -9,24 +8,29 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QTextCursor, QFont
 from tokenmaxxerv3 import TokenMaxxerCore
+from theme import Theme  # Import your Theme here
 
 class TokenMaxxerV3App(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("🧠 TokenMaxxerV3")
         self.setGeometry(100, 100, 960, 800)
-        self.setStyleSheet("background-color: black; color: white;")
 
-        # Core
+        self.theme = Theme.DARK  # Your theme instance
+
+        # Apply base window style
+        self.setStyleSheet(f"background-color: {self.theme['bg']}; color: {self.theme['text_fg']};")
+
+        # Core logic
         self.core = TokenMaxxerCore()
 
-        # Queue for thread-safe logs
+        # Thread-safe logging queue
         self.queue = []
 
-        # Flag to track running tasks
+        # Running flag
         self.is_running = False
 
-        # Timer to update log
+        # Timer for updating logs
         self.timer = QTimer()
         self.timer.timeout.connect(self.check_queue)
         self.timer.start(100)
@@ -43,67 +47,85 @@ class TokenMaxxerV3App(QMainWindow):
         # Status label
         self.status_label = QLabel("🛌 Idle")
         self.status_label.setFont(font)
-        self.status_label.setStyleSheet("color: #1e90ff; font-weight: bold;")
+        self.status_label.setStyleSheet(f"color: {self.theme['fg']}; font-weight: bold;")
         layout.addWidget(self.status_label)
 
-        # File selection
+        # File selection layout
         file_layout = QHBoxLayout()
         self.file_label = QLabel("📁 No file selected.")
         self.file_label.setFont(font)
+        self.file_label.setStyleSheet(f"color: {self.theme['fg']};")
         self.browse_button = QPushButton("💂 Browse")
         self.browse_button.setFont(font)
-        self.browse_button.setStyleSheet("background-color: #1e90ff; color: white; font-weight: bold;")
+        self.browse_button.setStyleSheet(
+            f"background-color: {self.theme['button_bg']}; color: {self.theme['button_fg']}; font-weight: bold;"
+        )
         self.browse_button.clicked.connect(self.select_file)
         file_layout.addWidget(self.file_label)
         file_layout.addWidget(self.browse_button)
 
-        # Model load
+        # Model load layout
         model_layout = QHBoxLayout()
         model_label = QLabel("🤖 HF Model Repo:")
         model_label.setFont(font)
+        model_label.setStyleSheet(f"color: {self.theme['fg']};")
         self.model_combo = QComboBox()
         self.model_combo.setFont(font)
         self.model_combo.setEditable(True)
         self.load_button = QPushButton("🔄 Load Tokenizer")
         self.load_button.setFont(font)
-        self.load_button.setStyleSheet("background-color: #1e90ff; color: white; font-weight: bold;")
+        self.load_button.setStyleSheet(
+            f"background-color: {self.theme['button_bg']}; color: {self.theme['button_fg']}; font-weight: bold;"
+        )
         self.load_button.clicked.connect(self.load_tokenizer)
         model_layout.addWidget(model_label)
         model_layout.addWidget(self.model_combo)
         model_layout.addWidget(self.load_button)
 
-        # Max token entry
+        # Max token length layout
         token_layout = QHBoxLayout()
         token_label = QLabel("🔢 Max token length:")
         token_label.setFont(font)
+        token_label.setStyleSheet(f"color: {self.theme['fg']};")
         self.max_token_entry = QLineEdit("8192")
         self.max_token_entry.setFont(font)
+        self.max_token_entry.setStyleSheet(
+            f"background-color: {self.theme['entry_bg']}; color: {self.theme['entry_fg']};"
+        )
         token_layout.addWidget(token_label)
         token_layout.addWidget(self.max_token_entry)
 
         # Buttons
         self.analyze_button = QPushButton("📊 Analyze Token Lengths")
         self.analyze_button.setFont(font)
-        self.analyze_button.setStyleSheet("background-color: #1e90ff; color: white; font-weight: bold;")
+        self.analyze_button.setStyleSheet(
+            f"background-color: {self.theme['button_bg']}; color: {self.theme['button_fg']}; font-weight: bold;"
+        )
         self.analyze_button.clicked.connect(self.run_analysis_thread)
 
         self.clean_button = QPushButton("🪼 Clean File")
         self.clean_button.setFont(font)
-        self.clean_button.setStyleSheet("background-color: #1e90ff; color: white; font-weight: bold;")
+        self.clean_button.setStyleSheet(
+            f"background-color: {self.theme['button_bg']}; color: {self.theme['button_fg']}; font-weight: bold;"
+        )
         self.clean_button.clicked.connect(self.run_clean_thread)
 
         self.tokenize_button = QPushButton("🧵 Tokenize Only")
         self.tokenize_button.setFont(font)
-        self.tokenize_button.setStyleSheet("background-color: #1e90ff; color: white; font-weight: bold;")
+        self.tokenize_button.setStyleSheet(
+            f"background-color: {self.theme['button_bg']}; color: {self.theme['button_fg']}; font-weight: bold;"
+        )
         self.tokenize_button.clicked.connect(self.run_tokenize_thread)
 
-        # Output
+        # Output text area
         self.output_text = QTextEdit()
         self.output_text.setFont(QFont("Consolas", 11))
-        self.output_text.setStyleSheet("background-color: black; color: white;")
+        self.output_text.setStyleSheet(
+            f"background-color: {self.theme['text_bg']}; color: {self.theme['text_fg']};"
+        )
         self.output_text.setReadOnly(True)
 
-        # Add layouts
+        # Add layouts and widgets
         layout.addLayout(file_layout)
         layout.addLayout(model_layout)
         layout.addLayout(token_layout)
@@ -263,8 +285,10 @@ class TokenMaxxerV3App(QMainWindow):
     # ---------------- Config ----------------
     def load_config(self):
         last, recents = self.core.load_config()
-        self.model_combo.addItems(recents if recents else [])
-        self.model_combo.setCurrentText(last)
+        if recents:
+            self.model_combo.addItems(recents)
+        if last:
+            self.model_combo.setCurrentText(last)
 
 # Standalone launcher
 if __name__ == "__main__":

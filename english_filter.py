@@ -1,22 +1,22 @@
-# english_filter.py
+import os
+from pathlib import Path
+from contextlib import nullcontext, redirect_stderr
+from multiprocessing import Pool, cpu_count
 import json
 import fasttext
-import os
 import urllib.request
 from tqdm import tqdm
-from multiprocessing import Pool, cpu_count
 import regex as re
-from contextlib import nullcontext
+import io
+import sys
 
 MODEL_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz"
 MODEL_FILENAME = "lid.176.ftz"
 
-# Precompiled regex for unwanted unicode ranges
 UNICODE_FILTER_RE = re.compile(
     r'[\u00C0-\u017F\u0400-\u04FF\u0370-\u03FF\u0590-\u05FF\u0600-\u06FF\u0900-\u097F\u4E00-\u9FFF]'
 )
 
-# Global model per process
 _model = None
 
 def download_model_if_missing(model_path):
@@ -24,10 +24,22 @@ def download_model_if_missing(model_path):
         urllib.request.urlretrieve(MODEL_URL, model_path)
 
 def load_fasttext_model():
+    """
+    Load the fasttext model while suppressing the warning emitted internally.
+    """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     model_path = os.path.join(script_dir, MODEL_FILENAME)
     download_model_if_missing(model_path)
-    return fasttext.load_model(model_path)
+    
+    # Suppress internal warning by redirecting stderr temporarily
+    stderr = sys.stderr
+    with io.StringIO() as fake_stderr:
+        try:
+            sys.stderr = fake_stderr
+            model = fasttext.load_model(model_path)
+        finally:
+            sys.stderr = stderr
+    return model
 
 def init_worker():
     global _model
@@ -80,9 +92,32 @@ def process_batch(args):
 
     return valid_entries, rejected_entries, english_count, non_english_count, json_error_count
 
-def filter_english_jsonl(input_path, output_path, rejected_path=None, threshold=0.69, batch_size=256, workers=None):
+def filter_english_jsonl(input_path, output_path=None, rejected_path=None, threshold=0.69, batch_size=256, workers=None):
     if workers is None:
         workers = max(1, cpu_count() - 1)
+
+    script_dir = Path(os.getcwd())
+    input_path = Path(input_path)
+
+    # Setup default output path if not provided or relative
+    if output_path is None:
+        filtered_dir = script_dir / "filtered"
+        filtered_dir.mkdir(exist_ok=True)
+        output_path = filtered_dir / f"{input_path.stem}_filtered.jsonl"
+    else:
+        output_path = Path(output_path)
+        if not output_path.is_absolute():
+            filtered_dir = script_dir / "filtered"
+            filtered_dir.mkdir(exist_ok=True)
+            output_path = filtered_dir / output_path.name
+
+    # Setup default rejected path if provided and relative
+    if rejected_path is not None:
+        rejected_path = Path(rejected_path)
+        if not rejected_path.is_absolute():
+            rejected_dir = script_dir / "rejected"
+            rejected_dir.mkdir(exist_ok=True)
+            rejected_path = rejected_dir / rejected_path.name
 
     with open(input_path, 'r', encoding='utf-8') as infile:
         lines = infile.readlines()
@@ -116,4 +151,4 @@ def filter_english_jsonl(input_path, output_path, rejected_path=None, threshold=
         "english_total": english_total,
         "non_english_total": non_english_total,
         "json_error_total": json_error_total
-}
+    }

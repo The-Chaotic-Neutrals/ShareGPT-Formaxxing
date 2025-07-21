@@ -1,3 +1,12 @@
+import os
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"   # Silence pygame startup messages
+
+import logging
+logging.getLogger("faiss").setLevel(logging.WARNING)  # Silence faiss info logs
+
+import warnings
+warnings.filterwarnings("ignore", message=".*load_model does not return WordVectorModel.*")  # Silence fasttext specific warnings
+
 import tkinter as tk
 from tkinter import ttk
 from theme import Theme
@@ -17,10 +26,10 @@ from parquetmaxxer_app import ParquetMaxxer
 from english_filter_app import EnglishFilterApp        # 💫 NEW IMPORT
 from tokenmaxxerv3_app import TokenMaxxerV3App         # PyQt TokenMaxxer
 
-import os
 import sys
-from PyQt5.QtWidgets import QApplication
 import threading
+from PyQt5.QtWidgets import QApplication
+from PyQt5 import QtGui
 
 class UIManager:
     def __init__(self, root):
@@ -31,7 +40,7 @@ class UIManager:
         self.setup_ui()
 
     def setup_ui(self):
-        self.root.configure(bg=self.theme.get('bg', 'white'))
+        self.root.configure(bg=self.theme.get('bg', '#000000'))
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         self.set_icon()
@@ -57,14 +66,14 @@ class UIManager:
     def open_deduplication_app(self): DeduplicationApp(self.root, self.theme)
 
     def open_ngram_analyzer_app(self):
-        ngram_window = tk.Toplevel(self.root)
-        ngram_window.title("N-gram Analyzer App")
-        if os.path.exists("icon.ico"):
-            try:
-                ngram_window.iconbitmap("icon.ico")
-            except Exception as e:
-                print(f"Could not set icon: {e}")
-        NgramAnalyzerApp(ngram_window, self.theme)
+        def launch():
+            qt_app = QApplication.instance()
+            if qt_app is None:
+                qt_app = QApplication(sys.argv)
+            win = NgramAnalyzerApp(self.theme)
+            win.show()
+            qt_app.exec_()
+        threading.Thread(target=launch, daemon=True).start()
 
     def open_text_correction_app(self): GrammarMaxxerApp(self.root, self.theme)
 
@@ -78,27 +87,36 @@ class UIManager:
                 print(f"Could not set icon: {e}")
         SafetensorMaxxerApp(safetensor_window, self.theme)
 
-    # ✨ LineMancer
+    # ✨ Updated LineMancer with PyQt5 instead of Tkinter
     def open_linemancer_app(self):
-        linemancer_window = tk.Toplevel(self.root)
-        linemancer_window.title("LineMancer — JSONL Split/Merge/Shuffle")
-        linemancer_window.geometry("620x500")
-        linemancer_window.configure(bg="#2e2e2e")
-        if os.path.exists("icon.ico"):
-            try:
-                linemancer_window.iconbitmap("icon.ico")
-            except Exception as e:
-                print(f"Could not set icon: {e}")
-        frame = LineMancerFrame(linemancer_window)
-        frame.pack(fill="both", expand=True)
+        def launch():
+            qt_app = QApplication.instance()
+            if qt_app is None:
+                qt_app = QApplication(sys.argv)
+            win = LineMancerFrame()
+            win.setWindowTitle("LineMancer — JSONL Split/Merge/Shuffle")
+            win.resize(640, 520)
+            icon_path = "icon.ico"
+            if os.path.exists(icon_path):
+                win.setWindowIcon(QtGui.QIcon(icon_path))
+            win.show()
+            qt_app.exec_()
+        threading.Thread(target=launch, daemon=True).start()
 
     # ✨ ParquetMaxxer
     def open_parquetmaxxer_app(self):
         ParquetMaxxer(self.root)
 
-    # ✨ EnglishFilter (English Maxxer)
+    # ✨ EnglishFilter (English Maxxer) - FIXED for PyQt5 app
     def open_englishfilter_app(self):
-        EnglishFilterApp(self.root)
+        def launch():
+            qt_app = QApplication.instance()
+            if qt_app is None:
+                qt_app = QApplication(sys.argv)
+            win = EnglishFilterApp()
+            win.show()
+            qt_app.exec_()
+        threading.Thread(target=launch, daemon=True).start()
 
     # ✨ TokenMaxxer (PyQt5)
     def open_tokenmaxxer_app(self):
@@ -122,8 +140,7 @@ class UIManager:
         threading.Thread(target=launch, daemon=True).start()
 
     def create_options_ui(self):
-        # increased to 14 columns
-        options_frame = tk.Frame(self.root, bg=self.theme.get('bg', 'white'))
+        options_frame = tk.Frame(self.root, bg=self.theme.get('bg', '#000000'))
         options_frame.grid(row=0, column=0, columnspan=14, pady=20, sticky='ew')
 
         for i in range(14):
@@ -151,27 +168,27 @@ class UIManager:
                 options_frame,
                 text=text,
                 command=command,
-                bg=self.theme.get('button_bg', 'lightgrey'),
-                fg=self.theme.get('button_fg', 'black')
+                bg=self.theme.get('button_bg', '#1e90ff'),
+                fg=self.theme.get('button_fg', '#ffffff')
             )
             button.grid(row=0, column=index, pady=10, padx=5, sticky='ew')
 
     def update_ui_styles(self):
         self.style.configure('TButton',
-                             background=self.theme.get('button_bg', 'lightgrey'),
-                             foreground=self.theme.get('button_fg', 'black'))
+                             background=self.theme.get('button_bg', '#1e90ff'),
+                             foreground=self.theme.get('button_fg', '#ffffff'))
         self.style.configure('TLabel',
-                             background=self.theme.get('bg', 'white'),
-                             foreground=self.theme.get('fg', 'black'))
+                             background=self.theme.get('bg', '#000000'),
+                             foreground=self.theme.get('fg', '#1e90ff'))
         self.style.configure('TEntry',
-                             fieldbackground=self.theme.get('entry_bg', 'white'),
-                             foreground=self.theme.get('entry_fg', 'black'))
+                             fieldbackground=self.theme.get('entry_bg', '#000000'),
+                             foreground=self.theme.get('entry_fg', '#ffffff'))
         for widget in self.root.winfo_children():
             if widget.winfo_class() == 'Frame':
-                widget.configure(bg=self.theme.get('bg', 'white'))
+                widget.configure(bg=self.theme.get('bg', '#000000'))
             elif widget.winfo_class() in ['Label', 'Button']:
-                widget.configure(bg=self.theme.get('bg', 'white'),
-                                 fg=self.theme.get('fg', 'black'))
+                widget.configure(bg=self.theme.get('bg', '#000000'),
+                                 fg=self.theme.get('fg', '#1e90ff'))
             elif widget.winfo_class() == 'Entry':
-                widget.configure(bg=self.theme.get('entry_bg', 'white'),
-                                 fg=self.theme.get('entry_fg', 'black'))
+                widget.configure(bg=self.theme.get('entry_bg', '#000000'),
+                                 fg=self.theme.get('entry_fg', '#ffffff'))

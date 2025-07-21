@@ -30,7 +30,7 @@ class DeslopToolApp:
         self.theme = theme
 
         self.root = tk.Toplevel(self.master)
-        self.root.title("Deslop Tool")
+        self.root.title("DeslopMancer")
 
         self.set_icon()
         self.root.configure(bg=self.theme['bg'])

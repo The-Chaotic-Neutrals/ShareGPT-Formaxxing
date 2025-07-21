@@ -32,7 +32,7 @@ class BinaryClassificationApp:
 
     def setup_ui(self):
         self.window = tk.Toplevel(self.root)
-        self.window.title("Binary Classification App")
+        self.window.title("RefusalMancer")
         self.window.configure(bg=self.theme.get('bg', 'white'))
         self.window.iconbitmap('icon.ico')
 

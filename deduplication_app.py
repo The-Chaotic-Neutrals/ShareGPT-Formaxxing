@@ -18,7 +18,7 @@ class DeduplicationApp:
 
     def setup_ui(self):
         self.window = tk.Toplevel(self.root)
-        self.window.title("Deduplication App")
+        self.window.title("DedupMancer")
         self.window.configure(bg=self.theme.get('bg', 'white'))
 
         icon_path = 'icon.ico'

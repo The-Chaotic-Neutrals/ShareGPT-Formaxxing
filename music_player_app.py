@@ -14,7 +14,7 @@ class MusicPlayerApp:
 
     def setup_ui(self):
         self.window = tk.Toplevel(self.root)
-        self.window.title("Music Player")
+        self.window.title("MusicMaxxer")
         self.window.configure(bg=self.theme.get('bg', 'white'))
 
         # Set the window icon

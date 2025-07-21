@@ -53,7 +53,7 @@ class GrammarMaxxerApp:
     def setup_ui(self):
         """Set up the user interface for the GrammarMaxxer app."""
         self.window = tk.Toplevel(self.root)
-        self.window.title("GrammarMaxxer App")
+        self.window.title("GrammarMaxxer")
         self.window.configure(bg=self.theme.get('bg', 'white'))
         self.window.iconbitmap('icon.ico')
 

@@ -6,15 +6,16 @@ from PyQt5.QtWidgets import (
     QTextEdit, QFileDialog, QVBoxLayout, QHBoxLayout, QComboBox
 )
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QTextCursor, QFont
+from PyQt5.QtGui import QIcon, QTextCursor, QFont
 from tokenmaxxerv3 import TokenMaxxerCore
 from theme import Theme  # Import your Theme here
 
 class TokenMaxxerV3App(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🧠 TokenMaxxerV3")
+        self.setWindowTitle("🧠 TokenMaxxer")
         self.setGeometry(100, 100, 960, 800)
+        self.setWindowIcon(QIcon("icon.ico"))
 
         self.theme = Theme.DARK  # Your theme instance
 

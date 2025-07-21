@@ -103,9 +103,16 @@ class UIManager:
             qt_app.exec_()
         threading.Thread(target=launch, daemon=True).start()
 
-    # ✨ ParquetMaxxer
+    # ✨ ParquetMaxxer — UPDATED TO LAUNCH AS PyQt5 APP
     def open_parquetmaxxer_app(self):
-        ParquetMaxxer(self.root)
+        def launch():
+            qt_app = QApplication.instance()
+            if qt_app is None:
+                qt_app = QApplication(sys.argv)
+            win = ParquetMaxxer()
+            win.show()
+            qt_app.exec_()
+        threading.Thread(target=launch, daemon=True).start()
 
     # ✨ EnglishFilter (English Maxxer) - FIXED for PyQt5 app
     def open_englishfilter_app(self):

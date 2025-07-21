@@ -1,140 +1,197 @@
-import customtkinter as ctk
-from tkinter import filedialog, messagebox
-from multiprocessing import Process, Manager
-from threading import Thread
 import os
+import sys
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QPushButton, QLabel, QTextEdit,
+    QFileDialog, QHBoxLayout, QVBoxLayout, QGraphicsDropShadowEffect,
+    QSizePolicy
+)
+from PyQt5.QtGui import QFont, QIcon, QColor, QTextCursor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
+from multiprocessing import Process, Manager
 from parquetmaxxer import jsonl_to_parquet_worker, parquet_to_jsonl_worker
+import theme  # Theme.DARK is assumed to be defined
 
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("dark-blue")
 
-class ParquetMaxxer(ctk.CTkToplevel):  # 👈 this is now a Toplevel
-    def __init__(self, master=None):
-        super().__init__(master)
-        self.title("ParquetMaxxer — JSONL ⇄ Parquet Converter")
-        self.geometry("900x640")
-        self.resizable(False, False)
-        self.configure(fg_color="#0A0A0A")
+class WorkerThread(QThread):
+    update_preview = pyqtSignal(str)
+    update_status = pyqtSignal(str, QColor)
+    finished_signal = pyqtSignal(str)  # Pass output path on finish
 
-        # Icon support
-        if os.path.exists("icon.ico"):
-            try:
-                self.iconbitmap("icon.ico")
-            except Exception as e:
-                print(f"Could not set icon: {e}")
+    def __init__(self, files, worker_func):
+        super().__init__()
+        self.files = files
+        self.worker_func = worker_func
 
-        # Title
-        self.title_label = ctk.CTkLabel(
-            self,
-            text="🧬 ParquetMaxxer",
-            font=ctk.CTkFont(size=28, weight="bold"),
-            text_color="#EEEEEE"
-        )
-        self.title_label.pack(pady=(20, 10))
-
-        # Buttons
-        self.button_frame = ctk.CTkFrame(self, fg_color="#0A0A0A")
-        self.button_frame.pack(pady=10)
-
-        neon_blue = "#00BFFF"
-        self.convert_btn = ctk.CTkButton(
-            self.button_frame, text="📥 Convert JSONL ➜ Parquet",
-            command=self.convert_files, width=280, height=45,
-            font=ctk.CTkFont(size=14),
-            fg_color="#222222", hover_color="#333333", text_color=neon_blue
-        )
-        self.convert_btn.grid(row=0, column=0, padx=20, pady=5)
-
-        self.reverse_btn = ctk.CTkButton(
-            self.button_frame, text="📤 Convert Parquet ➜ JSONL",
-            command=self.revert_files, width=280, height=45,
-            font=ctk.CTkFont(size=14),
-            fg_color="#222222", hover_color="#333333", text_color=neon_blue
-        )
-        self.reverse_btn.grid(row=0, column=1, padx=20, pady=5)
-
-        # Preview
-        self.preview_label = ctk.CTkLabel(
-            self,
-            text="📝 Preview Panel",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            anchor="w", justify="left",
-            text_color="#CCCCCC"
-        )
-        self.preview_label.pack(pady=(15, 5), anchor="w", padx=25)
-
-        self.preview_box = ctk.CTkTextbox(
-            self, width=840, height=400,
-            font=("Consolas", 11),
-            corner_radius=8, wrap="none",
-            fg_color="#111111", text_color="#CCCCCC", border_width=0
-        )
-        self.preview_box.pack(padx=25, pady=5)
-        self.preview_box.configure(state="disabled")
-
-        self.status_label = ctk.CTkLabel(
-            self,
-            text="💤 Waiting for action...",
-            font=ctk.CTkFont(size=14),
-            text_color="#888888"
-        )
-        self.status_label.pack(pady=(5, 5))
-
-    def run_with_multiprocessing(self, files, worker_func):
+    def run(self):
         manager = Manager()
         queue = manager.Queue()
-        processes = [Process(target=worker_func, args=(path, queue)) for path in files]
+        processes = [Process(target=self.worker_func, args=(path, queue)) for path in self.files]
         for p in processes:
             p.start()
 
-        self.preview_box.configure(state="normal")
-        self.preview_box.delete("1.0", "end")
         results = []
+        while True:
+            msg = queue.get()
+            if isinstance(msg, tuple):
+                results.append(msg)
+                if len(results) == len(self.files):
+                    break
 
-        def monitor():
-            while True:
-                msg = queue.get()
-                if isinstance(msg, tuple):
-                    results.append(msg)
-                    if len(results) == len(files):
-                        break
-            self.preview_box.configure(state="normal")
-            for file_path, preview, error in results:
-                filename = os.path.basename(file_path)
-                if error:
-                    self.preview_box.insert("end", f"❌ {filename} failed: {error}\n\n")
-                else:
-                    self.preview_box.insert("end", f"✅ {filename}\n{preview}\n\n")
-            self.preview_box.configure(state="disabled")
-            self.status_label.configure(text="🎉 All files processed!", text_color="#00FFAA")
-            messagebox.showinfo("Results", f"Processed {len(files)} files.")
+        preview_text = ""
+        output_paths = []
+        # Unpack results now expecting 4 elements
+        for file_path, out_path, preview, error in results:
+            filename = os.path.basename(file_path)
+            if error:
+                preview_text += f"❌ {filename} failed: {error}\n\n"
+            else:
+                preview_text += f"✅ {filename}\n{preview}\n\n"
+                output_paths.append(out_path)
 
-        Thread(target=monitor, daemon=True).start()
+        self.update_preview.emit(preview_text)
+        self.update_status.emit(preview_text, QColor("#FFFFFF"))
+
+        # Show the first output path in status, or fallback
+        out_path = output_paths[0] if output_paths else "No output path available"
+        self.finished_signal.emit(out_path)
+
+
+class ParquetMaxxer(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("ParquetMaxxer — JSONL ⇄ Parquet Converter")
+        self.resize(960, 680)
+        self.theme = theme.Theme.DARK
+        self.setStyleSheet(f"background-color: {self.theme['bg']};")
+        self.init_ui()
+
+        if os.path.exists("icon.ico"):
+            try:
+                self.setWindowIcon(QIcon("icon.ico"))
+            except Exception as e:
+                print(f"Could not set icon: {e}")
+
+    def init_ui(self):
+        central_widget = QWidget()
+        central_widget.setStyleSheet(f"background-color: {self.theme['bg']};")
+        self.setCentralWidget(central_widget)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(16)
+        central_widget.setLayout(main_layout)
+
+        self.title_label = QLabel("🧬 ParquetMaxxer")
+        self.title_label.setFont(QFont("Arial", 28, QFont.Bold))
+        self.title_label.setStyleSheet(f"color: {self.theme['fg']};")
+        self.title_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(self.title_label)
+
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(30)
+        main_layout.addLayout(button_layout)
+
+        self.convert_btn = QPushButton("📥 Convert JSONL ➜ Parquet")
+        self._style_button(self.convert_btn)
+        self.convert_btn.clicked.connect(self.convert_files)
+        button_layout.addWidget(self.convert_btn)
+
+        self.reverse_btn = QPushButton("📤 Convert Parquet ➜ JSONL")
+        self._style_button(self.reverse_btn)
+        self.reverse_btn.clicked.connect(self.revert_files)
+        button_layout.addWidget(self.reverse_btn)
+
+        self.preview_label = QLabel("📝 Preview Panel")
+        self.preview_label.setFont(QFont("Arial", 16, QFont.Bold))
+        self.preview_label.setStyleSheet(f"color: {self.theme['fg']};")
+        self.preview_label.setAlignment(Qt.AlignLeft)
+        main_layout.addWidget(self.preview_label)
+
+        self.preview_box = QTextEdit()
+        self.preview_box.setReadOnly(True)
+        self.preview_box.setFont(QFont("Consolas", 11))
+        self.preview_box.setLineWrapMode(QTextEdit.NoWrap)
+        self.preview_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.preview_box.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {self.theme['text_bg']};
+                color: {self.theme['text_fg']};
+                border: 1px solid #666666;
+                border-radius: 8px;
+                padding: 8px;
+            }}
+        """)
+        main_layout.addWidget(self.preview_box)
+
+        self.status_label = QLabel("💤 Waiting for action...")
+        self.status_label.setFont(QFont("Consolas", 12))
+        self.status_label.setStyleSheet(f"color: {self.theme['text_fg']}; background-color: {self.theme['bg']};")
+        self.status_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.status_label.setWordWrap(True)
+        self.status_label.setMinimumHeight(100)
+        main_layout.addWidget(self.status_label)
+
+    def _style_button(self, button):
+        button.setFixedSize(280, 45)
+        button.setFont(QFont("Arial", 14))
+        button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.theme['button_bg']};
+                color: {self.theme['button_fg']};
+                border-radius: 8px;
+            }}
+            QPushButton:hover {{
+                background-color: #333;
+            }}
+        """)
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(15)
+        shadow.setOffset(0, 2)
+        shadow.setColor(QColor(0, 0, 0, 160))
+        button.setGraphicsEffect(shadow)
+
+    def run_with_multiprocessing(self, files, worker_func):
+        self.status_label.setText("⏳ Processing...")
+        self.status_label.setStyleSheet(f"color: {self.theme['fg']}; background-color: {self.theme['bg']};")
+
+        self.worker_thread = WorkerThread(files, worker_func)
+        self.worker_thread.update_preview.connect(self.update_preview)
+        self.worker_thread.update_status.connect(self.update_status)
+        self.worker_thread.finished_signal.connect(self.processing_finished)
+        self.worker_thread.start()
+
+    def update_preview(self, text):
+        self.preview_box.clear()
+        self.preview_box.setPlainText(text)
+        self.preview_box.moveCursor(QTextCursor.Start)
+
+    def update_status(self, text, color):
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f"color: {color.name()}; background-color: {self.theme['bg']};")
+
+    def processing_finished(self, output_path):
+        self.status_label.setText(f"🎉 Success! Output: {output_path}")
+        self.status_label.setStyleSheet(f"color: #00FF00; background-color: {self.theme['bg']};")
 
     def convert_files(self):
-        files = filedialog.askopenfilenames(
-            title="Select JSONL files",
-            filetypes=[("JSONL files", "*.jsonl")]
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Select JSONL files", "", "JSONL files (*.jsonl)"
         )
         if files:
-            self.status_label.configure(text="⏳ Converting...", text_color="white")
             self.run_with_multiprocessing(files, jsonl_to_parquet_worker)
 
     def revert_files(self):
-        files = filedialog.askopenfilenames(
-            title="Select Parquet files",
-            filetypes=[("Parquet files", "*.parquet")]
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Select Parquet files", "", "Parquet files (*.parquet)"
         )
         if files:
-            self.status_label.configure(text="⏳ Reverting...", text_color="white")
             self.run_with_multiprocessing(files, parquet_to_jsonl_worker)
 
 
-# ✅ Optional standalone test
 if __name__ == "__main__":
-    # Create a simple CTk root and launch a ParquetMaxxer window attached to it
-    root = ctk.CTk()
-    root.withdraw()  # hide the empty root window
-    ParquetMaxxer(root)  # launch as a Toplevel
-    root.mainloop()
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    window = ParquetMaxxer()
+    window.show()
+    sys.exit(app.exec_())

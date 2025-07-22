@@ -27,6 +27,7 @@ from tokenmaxxerv3_app import TokenMaxxerV3App
 import sys
 from PyQt5.QtWidgets import QApplication
 from PyQt5 import QtGui
+from pathlib import Path
 
 
 class UIManager:
@@ -42,6 +43,12 @@ class UIManager:
         if self.qt_app is None:
             self.qt_app = QApplication(sys.argv)
 
+        # Set app icon for QApplication (affects taskbar icon)
+        icon_path = Path(__file__).parent / "icon.ico"
+        if icon_path.exists():
+            icon = QtGui.QIcon(str(icon_path))
+            self.qt_app.setWindowIcon(icon)
+
         self.start_qt_event_loop()
 
     def setup_ui(self):
@@ -50,10 +57,10 @@ class UIManager:
         self.create_options_ui()
 
     def set_icon(self):
-        icon_path = "icon.ico"
-        if os.path.exists(icon_path):
+        icon_path = Path(__file__).parent / "icon.ico"
+        if icon_path.exists():
             try:
-                self.root.iconbitmap(icon_path)
+                self.root.iconbitmap(str(icon_path))
             except Exception as e:
                 print(f"Could not set main icon: {e}")
 
@@ -79,6 +86,11 @@ class UIManager:
         bg = self.theme.get('bg', '#222222')
         fg = self.theme.get('fg', '#ffffff')
         win.setStyleSheet(f"background-color: {bg}; color: {fg};")
+
+        # Set icon on this window explicitly as well
+        icon_path = Path(__file__).parent / "icon.ico"
+        if icon_path.exists():
+            win.setWindowIcon(QtGui.QIcon(str(icon_path)))
 
         win.show()
         self.qt_windows.append(win)
@@ -107,9 +119,9 @@ class UIManager:
         win = LineMancerFrame()
         win.setWindowTitle("LineMancer")
         win.resize(640, 520)
-        icon_path = "icon.ico"
-        if os.path.exists(icon_path):
-            win.setWindowIcon(QtGui.QIcon(icon_path))
+        icon_path = Path(__file__).parent / "icon.ico"
+        if icon_path.exists():
+            win.setWindowIcon(QtGui.QIcon(str(icon_path)))
         win.show()
         self.qt_windows.append(win)
 
@@ -135,6 +147,10 @@ class UIManager:
         app = GenerateWordCloudApp(None, self.theme)
         if hasattr(app, 'window'):
             app.window.setWindowTitle("WordCloudMaxxer")
+            # Set icon explicitly
+            icon_path = Path(__file__).parent / "icon.ico"
+            if icon_path.exists():
+                app.window.setWindowIcon(QtGui.QIcon(str(icon_path)))
             app.window.show()
             self.qt_windows.append(app.window)
 

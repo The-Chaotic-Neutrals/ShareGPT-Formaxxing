@@ -9,7 +9,7 @@ class LineMancerFrame(QtWidgets.QWidget):
         self.core = LineMancerCore()
         self.theme = Theme.DARK
 
-        self.setWindowTitle("✨ LineMancer — JSONL Tool ✨")
+        self.setWindowTitle("✨ LineMancer ✨")
         self.setMinimumSize(640, 520)
 
         self.mode = "split"
@@ -25,7 +25,7 @@ class LineMancerFrame(QtWidgets.QWidget):
         main_layout = QtWidgets.QVBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
 
-        title_label = QtWidgets.QLabel("✨ LineMancer — JSONL Tool ✨")
+        title_label = QtWidgets.QLabel("✨ LineMancer ✨")
         title_label.setFont(QtGui.QFont("Segoe UI", 14, QtGui.QFont.Bold))
         main_layout.addWidget(title_label, alignment=QtCore.Qt.AlignLeft)
 

@@ -36,7 +36,7 @@ class FilterWorker(QThread):
 class EnglishFilterApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EnglishFilter — FastText JSONL Cleaner")
+        self.setWindowTitle("EnglishMaxxer")
         self.setFixedSize(700, 400)
         self.theme = Theme.DARK
 
@@ -63,7 +63,7 @@ class EnglishFilterApp(QMainWindow):
         font_label = QFont("Segoe UI", 11)
         font_status = QFont("Segoe UI", 14)
 
-        self.title_label = QLabel("🧹 EnglishFilter")
+        self.title_label = QLabel("🧹 EnglishMaxxer")
         self.title_label.setFont(font_title)
         self.title_label.setStyleSheet(f"color: {self.theme['fg']};")
         self.title_label.setAlignment(Qt.AlignCenter)

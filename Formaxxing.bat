@@ -122,7 +122,7 @@ echo %CYAN_FG%Installing fastText...%RESET%
 python -m pip install --upgrade fasttext-0.9.2-cp311-cp311-win_amd64.whl
 
 echo Starting the program...
-start python main.py
+start python ui_manager.py
 pause
 goto MENU
 
@@ -132,7 +132,7 @@ echo %YELLOW_FG%Starting program without updates...%RESET%
 
 call venv\Scripts\activate.bat
 
-start python main.py
+start python ui_manager.py
 pause
 goto MENU
 

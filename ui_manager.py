@@ -67,23 +67,22 @@ class UIManager:
 
     # All these pass the main root window
     def open_music_player_app(self):
-        app = MusicPlayerApp(self.root, self.theme)
-        # No title change on root
+        MusicPlayerApp(self.root, self.theme)
 
     def open_dataset_converter_app(self):
-        app = DatasetConverterApp(self.root, self.theme)
+        DatasetConverterApp(self.root, self.theme)
 
     def open_filter_app(self):
-        app = DataMaxxerApp(self.root, self.theme)
+        DataMaxxerApp(self.root, self.theme)
 
     def open_deslop_tool(self):
-        app = DeslopToolApp(self.root, self.theme)
+        DeslopToolApp(self.root, self.theme)
 
     def open_binary_classification_app(self):
-        app = BinaryClassificationApp(self.root, self.theme)
+        BinaryClassificationApp(self.root, self.theme)
 
     def open_deduplication_app(self):
-        app = DeduplicationApp(self.root, self.theme)
+        DeduplicationApp(self.root, self.theme)
 
     def open_ngram_analyzer_app(self):
         win = NgramAnalyzerApp(self.theme)
@@ -92,13 +91,12 @@ class UIManager:
         self.qt_windows.append(win)
 
     def open_text_correction_app(self):
-        app = GrammarMaxxerApp(self.root, self.theme)
+        GrammarMaxxerApp(self.root, self.theme)
 
     def open_safetensormaxxer_app(self):
-        # This one needs a Toplevel root
         win = tk.Toplevel(self.root)
         win.title("SafetensorMaxxer")
-        app = SafetensorMaxxerApp(win, self.theme)
+        SafetensorMaxxerApp(win, self.theme)
 
     def open_linemancer_app(self):
         win = LineMancerFrame()
@@ -130,7 +128,6 @@ class UIManager:
 
     def open_wordcloud_generator_app(self):
         app = GenerateWordCloudApp(None, self.theme)
-        # Assuming this app creates its own window internally
         if hasattr(app, 'window'):
             app.window.setWindowTitle("WordCloudMaxxer")
             app.window.show()
@@ -196,3 +193,9 @@ class UIManager:
             self.root.after(10, process_qt_events)
 
         self.root.after(10, process_qt_events)
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = UIManager(root)
+    root.mainloop()

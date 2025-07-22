@@ -7,7 +7,6 @@ pandas
 Pillow
 polars
 pyarrow
-pygame
 PyYAML
 Requests
 spacy
@@ -26,7 +25,4 @@ rensa
 sentence-transformers
 faiss-cpu
 datasets
-onnxruntime
-onnx
-customtkinter
 pyqt5

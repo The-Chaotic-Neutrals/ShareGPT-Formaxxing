@@ -1,45 +1,50 @@
-import tkinter as tk
-from tkinter import filedialog, scrolledtext
-from threading import Thread
-import language_tool_python
+import sys
 import logging
-from grammar_maxxer import GrammarMaxxer  # Updated import to GrammarMaxxer
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QPushButton, QLineEdit, QFileDialog,
+    QVBoxLayout, QHBoxLayout, QTextEdit, QCheckBox, QSpacerItem, QSizePolicy
+)
+from PyQt5.QtGui import QIcon, QFont
+from PyQt5.QtCore import Qt, pyqtSignal, QObject, QThread
 
-class ToggleSwitch(tk.Canvas):
-    def __init__(self, parent, *args, **kwargs):
-        super().__init__(parent, width=60, height=30, bg='white', *args, **kwargs)
-        self.parent = parent
-        self.create_rectangle(0, 0, 60, 30, fill='lightgrey', outline='black', tags='bg')
-        self.switch = self.create_oval(5, 5, 25, 25, fill='white', outline='black', tags='switch')
-        self.state = tk.StringVar(value='off')
-        self.bind("<Button-1>", self.toggle)
-        self.update_switch()
+from grammar_maxxer import GrammarMaxxer  # Your processing class
 
-    def toggle(self, event):
-        if self.state.get() == 'off':
-            self.state.set('on')
-        else:
-            self.state.set('off')
-        self.update_switch()
 
-    def update_switch(self):
-        if self.state.get() == 'on':
-            self.coords('switch', 30, 5, 50, 25)
-            self.itemconfig('bg', fill='lightgreen')
-        else:
-            self.coords('switch', 5, 5, 25, 25)
-            self.itemconfig('bg', fill='lightgrey')
+class Worker(QObject):
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    status_update = pyqtSignal(str)
+    correction_update = pyqtSignal(str, str)
 
-class GrammarMaxxerApp:
-    def __init__(self, root, theme):
-        self.root = root
-        self.theme = theme
+    def __init__(self, input_file, toggles):
+        super().__init__()
+        self.input_file = input_file
+        self.toggles = toggles
 
-        self.toggles = {
-            'grammar': tk.StringVar(value="on"),
-        }
+    def run(self):
+        grammar_maxxer = GrammarMaxxer(self.input_file, self.toggles)
+        if not grammar_maxxer.validate_file():
+            self.error.emit(f"Invalid input file: {self.input_file}")
+            self.finished.emit()
+            return
 
-        self.setup_ui()
+        output_file = grammar_maxxer.prepare_output_file()
+        self.status_update.emit("Text correction started...")
+        try:
+            grammar_maxxer.process_file(output_file, self.correction_update.emit)
+            self.status_update.emit(f"Text correction complete. Output file: {output_file}")
+        except Exception as e:
+            logging.error(f"Error processing file: {e}", exc_info=True)
+            self.error.emit(f"Error processing file: {e}")
+        self.finished.emit()
+
+
+class GrammarMaxxerApp(QWidget):
+    def __init__(self, theme=None):
+        super().__init__()
+        self.theme = theme or {}
+        self.toggles = {'grammar': True}
+        self.init_ui()
         self.configure_logging()
 
     def configure_logging(self):
@@ -50,118 +55,145 @@ class GrammarMaxxerApp:
                                 logging.StreamHandler()
                             ])
 
-    def setup_ui(self):
-        """Set up the user interface for the GrammarMaxxer app."""
-        self.window = tk.Toplevel(self.root)
-        self.window.title("GrammarMaxxer")
-        self.window.configure(bg=self.theme.get('bg', 'white'))
-        self.window.iconbitmap('icon.ico')
+    def init_ui(self):
+        self.setWindowTitle("📝 GrammarMaxxer")
+        self.resize(750, 600)
+        if icon_path := "icon.ico":
+            self.setWindowIcon(QIcon(icon_path))
 
-        main_frame = tk.Frame(self.window, bg=self.theme.get('bg', 'white'))
-        main_frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        # Main layout
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
 
-        self.file_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
-        self.file_frame.pack(pady=5)
+        title_label = QLabel("📝 GrammarMaxxer")
+        title_label.setFont(QFont("Segoe UI", 18, QFont.Bold))
+        title_label.setStyleSheet(f"color: {self.theme.get('text_fg', '#ffffff')};")
+        title_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(title_label)
 
-        self.input_file_label = tk.Label(self.file_frame, text="Select Input File:", bg=self.theme.get('bg', 'white'), fg='gold')
-        self.input_file_label.pack(side=tk.LEFT, padx=5)
+        # File selection row
+        file_layout = QHBoxLayout()
+        self.input_file_edit = QLineEdit()
+        self.input_file_edit.setPlaceholderText("Choose a .jsonl file to correct...")
+        self.input_file_edit.setFont(QFont("Segoe UI", 12))
+        self.input_file_edit.setStyleSheet(
+            f"background-color: {self.theme.get('entry_bg', '#000000')}; "
+            f"color: {self.theme.get('entry_fg', '#ffffff')}; padding: 6px; border-radius: 6px;"
+        )
 
-        self.input_file_entry = tk.Entry(self.file_frame, width=50, fg='gold', bg=self.theme.get('entry_bg', 'white'))
-        self.input_file_entry.pack(side=tk.LEFT, padx=5)
+        self.browse_button = QPushButton("📂 Browse")
+        self.browse_button.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        self.browse_button.clicked.connect(self.browse_input_file)
+        self.browse_button.setStyleSheet(
+            f"background-color: {self.theme.get('button_bg', '#1e90ff')}; "
+            f"color: {self.theme.get('button_fg', '#ffffff')}; padding: 8px 16px; border-radius: 8px;"
+        )
 
-        self.input_file_button = tk.Button(self.file_frame, text="Browse", command=self.browse_input_file, bg=self.theme.get('button_bg', 'lightgrey'), fg='gold')
-        self.input_file_button.pack(side=tk.LEFT, padx=5)
+        file_layout.addWidget(self.input_file_edit)
+        file_layout.addWidget(self.browse_button)
+        main_layout.addLayout(file_layout)
 
-        self.correct_button = tk.Button(main_frame, text="Correct Text", command=self.start_text_correction, bg=self.theme.get('button_bg', 'lightgrey'), fg='gold')
-        self.correct_button.pack(pady=10)
+        # Toggles row
+        toggles_layout = QHBoxLayout()
+        self.grammar_toggle = QCheckBox("Enable Grammar Correction ✨")
+        self.grammar_toggle.setChecked(True)
+        self.grammar_toggle.setFont(QFont("Segoe UI", 12))
+        self.grammar_toggle.setStyleSheet(f"color: {self.theme.get('text_fg', '#ffffff')};")
+        self.grammar_toggle.stateChanged.connect(self.toggle_grammar_correction)
+        toggles_layout.addWidget(self.grammar_toggle)
+        toggles_layout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        main_layout.addLayout(toggles_layout)
 
-        self.toggles_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
-        self.toggles_frame.pack(pady=5)
+        # Correct button
+        self.correct_button = QPushButton("🚀 Correct Text")
+        self.correct_button.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        self.correct_button.clicked.connect(self.start_text_correction)
+        self.correct_button.setStyleSheet(
+            f"background-color: {self.theme.get('button_bg', '#1e90ff')}; "
+            f"color: {self.theme.get('button_fg', '#ffffff')}; padding: 10px 20px; border-radius: 10px;"
+        )
+        main_layout.addWidget(self.correct_button)
 
-        # Removed the hardcoded corrections toggle creation
-        self.create_toggle("Grammar Correction", 'grammar')
+        # Corrections text area
+        self.corrections_text = QTextEdit()
+        self.corrections_text.setReadOnly(True)
+        self.corrections_text.setFont(QFont("Consolas", 11))
+        self.corrections_text.setStyleSheet(
+            f"background-color: {self.theme.get('text_bg', '#000000')}; "
+            f"color: {self.theme.get('text_fg', '#ffffff')}; padding: 8px; border-radius: 6px;"
+        )
+        main_layout.addWidget(self.corrections_text, stretch=1)
 
-        self.status_bar = tk.Label(main_frame, text="Status: Ready", bg='lightgrey', fg='black', anchor='w')
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        # Status bar
+        self.status_bar = QLabel("Status: Ready")
+        self.status_bar.setFont(QFont("Segoe UI", 11))
+        self.status_bar.setStyleSheet(
+            f"background-color: {self.theme.get('bg', '#000000')}; "
+            f"color: {self.theme.get('text_fg', '#ffffff')}; padding: 4px 8px; border-radius: 4px;"
+        )
+        self.status_bar.setAlignment(Qt.AlignLeft)
+        main_layout.addWidget(self.status_bar)
 
-        self.corrections_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
-        self.corrections_frame.pack(pady=5, fill=tk.BOTH, expand=True)
+        # Set main layout and background
+        self.setLayout(main_layout)
+        self.setStyleSheet(f"background-color: {self.theme.get('bg', '#000000')};")
 
-        self.corrections_label = tk.Label(self.corrections_frame, text="Corrections:", bg=self.theme.get('bg', 'white'), fg='gold')
-        self.corrections_label.pack(anchor='w')
-
-        self.corrections_text = scrolledtext.ScrolledText(self.corrections_frame, wrap=tk.WORD, height=15, width=80, bg=self.theme.get('entry_bg', 'white'), fg='gold')
-        self.corrections_text.pack(fill=tk.BOTH, expand=True)
-
-    def create_toggle(self, text, key):
-        """Create a custom toggle switch for a given option."""
-        frame = tk.Frame(self.toggles_frame, bg=self.theme.get('bg', 'white'))
-        frame.pack(anchor='w', pady=2)
-
-        label = tk.Label(frame, text=text, bg=self.theme.get('bg', 'white'), fg='gold')
-        label.pack(side=tk.LEFT, padx=5)
-
-        toggle = ToggleSwitch(frame)
-        toggle.pack(side=tk.LEFT, padx=5)
-
-        # Bind the toggle state to the application state
-        def on_toggle(event):
-            if toggle.state.get() == 'on':
-                self.toggles[key].set('on')
-            else:
-                self.toggles[key].set('off')
-
-        toggle.bind("<ButtonRelease-1>", on_toggle)
-
-    def update_status(self, message):
-        """Update the status bar with a message."""
-        if self.root:
-            self.root.after(0, lambda: self.status_bar.config(text=f"Status: {message}"))
+    def toggle_grammar_correction(self, state):
+        self.toggles['grammar'] = state == Qt.Checked
 
     def browse_input_file(self):
-        """Open a file dialog to select the input JSONL file."""
-        file_path = filedialog.askopenfilename(filetypes=[("JSONL files", "*.jsonl")])
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select JSONL File", "", "JSONL files (*.jsonl)")
         if file_path:
-            self.input_file_entry.delete(0, tk.END)
-            self.input_file_entry.insert(0, file_path)
+            self.input_file_edit.setText(file_path)
 
     def start_text_correction(self):
-        """Start text correction in a separate thread to keep the UI responsive."""
-        thread = Thread(target=self.correct_text_file)
-        thread.start()
-
-    def correct_text_file(self):
-        """Correct the text in the input file and write the corrected text to an output file."""
-        grammar_maxxer = GrammarMaxxer(self.input_file_entry.get(), self.toggles)  # Create an instance of GrammarMaxxer
-        if not grammar_maxxer.validate_file():
+        input_file = self.input_file_edit.text()
+        if not input_file:
+            self.update_status("Please select an input file.")
             return
 
-        output_file = grammar_maxxer.prepare_output_file()
-        self.update_status("Text correction started...")
-        self.corrections_text.delete(1.0, tk.END)
+        self.correct_button.setEnabled(False)
+        self.corrections_text.clear()
 
-        try:
-            grammar_maxxer.process_file(output_file, self.update_corrections)
-            self.update_status(f"Text correction complete. Output file: {output_file}")
-        except Exception as e:
-            logging.error(f"Error processing file: {e}", exc_info=True)
-            self.update_status(f"Error processing file: {e}")
+        self.worker = Worker(input_file, self.toggles)
+        self.qthread = QThread()
+        self.worker.moveToThread(self.qthread)
+
+        self.qthread.started.connect(self.worker.run)
+        self.worker.status_update.connect(self.update_status)
+        self.worker.correction_update.connect(self.update_corrections)
+        self.worker.error.connect(self.handle_error)
+        self.worker.finished.connect(self.on_finished)
+        self.worker.finished.connect(self.qthread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.qthread.finished.connect(self.qthread.deleteLater)
+
+        self.qthread.start()
+
+    def update_status(self, message):
+        self.status_bar.setText(f"Status: {message}")
 
     def update_corrections(self, original_text, corrected_text):
-        """Update the corrections tracker with the original and corrected text."""
         correction_entry = f"Original: {original_text}\nCorrected: {corrected_text}\n\n"
-        self.root.after(0, lambda: self.corrections_text.insert(tk.END, correction_entry))
-        self.root.after(0, lambda: self.corrections_text.yview(tk.END))
+        self.corrections_text.append(correction_entry)
+        self.corrections_text.verticalScrollBar().setValue(self.corrections_text.verticalScrollBar().maximum())
+
+    def handle_error(self, message):
+        self.update_status(message)
+        self.correct_button.setEnabled(True)
+
+    def on_finished(self):
+        self.correct_button.setEnabled(True)
+
 
 def main():
-    root = tk.Tk()
-    root.title("GrammarMaxxer Tool")
-    app = GrammarMaxxerApp(root, theme={
-        'bg': 'black',
-        'entry_bg': 'lightgrey',
-        'button_bg': 'grey'
-    })
-    root.mainloop()
+    app = QApplication(sys.argv)
+    from theme import Theme
+    window = GrammarMaxxerApp(Theme.DARK)
+    window.show()
+    sys.exit(app.exec_())
+
 
 if __name__ == "__main__":
     main()

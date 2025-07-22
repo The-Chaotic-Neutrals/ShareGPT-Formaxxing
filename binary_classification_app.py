@@ -1,227 +1,323 @@
-import tkinter as tk
-from tkinter import filedialog
-from threading import Thread
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
+    QFileDialog, QRadioButton, QButtonGroup, QProgressBar
+)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+
 from binary_classification import (
     initialize_models,
-    update_device_preference,
     filter_conversations,
     set_filter_mode,
     FILTER_MODE_RP,
     FILTER_MODE_NORMAL
 )
 
-class BinaryClassificationApp:
-    def __init__(self, root, theme):
-        self.root = root
-        self.theme = theme
-        self.device = 'cuda'
-        self.total_positive_count = 0
-        self.total_negative_count = 0
-        self.input_files = []
 
-        self.gpu_var = tk.BooleanVar(value=True)  # ✅ Initialize before use
+class FilterThread(QThread):
+    status_update = pyqtSignal(str)
+    counts_update = pyqtSignal(int, int)
+    progress_update = pyqtSignal(int)
+    finished_signal = pyqtSignal()
 
-        initialize_models()
-        self.setup_ui()
-        self.configure_logging()
-        self.update_device_preference()
+    def __init__(self, input_files, threshold, batch_size):
+        super().__init__()
+        self.input_files = input_files
+        self.threshold = threshold
+        self.batch_size = batch_size
 
-    def configure_logging(self):
-        import logging
-        logging.basicConfig(level=logging.WARNING)
+    def run(self):
+        from binary_classification import filter_conversations as fc
 
-    def setup_ui(self):
-        self.window = tk.Toplevel(self.root)
-        self.window.title("RefusalMancer")
-        self.window.configure(bg=self.theme.get('bg', 'white'))
-        self.window.iconbitmap('icon.ico')
+        def status_callback(msg):
+            # Extract numeric progress percentage if present
+            if "%" in msg:
+                try:
+                    percent = int(float(msg.split("(")[-1].split("%")[0]))
+                    self.progress_update.emit(percent)
+                except ValueError:
+                    pass
+            self.status_update.emit(msg)
 
-        main_frame = tk.Frame(self.window, bg=self.theme.get('bg', 'white'))
-        main_frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        def counts_callback(pos, neg):
+            self.counts_update.emit(pos, neg)
 
-        self.file_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
-        self.file_frame.pack(pady=5)
+        total_files = len(self.input_files)
+        for idx, input_file in enumerate(self.input_files):
+            class DummyEntry:
+                def __init__(self, val):
+                    self._val = val
+                def get(self):
+                    return self._val
 
-        self.input_file_label = tk.Label(
-            self.file_frame, text="Select Input Files:",
-            bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
-        self.input_file_label.pack(side=tk.LEFT, padx=5)
-
-        self.input_file_entry = tk.Entry(self.file_frame, width=50)
-        self.input_file_entry.pack(side=tk.LEFT, padx=5)
-
-        self.input_file_button = tk.Button(
-            self.file_frame, text="Browse", command=self.browse_input_file,
-            bg=self.theme.get('button_bg', 'lightgrey'), fg='gold')  # ✅ Gold text
-        self.input_file_button.pack(side=tk.LEFT, padx=5)
-
-        self.filter_button = tk.Button(
-            main_frame, text="Filter Conversations", command=self.start_filtering,
-            bg=self.theme.get('button_bg', 'lightgrey'), fg='gold')
-        self.filter_button.pack(pady=10)
-
-        self.threshold_label = tk.Label(
-            main_frame, text="Threshold (0.0 - 1.0):",
-            bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
-        self.threshold_label.pack(pady=5)
-
-        self.threshold_entry = tk.Entry(main_frame, width=10)
-        self.threshold_entry.insert(0, '0.75')
-        self.threshold_entry.pack(pady=5)
-
-        self.batch_size_label = tk.Label(
-            main_frame, text="Batch Size:",
-            bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
-        self.batch_size_label.pack(pady=5)
-
-        self.batch_size_entry = tk.Entry(main_frame, width=10)
-        self.batch_size_entry.insert(0, '16')
-        self.batch_size_entry.pack(pady=5)
-
-        self.status_bar = tk.Label(
-            main_frame, text="Status: Ready", bg='lightgrey', fg='black', anchor='w')
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-
-        self.count_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
-        self.count_frame.pack(pady=5)
-
-        self.positive_count_label = tk.Label(
-            self.count_frame, text="Positive Count: 0",
-            bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
-        self.positive_count_label.pack(side=tk.LEFT, padx=5)
-
-        self.negative_count_label = tk.Label(
-            self.count_frame, text="Negative Count: 0",
-            bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black'))
-        self.negative_count_label.pack(side=tk.LEFT, padx=5)
-
-        # ✅ Red/Green GPU Toggle Button
-        self.gpu_enabled = True
-        self.gpu_button = tk.Button(
-            main_frame,
-            text="GPU: ON",
-            bg="green",
-            fg="white",
-            font=("Arial", 10, "bold"),
-            width=12,
-            relief="raised",
-            bd=2,
-            command=self.toggle_gpu
-        )
-        self.gpu_button.pack(pady=10)
-
-        self.mode_var = tk.StringVar(value=FILTER_MODE_RP)
-        self.mode_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
-        self.mode_frame.pack(pady=10)
-
-        self.mode_label = tk.Label(
-            self.mode_frame, text="Select Filter Mode:",
-            bg=self.theme.get('bg', 'white'), fg='gold')
-        self.mode_label.pack(side=tk.LEFT, padx=5)
-
-        self.rp_mode_radio = tk.Radiobutton(
-            self.mode_frame, text="RP Filter", variable=self.mode_var, value=FILTER_MODE_RP,
-            command=self.update_filter_mode,
-            bg=self.theme.get('bg', 'white'), fg='gold',
-            indicatoron=0, relief='raised', bd=2,
-            selectcolor='white', activebackground='white', activeforeground='black')
-        self.rp_mode_radio.pack(side=tk.LEFT, padx=5)
-
-        self.normal_mode_radio = tk.Radiobutton(
-            self.mode_frame, text="Normal Filter", variable=self.mode_var, value=FILTER_MODE_NORMAL,
-            command=self.update_filter_mode,
-            bg=self.theme.get('bg', 'white'), fg='gold',
-            indicatoron=0, relief='raised', bd=2,
-            selectcolor='white', activebackground='white', activeforeground='black')
-        self.normal_mode_radio.pack(side=tk.LEFT, padx=5)
-
-        self.class_logic_label = tk.Label(
-            main_frame,
-            text=self.get_classification_logic_text(),
-            bg=self.theme.get('bg', 'white'),
-            fg='gold',
-            font=('Arial', 9, 'italic')
-        )
-        self.class_logic_label.pack(pady=5)
-
-        self.update_filter_radio_styles()
-
-    def style_radio_button(self, button, selected):
-        if selected:
-            button.config(bg='white', fg='black', relief='raised', bd=2)
-        else:
-            button.config(bg=self.theme.get('bg', 'white'), fg='gold', relief='raised', bd=2)
-
-    def update_filter_radio_styles(self):
-        selected = self.mode_var.get()
-        self.style_radio_button(self.rp_mode_radio, selected == FILTER_MODE_RP)
-        self.style_radio_button(self.normal_mode_radio, selected == FILTER_MODE_NORMAL)
-
-    def get_classification_logic_text(self):
-        mode = self.mode_var.get()
-        if mode == FILTER_MODE_RP:
-            return "RP Filter: Class 0 = Refusal (positive), Class 1 = Safe"
-        else:
-            return "Normal Filter: Class 1 = Refusal (positive), Class 0 = Safe"
-
-    def update_filter_mode(self):
-        set_filter_mode(self.mode_var.get())
-        self.update_filter_radio_styles()
-        self.positive_count_label.config(text="Positive Count: 0")
-        self.negative_count_label.config(text="Negative Count: 0")
-        self.class_logic_label.config(text=self.get_classification_logic_text())
-        self.status_bar.config(text="Status: Filter mode switched.")
-
-    def toggle_gpu(self):
-        self.gpu_enabled = not self.gpu_enabled
-        new_text = "GPU: ON" if self.gpu_enabled else "GPU: OFF"
-        new_bg = "green" if self.gpu_enabled else "red"
-        self.gpu_button.config(text=new_text, bg=new_bg)
-        self.gpu_var.set(self.gpu_enabled)
-        self.update_device_preference()
-
-    def update_device_preference(self):
-        update_device_preference(self.gpu_var, self.status_bar)
-
-    def browse_input_file(self):
-        file_paths = filedialog.askopenfilenames(filetypes=[("JSONL files", "*.jsonl")])
-        if file_paths:
-            self.input_files = list(file_paths)
-            self.input_file_entry.delete(0, tk.END)
-            self.input_file_entry.insert(0, ", ".join(self.input_files))
-
-    def start_filtering(self):
-        thread = Thread(target=self.filter_conversations)
-        thread.start()
-
-    def filter_conversations(self):
-        for input_file in self.input_files:
-            self.input_file_entry.delete(0, tk.END)
-            self.input_file_entry.insert(0, input_file)
-            filter_conversations(
-                input_file_entry=self.input_file_entry,
-                threshold_entry=self.threshold_entry,
-                batch_size_entry=self.batch_size_entry,
-                status_bar=self.status_bar,
-                positive_count_label=self.positive_count_label,
-                negative_count_label=self.negative_count_label
+            fc(
+                input_file_entry=DummyEntry(input_file),
+                threshold_entry=DummyEntry(str(self.threshold)),
+                batch_size_entry=DummyEntry(str(self.batch_size)),
+                status_update_callback=status_callback,
+                counts_update_callback=counts_callback,
             )
 
+        self.finished_signal.emit()
+
+
+class BinaryClassificationApp(QWidget):
+    def __init__(self, theme):
+        super().__init__()
+        self.theme = theme
+        self.input_files = []
+
+        initialize_models()
+        self.init_ui()
+
+    def init_ui(self):
+        self.setWindowTitle("RefusalMancer")
+
+        self.setStyleSheet(
+            f"""
+            background-color: {self.theme['bg']};
+            color: {self.theme['fg']};
+            font-family: Arial, sans-serif;
+            font-size: 16px;
+            """
+        )
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
+        self.setLayout(main_layout)
+
+        # Input File Selection
+        file_layout = QHBoxLayout()
+        file_layout.setSpacing(10)
+        main_layout.addLayout(file_layout)
+
+        file_label = QLabel("📂 Select Input Files:")
+        file_label.setStyleSheet(f"color: {self.theme['fg']}; font-weight: bold; font-size: 18px;")
+        file_layout.addWidget(file_label)
+
+        self.input_file_entry = QLineEdit()
+        self.input_file_entry.setStyleSheet(
+            f"""
+            color: {self.theme['fg']};
+            background-color: {self.theme['bg']};
+            border: 1px solid {self.theme['button_bg']};
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 16px;
+            """
+        )
+        file_layout.addWidget(self.input_file_entry)
+
+        browse_btn = QPushButton("📁 Browse")
+        browse_btn.setStyleSheet(
+            f"""
+            background-color: {self.theme['button_bg']};
+            color: {self.theme['button_fg']};
+            border: none;
+            padding: 10px 18px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 12px;
+            """
+        )
+        browse_btn.clicked.connect(self.browse_input_file)
+        file_layout.addWidget(browse_btn)
+
+        # Filter Button
+        self.filter_button = QPushButton("⚡ Filter Conversations")
+        self.filter_button.setStyleSheet(
+            f"""
+            background-color: {self.theme['button_bg']};
+            color: {self.theme['button_fg']};
+            border: none;
+            padding: 12px;
+            font-size: 18px;
+            font-weight: bold;
+            border-radius: 12px;
+            """
+        )
+        self.filter_button.clicked.connect(self.start_filtering)
+        main_layout.addWidget(self.filter_button)
+
+        # Threshold Input
+        threshold_label = QLabel("🎯 Threshold (0.0 - 1.0):")
+        threshold_label.setStyleSheet(f"color: {self.theme['fg']}; font-size: 16px; font-weight: 600;")
+        main_layout.addWidget(threshold_label)
+
+        self.threshold_entry = QLineEdit("0.75")
+        self.threshold_entry.setStyleSheet(
+            f"""
+            color: {self.theme['fg']};
+            background-color: {self.theme['bg']};
+            border: 1px solid {self.theme['button_bg']};
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 16px;
+            """
+        )
+        main_layout.addWidget(self.threshold_entry)
+
+        # Batch Size Input
+        batch_size_label = QLabel("📦 Batch Size:")
+        batch_size_label.setStyleSheet(f"color: {self.theme['fg']}; font-size: 16px; font-weight: 600;")
+        main_layout.addWidget(batch_size_label)
+
+        self.batch_size_entry = QLineEdit("16")
+        self.batch_size_entry.setStyleSheet(
+            f"""
+            color: {self.theme['fg']};
+            background-color: {self.theme['bg']};
+            border: 1px solid {self.theme['button_bg']};
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 16px;
+            """
+        )
+        main_layout.addWidget(self.batch_size_entry)
+
+        # Status Bar
+        self.status_bar = QLabel("Status: Ready")
+        self.status_bar.setStyleSheet(
+            f"""
+            background-color: {self.theme['button_bg']};
+            color: white;
+            padding: 8px 12px;
+            font-size: 16px;
+            border-radius: 8px;
+            """
+        )
+        self.status_bar.setAlignment(Qt.AlignLeft)
+        main_layout.addWidget(self.status_bar)
+
+        # Progress Bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setStyleSheet(
+            f"""
+            QProgressBar {{
+                border: 1px solid {self.theme['button_bg']};
+                border-radius: 8px;
+                background-color: {self.theme['bg']};
+                color: {self.theme['fg']};
+                text-align: center;
+                height: 20px;
+            }}
+            QProgressBar::chunk {{
+                background-color: {self.theme['button_bg']};
+                border-radius: 8px;
+            }}
+            """
+        )
+        main_layout.addWidget(self.progress_bar)
+
+        # Counts display
+        counts_layout = QHBoxLayout()
+        counts_layout.setSpacing(20)
+        main_layout.addLayout(counts_layout)
+
+        self.positive_count_label = QLabel("✅ Positive Count: 0")
+        self.positive_count_label.setStyleSheet(f"color: {self.theme['fg']}; font-size: 16px; font-weight: 600;")
+        counts_layout.addWidget(self.positive_count_label)
+
+        self.negative_count_label = QLabel("❌ Negative Count: 0")
+        self.negative_count_label.setStyleSheet(f"color: {self.theme['fg']}; font-size: 16px; font-weight: 600;")
+        counts_layout.addWidget(self.negative_count_label)
+
+        # Filter Mode Radios
+        mode_layout = QHBoxLayout()
+        mode_layout.setSpacing(15)
+        main_layout.addLayout(mode_layout)
+
+        mode_label = QLabel("⚙️ Select Filter Mode:")
+        mode_label.setStyleSheet(f"color: {self.theme['button_fg']}; font-weight: 700; font-size: 16px;")
+        mode_layout.addWidget(mode_label)
+
+        self.mode_group = QButtonGroup(self)
+
+        self.rp_mode_radio = QRadioButton("🔍 RP Filter")
+        self.rp_mode_radio.setChecked(True)
+        self.rp_mode_radio.setStyleSheet(f"color: {self.theme['button_fg']}; font-size: 16px; font-weight: 600;")
+        self.rp_mode_radio.toggled.connect(self.update_filter_mode)
+        self.mode_group.addButton(self.rp_mode_radio)
+        mode_layout.addWidget(self.rp_mode_radio)
+
+        self.normal_mode_radio = QRadioButton("🛡️ Normal Filter")
+        self.normal_mode_radio.setStyleSheet(f"color: {self.theme['button_fg']}; font-size: 16px; font-weight: 600;")
+        self.normal_mode_radio.toggled.connect(self.update_filter_mode)
+        self.mode_group.addButton(self.normal_mode_radio)
+        mode_layout.addWidget(self.normal_mode_radio)
+
+        # Classification logic label
+        self.class_logic_label = QLabel(self.get_classification_logic_text())
+        self.class_logic_label.setStyleSheet(
+            f"color: {self.theme['button_fg']}; font-style: italic; font-size: 15px; margin-top: 12px;"
+        )
+        main_layout.addWidget(self.class_logic_label)
+
+        self.resize(650, 520)
+
+    def browse_input_file(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Select JSONL Files", filter="JSONL Files (*.jsonl)")
+        if files:
+            self.input_files = files
+            self.input_file_entry.setText(", ".join(files))
+
+    def start_filtering(self):
+        try:
+            threshold = float(self.threshold_entry.text())
+            batch_size = int(self.batch_size_entry.text())
+        except ValueError:
+            self.update_status("⚠️ Invalid threshold or batch size.")
+            return
+
+        if not self.input_files:
+            self.update_status("⚠️ No input files selected.")
+            return
+
+        self.filter_button.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.thread = FilterThread(self.input_files, threshold, batch_size)
+        self.thread.status_update.connect(self.update_status)
+        self.thread.counts_update.connect(self.update_counts)
+        self.thread.progress_update.connect(self.progress_bar.setValue)
+        self.thread.finished_signal.connect(self.filtering_finished)
+        self.thread.start()
+
+    def filtering_finished(self):
+        self.update_status("✅ Filtering complete.")
+        self.progress_bar.setValue(100)
+        self.filter_button.setEnabled(True)
+
     def update_status(self, message):
-        if self.root:
-            self.root.after(0, lambda: self.status_bar.config(text=f"Status: {message}"))
+        self.status_bar.setText(f"Status: {message}")
 
     def update_counts(self, positive_count, negative_count):
-        if self.root:
-            self.root.after(0, lambda: self.positive_count_label.config(text=f"Positive Count: {positive_count}"))
-            self.root.after(0, lambda: self.negative_count_label.config(text=f"Negative Count: {negative_count}"))
+        self.positive_count_label.setText(f"✅ Positive Count: {positive_count}")
+        self.negative_count_label.setText(f"❌ Negative Count: {negative_count}")
+
+    def update_filter_mode(self):
+        mode = FILTER_MODE_RP if self.rp_mode_radio.isChecked() else FILTER_MODE_NORMAL
+        set_filter_mode(mode)
+        self.positive_count_label.setText("✅ Positive Count: 0")
+        self.negative_count_label.setText("❌ Negative Count: 0")
+        self.class_logic_label.setText(self.get_classification_logic_text())
+        self.update_status("⚙️ Filter mode switched.")
+
+    def get_classification_logic_text(self):
+        if self.rp_mode_radio.isChecked():
+            return "🔍 RP Filter: Class 0 = Refusal (positive), Class 1 = Safe"
+        else:
+            return "🛡️ Normal Filter: Class 1 = Refusal (positive), Class 0 = Safe"
+
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    root.withdraw()
-    app = BinaryClassificationApp(root, theme={
-        'bg': 'white',
-        'fg': 'black',
-        'button_bg': 'lightgrey'
-    })
-    root.mainloop()
+    import sys
+
+    app = QApplication(sys.argv)
+    from theme import THEME
+
+    window = BinaryClassificationApp(THEME)
+    window.show()
+    sys.exit(app.exec_())

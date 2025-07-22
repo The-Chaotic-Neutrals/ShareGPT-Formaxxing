@@ -1,137 +1,193 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from tkinter.ttk import Progressbar
-from threading import Thread
 import os
 import time
-from deduplication import Deduplication
 import logging
+from deduplication import Deduplication
 
-class DeduplicationApp:
-    def __init__(self, root, theme):
-        self.root = root
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
+    QFileDialog, QRadioButton, QButtonGroup, QProgressBar, QMessageBox, QSizePolicy
+)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QFont, QIcon
+
+
+class DedupWorker(QThread):
+    status_update = pyqtSignal(str)
+    progress_update = pyqtSignal(int, int)
+
+    def __init__(self, deduplication, input_file, output_file, use_min_hash):
+        super().__init__()
+        self.deduplication = deduplication
+        self.input_file = input_file
+        self.output_file = output_file
+        self.use_min_hash = use_min_hash
+
+    def run(self):
+        self.status_update.emit("🛠 Deduplication started...")
+        method = "Min-Hash 🔍" if self.use_min_hash else "String-Match 🔗"
+        self.status_update.emit(f"Method: {method} - Processing...")
+
+        self.deduplication.duplicate_count = 0
+
+        if self.use_min_hash:
+            self.deduplication.perform_min_hash_deduplication(
+                self.input_file, self.output_file,
+                self.status_update.emit, self.progress_update.emit)
+        else:
+            self.deduplication.perform_sha256_deduplication(
+                self.input_file, self.output_file,
+                self.status_update.emit, self.progress_update.emit)
+
+        self.progress_update.emit(1, 1)  # Ensure progress hits 100%
+        self.status_update.emit("✅ Deduplication completed.")
+
+
+class DeduplicationApp(QWidget):
+    def __init__(self, theme, parent=None):
+        super().__init__(parent)
         self.theme = theme
         self.deduplication = Deduplication()
-        self.use_min_hash = tk.BooleanVar()  # Track dedup method choice
-        self.start_time = None  # For speed calc
+        self.start_time = None
+
+        self.setWindowTitle("DedupMancer ⚒️")
+        self.setStyleSheet(f"""
+            background-color: {self.theme.get('bg', '#fff')};
+            color: {self.theme.get('fg', '#000')};
+        """)
+
+        self.setMinimumWidth(600)
         self.setup_ui()
+        self.worker = None
 
     def setup_ui(self):
-        self.window = tk.Toplevel(self.root)
-        self.window.title("DedupMancer")
-        self.window.configure(bg=self.theme.get('bg', 'white'))
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
 
-        icon_path = 'icon.ico'
-        if os.path.exists(icon_path):
-            self.window.iconbitmap(icon_path)
-        else:
-            logging.error(f"Icon file {icon_path} not found. Using default.")
+        font_label = QFont("Arial", 14)
+        font_button = QFont("Arial", 13, QFont.Bold)
+        font_status = QFont("Arial", 12)
 
-        main_frame = tk.Frame(self.window, bg=self.theme.get('bg', 'white'))
-        main_frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        # Input file selection
+        file_layout = QHBoxLayout()
+        file_layout.setSpacing(10)
 
-        # File selection frame
-        self.file_frame = tk.Frame(main_frame, bg=self.theme.get('bg', 'white'))
-        self.file_frame.pack(pady=5)
+        lbl_input = QLabel("📁 Input File:")
+        lbl_input.setFont(font_label)
+        file_layout.addWidget(lbl_input)
 
-        self.input_file_label = tk.Label(
-            self.file_frame, text="Select Input File:",
-            bg=self.theme.get('bg', 'white'), fg=self.theme.get('fg', 'black')
-        )
-        self.input_file_label.pack(side=tk.LEFT, padx=5)
+        self.input_file_entry = QLineEdit()
+        self.input_file_entry.setPlaceholderText("Select input file (.jsonl)")
+        self.input_file_entry.setFont(font_label)
+        file_layout.addWidget(self.input_file_entry)
 
-        self.input_file_entry = tk.Entry(self.file_frame, width=50)
-        self.input_file_entry.pack(side=tk.LEFT, padx=5)
+        browse_button = QPushButton("Browse 🔎")
+        browse_button.setFont(font_button)
+        browse_button.setCursor(Qt.PointingHandCursor)
+        browse_button.setStyleSheet(self._button_style())
+        browse_button.setFixedWidth(120)
+        browse_button.clicked.connect(self.browse_input_file)
+        file_layout.addWidget(browse_button)
 
-        self.input_file_button = tk.Button(
-            self.file_frame, text="Browse", command=self.browse_input_file,
-            bg=self.theme.get('button_bg', 'lightgrey'), fg='gold'
-        )
-        self.input_file_button.pack(side=tk.LEFT, padx=5)
+        main_layout.addLayout(file_layout)
 
-        # Buttons for deduplication method
-        button_frame = tk.Frame(self.window, bg=self.theme.get('bg', 'white'))
-        button_frame.pack(pady=10, fill=tk.X)
+        # Radio buttons for dedup method
+        method_layout = QHBoxLayout()
+        method_layout.setSpacing(40)
 
-        self.min_hash_radiobutton = tk.Radiobutton(
-            button_frame, text="Min-Hash/Semantic", variable=self.use_min_hash, value=True,
-            command=self.update_button_styles, bg='black', fg='gold',
-            font=("Arial", 12, "bold"), indicatoron=0, width=15, relief="solid"
-        )
-        self.min_hash_radiobutton.pack(side=tk.LEFT, padx=10, pady=5)
+        self.min_hash_radio = QRadioButton("Min-Hash / Semantic 🔍")
+        self.min_hash_radio.setFont(font_label)
+        self.sha256_radio = QRadioButton("String-Match 🔗")
+        self.sha256_radio.setFont(font_label)
 
-        self.sha256_radiobutton = tk.Radiobutton(
-            button_frame, text="String-Match", variable=self.use_min_hash, value=False,
-            command=self.update_button_styles, bg='black', fg='gold',
-            font=("Arial", 12, "bold"), indicatoron=0, width=15, relief="solid"
-        )
-        self.sha256_radiobutton.pack(side=tk.LEFT, padx=10, pady=5)
+        self.min_hash_radio.setChecked(True)
 
-        self.dedup_button = tk.Button(
-            button_frame, text="Remove Duplicates", command=self.start_deduplication,
-            bg=self.theme.get('button_bg', 'lightgrey'), fg='gold'
-        )
-        self.dedup_button.pack(side=tk.LEFT, padx=10, pady=5)
+        method_layout.addStretch()
+        method_layout.addWidget(self.min_hash_radio)
+        method_layout.addWidget(self.sha256_radio)
+        method_layout.addStretch()
 
-        # Status frame: status text on left, percentage next, speed on right
-        status_frame = tk.Frame(self.window, bg=self.theme.get('status_bg', 'lightgrey'))
-        status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        main_layout.addLayout(method_layout)
 
-        self.status_bar = tk.Label(
-            status_frame, text="Status: Ready",
-            bg=self.theme.get('status_bg', 'lightgrey'), fg='black', anchor='w'
-        )
-        self.status_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Dedup button
+        self.dedup_button = QPushButton("🗑️ Remove Duplicates")
+        self.dedup_button.setFont(font_button)
+        self.dedup_button.setCursor(Qt.PointingHandCursor)
+        self.dedup_button.setStyleSheet(self._button_style())
+        self.dedup_button.setFixedHeight(40)
+        self.dedup_button.clicked.connect(self.start_deduplication)
+        main_layout.addWidget(self.dedup_button)
 
-        self.progress_percent_label = tk.Label(
-            status_frame, text="0%", 
-            bg=self.theme.get('status_bg', 'lightgrey'), fg='black', font=("Arial", 10, "bold")
-        )
-        self.progress_percent_label.pack(side=tk.LEFT, padx=10)
+        # Status bar + speed
+        status_layout = QHBoxLayout()
+        status_layout.setSpacing(15)
 
-        self.speed_label = tk.Label(
-            status_frame, text="Speed: 0 it/s",
-            bg=self.theme.get('status_bg', 'lightgrey'), fg='black'
-        )
-        self.speed_label.pack(side=tk.RIGHT, padx=10)
+        self.status_label = QLabel("Status: Ready")
+        self.status_label.setFont(font_status)
+        self.progress_percent_label = QLabel("0%")
+        self.progress_percent_label.setFont(font_status)
+        self.speed_label = QLabel("Speed: 0 it/s")
+        self.speed_label.setFont(font_status)
 
-        # Progress bar below status frame, clean and no text overlay
-        progress_frame = tk.Frame(self.window, bg=self.theme.get('bg', 'white'))
-        progress_frame.pack(fill=tk.X, padx=10, pady=5)
+        status_layout.addWidget(self.status_label, stretch=3)
+        status_layout.addWidget(self.progress_percent_label, stretch=1, alignment=Qt.AlignCenter)
+        status_layout.addWidget(self.speed_label, stretch=2, alignment=Qt.AlignRight)
 
-        self.progress = Progressbar(progress_frame, orient='horizontal', mode='determinate')
-        self.progress.pack(fill=tk.X)
+        main_layout.addLayout(status_layout)
 
-        # Initialize button styles
-        self.update_button_styles()
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFixedHeight(25)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #555;
+                border-radius: 10px;
+                background-color: #eee;
+            }
+            QProgressBar::chunk {
+                background-color: #1e90ff;
+                border-radius: 10px;
+            }
+        """)
+        main_layout.addWidget(self.progress_bar)
 
-    def update_button_styles(self):
-        if self.use_min_hash.get():
-            self.min_hash_radiobutton.config(bg='white', fg='black')
-            self.sha256_radiobutton.config(bg='#333333', fg='gold')
-        else:
-            self.min_hash_radiobutton.config(bg='#333333', fg='gold')
-            self.sha256_radiobutton.config(bg='white', fg='black')
+    def _button_style(self):
+        return """
+            QPushButton {
+                background-color: #1e90ff;
+                color: white;
+                border-radius: 8px;
+                padding: 8px 16px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #3aa0ff;
+            }
+            QPushButton:pressed {
+                background-color: #1573cc;
+            }
+            QPushButton:disabled {
+                background-color: #999999;
+                color: #666666;
+            }
+        """
 
     def browse_input_file(self):
-        file_path = filedialog.askopenfilename(filetypes=[("JSONL files", "*.jsonl")])
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Input File", "",
+                                                   "JSONL files (*.jsonl)")
         if file_path:
-            self.input_file_entry.delete(0, tk.END)
-            self.input_file_entry.insert(0, file_path)
-            self.progress['value'] = 0
-            self.progress_percent_label.config(text="0%")
-            self.speed_label.config(text="Speed: 0 it/s")
+            self.input_file_entry.setText(file_path)
+            self.progress_bar.setValue(0)
+            self.progress_percent_label.setText("0%")
+            self.speed_label.setText("Speed: 0 it/s")
             self.update_status("Ready")
 
     def start_deduplication(self):
-        self.start_time = time.time()
-        thread = Thread(target=self.deduplicate_file)
-        thread.start()
-
-    def deduplicate_file(self):
-        input_file = self.input_file_entry.get()
+        input_file = self.input_file_entry.text()
         if not input_file.endswith('.jsonl'):
-            self.update_status("Invalid file type. Please select a .jsonl file.")
+            QMessageBox.critical(self, "Error", "❌ Invalid file type. Please select a .jsonl file.")
             return
 
         output_dir = "deduplicated"
@@ -139,38 +195,48 @@ class DeduplicationApp:
         base_name = os.path.splitext(os.path.basename(input_file))[0]
         output_file = os.path.join(output_dir, f"{base_name}-deduplicated.jsonl")
 
-        self.update_status("Deduplication started...")
+        self.dedup_button.setEnabled(False)
+        self.start_time = time.time()
 
-        deduplication_method = "Min-Hash" if self.use_min_hash.get() else "String-Match"
-        self.update_status(f"Deduplication method: {deduplication_method} - Processing...")
+        use_min_hash = self.min_hash_radio.isChecked()
 
-        self.deduplication.duplicate_count = 0
-
-        if self.use_min_hash.get():
-            self.deduplication.perform_min_hash_deduplication(
-                input_file, output_file, self.update_status, self.update_progress)
-        else:
-            self.deduplication.perform_sha256_deduplication(
-                input_file, output_file, self.update_status, self.update_progress)
-
-        # Ensure progress bar hits 100% when done
-        self.update_progress(total=1, current=1)  # this forces 100% display
+        # Start the worker thread
+        self.worker = DedupWorker(self.deduplication, input_file, output_file, use_min_hash)
+        self.worker.status_update.connect(self.update_status)
+        self.worker.progress_update.connect(self.update_progress)
+        self.worker.finished.connect(self.dedup_finished)
+        self.worker.start()
 
     def update_status(self, message):
-        self.status_bar.config(text=f"Status: {message}")
+        self.status_label.setText(f"Status: {message}")
 
     def update_progress(self, current, total):
         if total == 0:
             percent = 0
         elif current >= total:
-            percent = 100.0
+            percent = 100
         else:
             percent = (current / total) * 100
 
-        self.progress['value'] = percent
-        self.progress_percent_label.config(text=f"{percent:.2f}%")
-        self.window.update_idletasks()
+        self.progress_bar.setValue(int(percent))
+        self.progress_percent_label.setText(f"{percent:.2f}%")
 
         elapsed = time.time() - self.start_time if self.start_time else 1
         speed = current / elapsed if elapsed > 0 else 0
-        self.speed_label.config(text=f"Speed: {speed:.2f} it/s")
+        self.speed_label.setText(f"Speed: {speed:.2f} it/s")
+
+    def dedup_finished(self):
+        self.dedup_button.setEnabled(True)
+        self.update_status("✅ Deduplication finished.")
+
+
+if __name__ == "__main__":
+    import sys
+    from PyQt5.QtWidgets import QApplication
+    from theme import Theme
+
+    app = QApplication(sys.argv)
+    theme = Theme.DARK
+    window = DeduplicationApp(theme)
+    window.show()
+    sys.exit(app.exec_())

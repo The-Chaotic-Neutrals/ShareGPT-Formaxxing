@@ -8,10 +8,6 @@ import re
 from datasets import load_dataset
 from pathlib import Path
 import numpy as np
-import onnxruntime as ort
-from onnxruntime.quantization import quantize_dynamic, QuantType
-from transformers.onnx import export
-from transformers.onnx.features import FeaturesManager
 
 # Silence TorchDynamo warnings
 logging.getLogger("torch._dynamo").setLevel(logging.ERROR)
@@ -30,10 +26,6 @@ MODEL_NAMES = {
 nlp = None
 tokenizers = {}
 models = {}
-sessions = {}
-onnx_initialized = {}
-device = 'gpu'
-use_onnx = False
 filter_mode = FILTER_MODE_RP
 
 total_input_count = 0
@@ -41,8 +33,10 @@ total_kept_count = 0
 total_positive_count = 0
 total_negative_count = 0
 
+
 def get_model_name():
     return MODEL_NAMES[filter_mode]
+
 
 def set_filter_mode(mode):
     global filter_mode
@@ -51,79 +45,58 @@ def set_filter_mode(mode):
     filter_mode = mode
     initialize_models()
 
+
 def get_class_indices():
     if filter_mode == FILTER_MODE_RP:
         return 0, 1  # 0 = refusal, 1 = safe
     else:
         return 1, 0  # 1 = refusal, 0 = safe
 
-def initialize_models():
+
+def initialize_models(status_update_callback=None):
     import torch._dynamo
-    global nlp, tokenizers, models, sessions, device, use_onnx, onnx_initialized
+    global nlp, tokenizers, models
 
     if nlp is None:
         nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
         nlp.add_pipe("sentencizer")
 
-    device = 'gpu' if torch.cuda.is_available() else 'cpu'
-    use_onnx = (device == 'cpu')
+    # Force device to GPU if available, no CPU fallback or ONNX
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # Enable flash attention if supported (faster inference)
+    if device == 'cuda' and hasattr(torch.backends.cuda, "enable_flash_sdp"):
+        try:
+            torch.backends.cuda.enable_flash_sdp(True)
+            if status_update_callback:
+                status_update_callback("Flash attention enabled for faster inference.")
+        except Exception:
+            if status_update_callback:
+                status_update_callback("Flash attention not available, using standard attention.")
+
     model_name = get_model_name()
 
     if model_name not in tokenizers:
         tokenizers[model_name] = AutoTokenizer.from_pretrained(model_name)
 
-    if use_onnx:
-        if model_name not in sessions and not onnx_initialized.get(model_name):
-            onnx_dir = Path("onnx_model") / model_name.replace('/', '_')
-            onnx_fp = onnx_dir / "model.onnx"
-            quant_fp = onnx_dir / "model-quant.onnx"
-            os.makedirs(onnx_dir, exist_ok=True)
+    if model_name not in models:
+        if "RP-Validity" in model_name or filter_mode == FILTER_MODE_RP:
+            torch._dynamo.config.suppress_errors = True
+        models[model_name] = AutoModelForSequenceClassification.from_pretrained(model_name).eval().to(torch.device(device))
 
-            if not quant_fp.exists():
-                model_tmp = AutoModelForSequenceClassification.from_pretrained(model_name)
-                model_tmp.eval()
-                model_kind, onnx_config_cls = FeaturesManager.check_supported_model_or_raise(model_tmp)
-                onnx_config = onnx_config_cls(model_tmp.config)
-                export(
-                    preprocessor=tokenizers[model_name],
-                    model=model_tmp,
-                    config=onnx_config,
-                    opset=14,
-                    output=onnx_fp
-                )
-                quantize_dynamic(
-                    model_input=str(onnx_fp),
-                    model_output=str(quant_fp),
-                    weight_type=QuantType.QInt8
-                )
 
-            sess_options = ort.SessionOptions()
-            sess_options.intra_op_num_threads = os.cpu_count()
-            sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
-            sessions[model_name] = ort.InferenceSession(str(quant_fp), sess_options, providers=["CPUExecutionProvider"])
-            onnx_initialized[model_name] = True
-    else:
-        if model_name not in models:
-            if "RP-Validity" in model_name or filter_mode == FILTER_MODE_RP:
-                torch._dynamo.config.suppress_errors = True
-            models[model_name] = AutoModelForSequenceClassification.from_pretrained(model_name).eval().to(torch.device("cuda"))
+def update_device_preference(gpu_var, status_update_callback=None):
+    if status_update_callback:
+        status_update_callback("Using GPU only (CPU/ONNX support removed)")
+    initialize_models(status_update_callback=status_update_callback)
 
-def update_device_preference(gpu_var, status_bar):
-    global device, use_onnx
-    if gpu_var.get() and torch.cuda.is_available():
-        device = 'gpu'
-        use_onnx = False
-        update_status("Using GPU", status_bar)
-    else:
-        device = 'cpu'
-        use_onnx = True
-        update_status("Using CPU", status_bar)
-    initialize_models()
 
-def filter_conversations(input_file_entry, threshold_entry, batch_size_entry, status_bar, positive_count_label, negative_count_label):
+def filter_conversations(input_file_entry, threshold_entry, batch_size_entry,
+                         status_update_callback=None, counts_update_callback=None):
     input_file = input_file_entry.get()
     if not input_file.endswith('.jsonl'):
-        update_status("Invalid file type. Please select a .jsonl file.", status_bar)
+        if status_update_callback:
+            status_update_callback("Invalid file type. Please select a .jsonl file.")
         return
 
     try:
@@ -131,7 +104,8 @@ def filter_conversations(input_file_entry, threshold_entry, batch_size_entry, st
         if not (0.0 <= threshold <= 1.0):
             raise ValueError("Threshold must be between 0.0 and 1.0.")
     except ValueError as e:
-        update_status(f"Error: {e}", status_bar)
+        if status_update_callback:
+            status_update_callback(f"Error: {e}")
         return
 
     try:
@@ -139,7 +113,8 @@ def filter_conversations(input_file_entry, threshold_entry, batch_size_entry, st
         if batch_size <= 0:
             raise ValueError("Batch size must be a positive integer.")
     except ValueError as e:
-        update_status(f"Error: {e}", status_bar)
+        if status_update_callback:
+            status_update_callback(f"Error: {e}")
         return
 
     output_dir = "classified"
@@ -147,10 +122,17 @@ def filter_conversations(input_file_entry, threshold_entry, batch_size_entry, st
     base_name = os.path.splitext(os.path.basename(input_file))[0]
     output_file = os.path.join(output_dir, f"{base_name}-classified.jsonl")
 
-    run_filter_streaming(input_file, output_file, threshold, batch_size, status_bar, positive_count_label, negative_count_label)
+    run_filter_streaming(input_file, output_file, threshold, batch_size,
+                         status_update_callback, counts_update_callback)
 
-def run_filter_streaming(input_file, output_file, threshold, batch_size, status_bar, positive_count_label, negative_count_label):
+
+def run_filter_streaming(input_file, output_file, threshold, batch_size,
+                         status_update_callback=None, counts_update_callback=None):
     try:
+        # Get total lines for progress tracking
+        with open(input_file, 'r', encoding='utf-8') as f:
+            total_lines = sum(1 for _ in f)
+
         dataset = load_dataset("json", data_files=input_file, split="train", streaming=True)
 
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
@@ -162,7 +144,8 @@ def run_filter_streaming(input_file, output_file, threshold, batch_size, status_
         total_input_count = 0
         total_kept_count = 0
 
-        update_status("Streaming and filtering started...", status_bar)
+        if status_update_callback:
+            status_update_callback(f"Streaming and filtering started... Total lines: {total_lines}")
 
         batch = []
         microbatch_size = max(1, batch_size // 4)
@@ -173,27 +156,40 @@ def run_filter_streaming(input_file, output_file, threshold, batch_size, status_
             if item_cleaned:
                 batch.append(item_cleaned)
                 if len(batch) >= batch_size:
-                    _process_streaming_batch(batch, threshold, microbatch_size, writer, status_bar, positive_count_label, negative_count_label)
+                    _process_streaming_batch(batch, threshold, microbatch_size, writer,
+                                             status_update_callback, counts_update_callback)
                     batch = []
 
+            if status_update_callback and total_input_count % 100 == 0:
+                percent_done = (total_input_count / total_lines) * 100
+                remaining = total_lines - total_input_count
+                status_update_callback(
+                    f"Processed {total_input_count}/{total_lines} lines ({percent_done:.1f}%). Remaining: {remaining}"
+                )
+
         if batch:
-            _process_streaming_batch(batch, threshold, microbatch_size, writer, status_bar, positive_count_label, negative_count_label)
+            _process_streaming_batch(batch, threshold, microbatch_size, writer,
+                                     status_update_callback, counts_update_callback)
 
         writer.close()
 
         removed = total_input_count - total_kept_count
-        update_status(
-            f"Filtering complete. Kept: {total_kept_count} | Removed: {removed} | Total: {total_input_count}. Output: {output_file}",
-            status_bar
-        )
+        if status_update_callback:
+            status_update_callback(
+                f"Filtering complete. Kept: {total_kept_count} | Removed: {removed} | Total: {total_input_count}. Output: {output_file}"
+            )
 
     except Exception as e:
-        update_status(f"Streaming error: {e}", status_bar)
+        if status_update_callback:
+            status_update_callback(f"Streaming error: {e}")
 
-def _process_streaming_batch(batch, threshold, microbatch_size, writer, status_bar, positive_count_label, negative_count_label):
+
+def _process_streaming_batch(batch, threshold, microbatch_size, writer,
+                             status_update_callback=None, counts_update_callback=None):
     global total_kept_count
     for conversation in batch:
-        result = process_conversation(conversation, threshold, microbatch_size, status_bar, positive_count_label, negative_count_label)
+        result = process_conversation(conversation, threshold, microbatch_size,
+                                      status_update_callback, counts_update_callback)
         if result:
             total_kept_count += 1
             json_str = json.dumps(result, ensure_ascii=False)
@@ -201,7 +197,9 @@ def _process_streaming_batch(batch, threshold, microbatch_size, writer, status_b
             if validate_utf8(json_str):
                 writer.write(json_str + "\n")
 
-def process_conversation(conversation, threshold, microbatch_size, status_bar, positive_count_label, negative_count_label):
+
+def process_conversation(conversation, threshold, microbatch_size,
+                         status_update_callback=None, counts_update_callback=None):
     sentences = []
     for turn in conversation.get('conversations', []):
         if turn.get('from') == 'gpt':
@@ -218,7 +216,8 @@ def process_conversation(conversation, threshold, microbatch_size, status_bar, p
     total_positive_count += positive_count
     total_negative_count += negative_count
 
-    update_counts(total_positive_count, total_negative_count, positive_count_label, negative_count_label)
+    if counts_update_callback:
+        counts_update_callback(total_positive_count, total_negative_count)
 
     if filter_mode == FILTER_MODE_RP:
         keep_conversation = (positive_count > 0)  # keep refusals
@@ -227,17 +226,20 @@ def process_conversation(conversation, threshold, microbatch_size, status_bar, p
 
     return conversation if keep_conversation else None
 
+
 def extract_sentences(doc):
     return [clean_text(sent.text.strip()) for sent in doc.sents]
 
-def update_status(message, status_bar):
-    if status_bar:
-        status_bar.after(0, lambda: status_bar.config(text=f"Status: {message}"))
 
-def update_counts(positive_count, negative_count, positive_count_label, negative_count_label):
-    if positive_count_label and negative_count_label:
-        positive_count_label.after(0, lambda: positive_count_label.config(text=f"Positive Count: {positive_count}"))
-        negative_count_label.after(0, lambda: negative_count_label.config(text=f"Negative Count: {negative_count}"))
+def update_status(message, status_update_callback=None):
+    if status_update_callback:
+        status_update_callback(message)
+
+
+def update_counts(positive_count, negative_count, counts_update_callback=None):
+    if counts_update_callback:
+        counts_update_callback(positive_count, negative_count)
+
 
 def predict(texts, microbatch_size=4):
     results = []
@@ -247,15 +249,9 @@ def predict(texts, microbatch_size=4):
     for i in range(0, len(texts), microbatch_size):
         chunk = texts[i:i + microbatch_size]
 
-        if use_onnx:
-            inputs = tokenizers[model_name](chunk, padding=True, truncation=True, return_tensors="np", max_length=512)
-            inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
-            outputs = sessions[model_name].run(None, inputs)
-            logits = torch.tensor(outputs[0])
-        else:
-            inputs = tokenizers[model_name](chunk, padding=True, truncation=True, return_tensors="pt", max_length=512).to(models[model_name].device)
-            with torch.no_grad():
-                logits = models[model_name](**inputs).logits
+        inputs = tokenizers[model_name](chunk, padding=True, truncation=True, return_tensors="pt", max_length=512).to(models[model_name].device)
+        with torch.no_grad():
+            logits = models[model_name](**inputs).logits
 
         predictions = torch.sigmoid(logits).cpu().numpy()
 
@@ -265,6 +261,7 @@ def predict(texts, microbatch_size=4):
         ])
 
     return results
+
 
 def validate_json(conversation):
     if not isinstance(conversation, dict):
@@ -278,11 +275,13 @@ def validate_json(conversation):
         ]
     return cleaned_conversation if cleaned_conversation else None
 
+
 def clean_text(text):
     text = re.sub(r'[^\x00-\x7F]+', '', text)
     text = ''.join(c for c in text if c.isprintable())
     text = re.sub(r'[\x00-\x1F\x7F]', '', text)
     return text
+
 
 def validate_utf8(text):
     try:

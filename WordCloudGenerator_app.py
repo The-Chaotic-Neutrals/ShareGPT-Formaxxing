@@ -1,12 +1,16 @@
 import sys
 import os
 import threading
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QGridLayout, QLabel, QLineEdit, QPushButton, QFileDialog
-from PyQt5.QtGui import QIcon, QImage, QPixmap
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QGridLayout, QLabel,
+    QLineEdit, QPushButton, QFileDialog, QVBoxLayout
+)
+from PyQt5.QtGui import QIcon, QImage, QPixmap, QPalette, QColor, QFont
 from PyQt5.QtCore import pyqtSignal, QObject
 from PIL import Image
 from WordCloudGenerator import WordCloudGenerator
-from theme import Theme  # <--- Import your exact theme here
+from theme import Theme  # Use your exact theme
+
 
 class GenerateWordCloudApp(QObject):
     status_updated = pyqtSignal(str)
@@ -18,12 +22,50 @@ class GenerateWordCloudApp(QObject):
         self.icon_path = "icon.ico"
         self.generator = WordCloudGenerator(theme, self.update_status)
         self.window = QMainWindow(parent)
-        self.window.setWindowTitle("Generate Word Cloud")
+        self.window.setWindowTitle("☁️ Generate Word Cloud")
         self.status_updated.connect(self._update_status)
         self.image_ready.connect(self.show_image)
         self.setup_ui()
         self.set_icon()
+        self.apply_theme()
         self.window.show()
+
+    def apply_theme(self):
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(self.theme.get('bg', '#000000')))
+        palette.setColor(QPalette.WindowText, QColor(self.theme.get('text_fg', '#ffffff')))
+        palette.setColor(QPalette.Base, QColor(self.theme.get('entry_bg', '#000000')))
+        palette.setColor(QPalette.Text, QColor(self.theme.get('entry_fg', '#ffffff')))
+        palette.setColor(QPalette.Button, QColor(self.theme.get('button_bg', '#1e90ff')))
+        palette.setColor(QPalette.ButtonText, QColor(self.theme.get('button_fg', '#ffffff')))
+        self.window.setPalette(palette)
+
+        button_style = f"""
+            QPushButton {{
+                background-color: {self.theme.get('button_bg', '#1e90ff')};
+                color: {self.theme.get('button_fg', '#ffffff')};
+                border-radius: 10px;
+                padding: 8px 16px;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.theme.get('fg', '#1e90ff')};
+                color: {self.theme.get('bg', '#000000')};
+            }}
+        """
+        entry_style = f"""
+            QLineEdit {{
+                background-color: {self.theme.get('entry_bg', '#000000')};
+                color: {self.theme.get('entry_fg', '#ffffff')};
+                border: 1px solid {self.theme.get('fg', '#1e90ff')};
+                border-radius: 6px;
+                padding: 4px;
+                font-size: 14px;
+            }}
+        """
+        label_style = f"QLabel {{ color: {self.theme.get('text_fg', '#ffffff')}; font-size: 14px; }}"
+
+        self.window.setStyleSheet(button_style + entry_style + label_style)
 
     def setup_ui(self):
         central = QWidget()
@@ -33,36 +75,31 @@ class GenerateWordCloudApp(QObject):
         layout.setColumnStretch(1, 3)
         layout.setColumnStretch(2, 1)
 
-        label = QLabel("Select JSONL File:")
-        label.setStyleSheet(f"background-color: {self.theme['bg']}; color: {self.theme['fg']};")
-        layout.addWidget(label, 0, 0)
+        # File selection
+        self.label = QLabel("📂 Select JSONL File:")
+        layout.addWidget(self.label, 0, 0)
 
         self.entry_file = QLineEdit()
-        self.entry_file.setStyleSheet(f"background-color: {self.theme['entry_bg']}; color: {self.theme['entry_fg']};")
         layout.addWidget(self.entry_file, 0, 1)
 
         browse_button = QPushButton("Browse")
         browse_button.clicked.connect(self.select_file)
-        browse_button.setStyleSheet(f"background-color: {self.theme['button_bg']}; color: {self.theme['button_fg']};")
         layout.addWidget(browse_button, 0, 2)
 
-        generate_button = QPushButton("Generate Word Cloud")
+        # Generate button
+        generate_button = QPushButton("🚀 Generate Word Cloud")
         generate_button.clicked.connect(self.start_wordcloud_generation)
-        generate_button.setStyleSheet(f"background-color: {self.theme['button_bg']}; color: {self.theme['button_fg']};")
         layout.addWidget(generate_button, 1, 0, 1, 3)
 
-        self.status_label = QLabel()
-        self.status_label.setStyleSheet(f"background-color: {self.theme['bg']}; color: {self.theme['fg']};")
+        # Status label
+        self.status_label = QLabel("Status: Ready")
         layout.addWidget(self.status_label, 2, 0, 1, 3)
 
         central.setLayout(layout)
-        central.setStyleSheet(f"background-color: {self.theme['bg']};")
 
     def set_icon(self):
         if os.path.exists(self.icon_path):
             self.window.setWindowIcon(QIcon(self.icon_path))
-        else:
-            print("Icon file not found.")
 
     def select_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self.window, "Select JSONL File", "", "JSON Lines files (*.jsonl)")
@@ -74,7 +111,7 @@ class GenerateWordCloudApp(QObject):
         if os.path.isfile(file_path):
             threading.Thread(target=self.generate_wordcloud, args=(file_path,), daemon=True).start()
         else:
-            self.update_status("Input Error: The file does not exist.")
+            self.update_status("❌ Input Error: The file does not exist.")
 
     def generate_wordcloud(self, file_path):
         pil_image = self.generator.generate_wordcloud(file_path)
@@ -87,7 +124,7 @@ class GenerateWordCloudApp(QObject):
         pix = QPixmap.fromImage(qim)
 
         top = QMainWindow(self.window)
-        top.setWindowTitle("Word Cloud")
+        top.setWindowTitle("☁️ Word Cloud")
         top.resize(616, 308)
         top.setStyleSheet(f"background-color: {self.theme['bg']};")
         if os.path.exists(self.icon_path):
@@ -104,7 +141,8 @@ class GenerateWordCloudApp(QObject):
     def _update_status(self, message):
         self.status_label.setText(message)
 
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    generate_app = GenerateWordCloudApp(None, Theme.DARK)  # <--- Using your exact theme here
+    generate_app = GenerateWordCloudApp(None, Theme.DARK)  # Using your theme
     sys.exit(app.exec_())

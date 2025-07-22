@@ -18,7 +18,7 @@ from binary_classification_app import BinaryClassificationApp
 from deduplication_app import DeduplicationApp
 from ngram_analyzer_app import NgramAnalyzerApp
 from grammar_maxxer_app import GrammarMaxxerApp
-from safetensormaxxer_app import SafetensorMaxxerApp
+from safetensormaxxer_app import SafetensorMaxxerApp  # now PyQt5 version
 from linemancer_app import LineMancerFrame
 from parquetmaxxer_app import ParquetMaxxer
 from english_filter_app import EnglishFilterApp
@@ -111,9 +111,17 @@ class UIManager:
         GrammarMaxxerApp(self.root, self.theme)
 
     def open_safetensormaxxer_app(self):
-        win = tk.Toplevel(self.root)
-        win.title("SafetensorMaxxer")
-        SafetensorMaxxerApp(win, self.theme)
+        # Changed to PyQt5 launch:
+        win = SafetensorMaxxerApp(self.theme)
+        win.setWindowTitle("SafetensorMaxxer")
+
+        # Set icon explicitly
+        icon_path = Path(__file__).parent / "icon.ico"
+        if icon_path.exists():
+            win.setWindowIcon(QtGui.QIcon(str(icon_path)))
+
+        win.show()
+        self.qt_windows.append(win)
 
     def open_linemancer_app(self):
         win = LineMancerFrame()

@@ -1,11 +1,18 @@
+import sys 
 import json
-import tkinter as tk
-from tkinter import filedialog, messagebox
 from pathlib import Path
-import asyncio
-import torch  # Import for detecting CPU/GPU
-from DeslopTool import filter_dataset  # Import the original filtering functionality
-from DeslopTool_classifier import CharacterSlopFilter  # Import the new filtering class
+import torch
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QPushButton, QFileDialog, QMessageBox, QRadioButton, QCheckBox,
+    QGroupBox, QGridLayout, QMainWindow, QSizePolicy, QSpacerItem,
+    QTextEdit, QProgressBar
+)
+from PyQt5.QtCore import Qt, pyqtSignal, QThread
+from PyQt5.QtGui import QFont, QIcon
+from DeslopTool import filter_dataset
+from DeslopTool_classifier import CharacterSlopFilter
+
 
 def load_jsonl(file_path):
     data = []
@@ -17,6 +24,7 @@ def load_jsonl(file_path):
                 print(f"Skipping invalid JSON line: {line}. Error: {e}")
     return data
 
+
 def load_filter_criteria(filter_files):
     filter_criteria = []
     for filter_file in filter_files:
@@ -24,239 +32,347 @@ def load_filter_criteria(filter_files):
             filter_criteria.extend(line.strip() for line in f if line.strip())
     return filter_criteria
 
-class DeslopToolApp:
-    def __init__(self, master, theme):
-        self.master = master
-        self.theme = theme
 
-        self.root = tk.Toplevel(self.master)
-        self.root.title("DeslopMancer")
+class SlopFilterWorker(QThread):
+    status_update = pyqtSignal(str)
+    progress_update = pyqtSignal(int, int)  # current, total
+    finished = pyqtSignal(str)
 
-        self.set_icon()
-        self.root.configure(bg=self.theme['bg'])
+    def __init__(self, slop_filter, dataset_file, output_path):
+        super().__init__()
+        self.slop_filter = slop_filter
+        self.dataset_file = dataset_file
+        self.output_path = output_path
 
-        self.filter_files = []  # List to store selected filter files
-        self.last_filter_file_path = Path('last_filter_file.txt')  # File to store last filter file path
+    def run(self):
+        self.status_update.emit("Starting classifier filtering...")
 
-        # Initialize `selected_filter_method` before creating widgets
-        self.selected_filter_method = tk.IntVar(value=1)
-        self.batch_size = tk.IntVar(value=32)  # Default batch size
-        self.force_gpu = tk.BooleanVar(value=False)  # Option to force GPU usage
-        self.save_slop_file = tk.BooleanVar(value=False)  # Option to save slop file
+        def progress_callback(current, total):
+            self.progress_update.emit(current, total)
 
-        # Create widgets and update device status
-        self.create_widgets()
-        self.load_last_filter_file()  # Load last filter file at startup
-        self.update_device_status()  # Initial device status
+        filtered_count, total = self.slop_filter.filter_conversations(
+            self.dataset_file,
+            self.output_path,
+            progress_callback=progress_callback
+        )
 
-        # Initialize CharacterSlopFilter (updated later during processing)
+        self.status_update.emit("Classifier filtering complete.")
+        self.finished.emit(
+            f"Filtered conversations saved to {self.output_path}\n"
+            f"Kept {filtered_count} of {total} conversations."
+        )
+
+
+class DeslopToolApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("DeslopMancer ⚒️")
+        self.setMinimumSize(650, 600)  # Start taller
+
+        # Load icon.ico if available
+        icon_path = Path(__file__).parent / "icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
+        self.filter_files = []
+        self.last_filter_file_path = Path('last_filter_file.txt')
+
+        self.selected_filter_method = 1
+        self.batch_size = 256       # Default batch size
+        self.force_gpu = True       # Default to GPU forced
+
         self.slop_filter = None
+        self.slop_worker = None
 
-    def set_icon(self):
-        icon_path = "icon.ico"
-        if Path(icon_path).exists():
-            self.root.iconbitmap(icon_path)
+        self.init_ui()
+        self.load_last_filter_file()
+        self.update_device_status()
+
+    def init_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
+
+        font_label = QFont("Helvetica", 12)
+        font_button = QFont("Helvetica", 12, QFont.Bold)
+        header_font = QFont("Helvetica", 14, QFont.Bold)
+
+        groupbox_style = """
+        QGroupBox {
+            font-size: 14pt;
+            font-weight: bold;
+            color: #333366;
+            border: none;
+            margin-top: 20px;
+            background-color: transparent;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            padding: 0 0 5px 0;
+            border: none;
+            color: #333366;
+        }
+        """
+
+        # Dataset & Filters Section
+        file_group = QGroupBox("Dataset & Filters 📂")
+        file_group.setFont(header_font)
+        file_group.setStyleSheet(groupbox_style)
+        file_layout = QGridLayout()
+        file_layout.setSpacing(10)
+
+        lbl_dataset = QLabel("Dataset File:")
+        lbl_dataset.setFont(font_label)
+        file_layout.addWidget(lbl_dataset, 0, 0)
+
+        self.dataset_entry = QLineEdit()
+        self.dataset_entry.setFont(font_label)
+        self.dataset_entry.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        file_layout.addWidget(self.dataset_entry, 0, 1)
+
+        browse_button = QPushButton("📂 Browse")
+        browse_button.setFont(font_button)
+        browse_button.setStyleSheet("QPushButton { padding: 8px; border-radius: 8px; background-color: #1e90ff; color: white; }")
+        browse_button.clicked.connect(self.select_file)
+        browse_button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        file_layout.addWidget(browse_button, 0, 2)
+
+        self.filter_button = QPushButton("Select Filter Files…")
+        self.filter_button.setFont(font_button)
+        self.filter_button.setStyleSheet("QPushButton { padding: 8px; border-radius: 8px; background-color: #1e90ff; color: white; }")
+        self.filter_button.clicked.connect(self.select_filter_files)
+        self.filter_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        file_layout.addWidget(self.filter_button, 1, 0, 1, 3)
+
+        self.last_filter_label = QLabel("")
+        self.last_filter_label.setFont(font_label)
+        self.last_filter_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        file_layout.addWidget(self.last_filter_label, 2, 0, 1, 3)
+
+        file_group.setLayout(file_layout)
+        main_layout.addWidget(file_group, stretch=0)
+
+        # Processing Parameters Section
+        params_group = QGroupBox("Processing Parameters ⚙️")
+        params_group.setFont(header_font)
+        params_group.setStyleSheet(groupbox_style)
+        params_layout = QGridLayout()
+        params_layout.setSpacing(10)
+
+        lbl_threshold = QLabel("Threshold (× average):")
+        lbl_threshold.setFont(font_label)
+        params_layout.addWidget(lbl_threshold, 0, 0)
+
+        self.threshold_entry = QLineEdit("0.69")  # Default threshold
+        self.threshold_entry.setFont(font_label)
+        self.threshold_entry.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        params_layout.addWidget(self.threshold_entry, 0, 1)
+
+        lbl_batch = QLabel("Batch Size:")
+        lbl_batch.setFont(font_label)
+        params_layout.addWidget(lbl_batch, 1, 0)
+
+        self.batch_entry = QLineEdit(str(self.batch_size))
+        self.batch_entry.setFont(font_label)
+        self.batch_entry.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        params_layout.addWidget(self.batch_entry, 1, 1)
+
+        params_group.setLayout(params_layout)
+        main_layout.addWidget(params_group, stretch=0)
+
+        # Filtering Method Section
+        method_group = QGroupBox("Filtering Method 🧹")
+        method_group.setFont(header_font)
+        method_group.setStyleSheet(groupbox_style)
+        method_layout = QHBoxLayout()
+
+        self.string_match_button = QRadioButton("String Matching")
+        self.string_match_button.setFont(font_label)
+        self.string_match_button.setChecked(True)
+        self.string_match_button.toggled.connect(lambda: self.set_filter_method(1))
+        method_layout.addWidget(self.string_match_button)
+
+        self.classifier_button = QRadioButton("Classifier Removal")
+        self.classifier_button.setFont(font_label)
+        self.classifier_button.toggled.connect(lambda: self.set_filter_method(2))
+        method_layout.addWidget(self.classifier_button)
+
+        method_layout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+
+        method_group.setLayout(method_layout)
+        main_layout.addWidget(method_group, stretch=0)
+
+        self.force_gpu_checkbox = QCheckBox("Force GPU ⚡")
+        self.force_gpu_checkbox.setFont(font_label)
+        self.force_gpu_checkbox.setChecked(True)  # Checked by default
+        self.force_gpu_checkbox.stateChanged.connect(self.toggle_force_gpu)
+        self.force_gpu_checkbox.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        main_layout.addWidget(self.force_gpu_checkbox, stretch=0)
+
+        self.device_label = QLabel("")
+        self.device_label.setFont(font_label)
+        self.device_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        main_layout.addWidget(self.device_label, stretch=0)
+
+        process_button = QPushButton("⚙️ Process Dataset")
+        process_button.setFont(QFont("Helvetica", 14, QFont.Bold))
+        process_button.setStyleSheet("QPushButton { padding: 12px; border-radius: 12px; background-color: #28a745; color: white; }")
+        process_button.clicked.connect(self.process_dataset)
+        process_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        main_layout.addWidget(process_button, stretch=0)
+
+        # --- Output/status/progress area ---
+        output_group = QGroupBox("Status Window")
+        output_group.setFont(header_font)
+        output_group.setStyleSheet(groupbox_style)
+        output_layout = QVBoxLayout()
+        output_layout.setSpacing(5)
+
+        self.output_text = QTextEdit()
+        self.output_text.setReadOnly(True)
+        self.output_text.setFont(font_label)
+        self.output_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        output_layout.addWidget(self.output_text)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        output_layout.addWidget(self.progress_bar)
+
+        output_group.setLayout(output_layout)
+        main_layout.addWidget(output_group, stretch=1)
+
+        central_widget.setLayout(main_layout)
+
+    def set_filter_method(self, method):
+        self.selected_filter_method = method
+
+    def toggle_force_gpu(self):
+        self.force_gpu = self.force_gpu_checkbox.isChecked()
+        self.update_device_status()
+
+    def update_device_status(self):
+        if self.force_gpu or torch.cuda.is_available():
+            device_info = "GPU (Forced)" if self.force_gpu else "GPU"
         else:
-            print("Icon file not found.")
+            device_info = "CPU"
+        self.device_label.setText(f"Running on: {device_info}")
+
+    def select_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Dataset", "", "JSON Lines files (*.jsonl)")
+        if file_path:
+            self.dataset_entry.setText(file_path)
+
+    def select_filter_files(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Select Filter Files", "", "Text files (*.txt)")
+        if file_paths:
+            self.filter_files = list(file_paths)
+            last_filter_file = self.filter_files[-1]
+            self.save_last_filter_file(last_filter_file)
+            self.last_filter_label.setText(f"Last Selected Filter File: {last_filter_file}")
 
     def load_last_filter_file(self):
-        """Load the last selected filter file path from a text file."""
         if self.last_filter_file_path.exists():
             with open(self.last_filter_file_path, 'r', encoding='utf-8', errors='replace') as f:
                 last_filter_file = f.read().strip()
                 if last_filter_file:
-                    self.filter_files.append(last_filter_file)  # Pre-fill the last filter file
-                    self.last_filter_label.config(text=f"Last Selected Filter File: {last_filter_file}")  # Update label
+                    self.filter_files.append(last_filter_file)
+                    self.last_filter_label.setText(f"Last Selected Filter File: {last_filter_file}")
 
     def save_last_filter_file(self, filter_file):
-        """Save the last selected filter file path to a text file."""
         with open(self.last_filter_file_path, 'w', encoding='utf-8', errors='replace') as f:
             f.write(filter_file)
 
-    def create_widgets(self):
-        self.label = tk.Label(self.root, text="Dataset File:", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.label.grid(row=0, column=0, padx=10, pady=10, sticky='w')
+    def append_output(self, text):
+        self.output_text.append(text)
 
-        self.dataset_entry = tk.Entry(self.root, width=50, bg=self.theme['entry_bg'], fg=self.theme['entry_fg'], insertbackground=self.theme['entry_fg'])
-        self.dataset_entry.grid(row=0, column=1, padx=10, pady=10)
-
-        self.browse_button = tk.Button(self.root, text="Browse...", command=self.select_file, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
-        self.browse_button.grid(row=0, column=2, padx=10, pady=10)
-
-        self.filter_button = tk.Button(self.root, text="Select Filter Files...", command=self.select_filter_files, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
-        self.filter_button.grid(row=1, column=0, columnspan=3, pady=10)
-
-        self.last_filter_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.last_filter_label.grid(row=2, column=0, columnspan=3, padx=10, pady=10)
-
-        # Add threshold input
-        self.threshold_label = tk.Label(self.root, text="Threshold (as a multiple of average):", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.threshold_label.grid(row=3, column=0, padx=10, pady=10, sticky='w')
-
-        self.threshold_entry = tk.Entry(self.root, width=10, bg=self.theme['entry_bg'], fg=self.theme['entry_fg'], insertbackground=self.theme['entry_fg'])
-        self.threshold_entry.grid(row=3, column=1, padx=10, pady=10)
-
-        # Add batch size input
-        self.batch_label = tk.Label(self.root, text="Batch Size:", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.batch_label.grid(row=4, column=0, padx=10, pady=10, sticky='w')
-
-        self.batch_entry = tk.Entry(self.root, width=10, textvariable=self.batch_size, bg=self.theme['entry_bg'], fg=self.theme['entry_fg'], insertbackground=self.theme['entry_fg'])
-        self.batch_entry.grid(row=4, column=1, padx=10, pady=10)
-
-        # Create a frame for the selection buttons
-        self.selection_frame = tk.Frame(self.root, bg=self.theme['bg'])
-        self.selection_frame.grid(row=5, column=0, columnspan=3, pady=10)
-
-        # Add styled radiobuttons for filtering methods
-        self.string_match_radiobutton = tk.Radiobutton(
-            self.selection_frame,
-            text="String Matching Filter",
-            variable=self.selected_filter_method,
-            value=1,
-            command=self.update_button_styles,
-            bg='#333333', fg='gold', font=("Arial", 12, "bold"),
-            indicatoron=0, width=20, relief="solid"
-        )
-        self.string_match_radiobutton.pack(side=tk.LEFT, padx=10, pady=5)
-
-        self.classifier_radiobutton = tk.Radiobutton(
-            self.selection_frame,
-            text="Classifier Removal",
-            variable=self.selected_filter_method,
-            value=2,
-            command=self.update_button_styles,
-            bg='#333333', fg='gold', font=("Arial", 12, "bold"),
-            indicatoron=0, width=20, relief="solid"
-        )
-        self.classifier_radiobutton.pack(side=tk.LEFT, padx=10, pady=5)
-
-        # Add styled checkbox for GPU toggle
-        self.force_gpu_checkbox = tk.Checkbutton(
-            self.selection_frame,
-            text="Force GPU",
-            variable=self.force_gpu,
-            command=self.update_device_status,
-            bg='#333333', fg='gold', font=("Arial", 12, "bold"),
-            indicatoron=0, width=15, relief="solid"
-        )
-        self.force_gpu_checkbox.pack(side=tk.LEFT, padx=10, pady=5)
-
-        # Update button styles initially
-        self.update_button_styles()
-
-        # Display device information
-        self.device_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.device_label.grid(row=8, column=0, columnspan=3, pady=10)
-
-        self.process_button = tk.Button(self.root, text="Process Dataset", command=self.process_dataset, bg=self.theme['button_bg'], fg=self.theme['button_fg'])
-        self.process_button.grid(row=9, column=0, columnspan=3, pady=10)
-
-        self.result_label = tk.Label(self.root, text="", bg=self.theme['bg'], fg=self.theme['fg'])
-        self.result_label.grid(row=10, column=0, columnspan=3, padx=10, pady=10)
-
-    def update_button_styles(self):
-        """Update the styles of the radiobuttons and checkbox based on the selection."""
-        # Update the filtering method buttons
-        if self.selected_filter_method.get() == 1:  # String Matching Filter selected
-            self.string_match_radiobutton.config(bg='white', fg='black')
-            self.classifier_radiobutton.config(bg='#333333', fg='gold')
-        elif self.selected_filter_method.get() == 2:  # Classifier Removal selected
-            self.string_match_radiobutton.config(bg='#333333', fg='gold')
-            self.classifier_radiobutton.config(bg='white', fg='black')
-
-        # Update the GPU checkbox style based on its state
-        if self.force_gpu.get():
-            self.force_gpu_checkbox.config(bg='white', fg='black')
+    def set_progress(self, current, total):
+        if total > 0:
+            percent = int((current / total) * 100)
         else:
-            self.force_gpu_checkbox.config(bg='#333333', fg='gold')
-
-
-    def select_file(self):
-        file_path = filedialog.askopenfilename(
-            filetypes=[("JSON Lines files", "*.jsonl")]
-        )
-        if file_path:
-            self.dataset_entry.delete(0, tk.END)
-            self.dataset_entry.insert(0, file_path)
-
-    def select_filter_files(self):
-        file_paths = filedialog.askopenfilenames(
-            filetypes=[("Text files", "*.txt")]
-        )
-        if file_paths:
-            self.filter_files = list(file_paths)
-            last_filter_file = self.filter_files[-1]  # Get the last selected filter file
-            self.save_last_filter_file(last_filter_file)  # Save the last selected filter file
-            self.last_filter_label.config(text=f"Last Selected Filter File: {last_filter_file}")  # Update label
-
-    def update_device_status(self):
-        # Update the device information based on the force GPU checkbox
-        if self.force_gpu.get() or torch.cuda.is_available():
-            device_info = "GPU (Forced)" if self.force_gpu.get() else "GPU"
-        else:
-            device_info = "CPU"
-        self.device_label.config(text=f"Running on: {device_info}")
+            percent = 0
+        self.progress_bar.setValue(percent)
+        self.progress_bar.setFormat(f"{percent}% ({current}/{total})")
 
     def process_dataset(self):
-        dataset_file = self.dataset_entry.get().strip()
+        dataset_file = self.dataset_entry.text().strip()
         if not dataset_file:
-            messagebox.showerror("Input Error", "Please select a dataset file.")
+            QMessageBox.critical(self, "Input Error", "Please select a dataset file.")
             return
 
-        # Get the batch size from user input
-        batch_size = self.batch_size.get()
-
-        # Determine device
-        device = 0 if self.force_gpu.get() or torch.cuda.is_available() else -1
-
-        if self.selected_filter_method.get() == 1:
-            # Use string matching filter method
-            self.process_with_original_method(dataset_file)
-        elif self.selected_filter_method.get() == 2:
-            # Use classifier removal filter method
-            self.slop_filter = CharacterSlopFilter(batch_size=batch_size, confidence_margin=0.1)
-            asyncio.run(self.process_with_slop_filter(dataset_file, device))
-        else:
-            messagebox.showerror("Error", "Invalid filter method selected.")
-
-    def process_with_original_method(self, dataset_file):
-        if not self.filter_files:
-            messagebox.showerror("Input Error", "Please select at least one filter file.")
-            return
-
-        filter_criteria = load_filter_criteria(self.filter_files) or []
-        if not filter_criteria:
-            messagebox.showerror("Input Error", "Filter criteria are empty. Please check your filter files.")
-            return
-
-        threshold_value = self.threshold_entry.get().strip()
-        
         try:
-            average_results = self.calculate_average_phrases(dataset_file, filter_criteria)
-            average_matched = average_results['average']
+            self.batch_size = int(self.batch_entry.text())
+        except ValueError:
+            QMessageBox.critical(self, "Input Error", "Batch size must be an integer.")
+            return
 
-            if threshold_value:
-                threshold_multiplier = float(threshold_value)
-                threshold = average_matched * threshold_multiplier
-                output_message = filter_dataset(dataset_file, self.filter_files, threshold)
-            else:
-                output_message = f"Average matched phrases per conversation: {average_matched:.2f}\n" \
-                                 f"Total conversations: {average_results['total_conversations']}\n" \
-                                 f"Conversations with phrases above average: {average_results['above_average']}\n"
+        device = 0 if self.force_gpu or torch.cuda.is_available() else -1
 
-            self.result_label.config(text=output_message)
-        except Exception as e:
-            messagebox.showerror("Processing Error", str(e))
+        self.output_text.clear()
+        self.progress_bar.setValue(0)
 
-    async def process_with_slop_filter(self, dataset_file, device):
-        # Create the 'deslopped' directory if it doesn't exist
-        output_dir = Path('./deslopped')
-        output_dir.mkdir(parents=True, exist_ok=True)  # Create directory if it doesn't exist
-       
-       # Define the output file path inside the 'deslopped' directory with the '_deslopped.jsonl' extension
-        output_jsonl_filepath = output_dir / (Path(dataset_file).stem + "_deslopped.jsonl")
-        await self.slop_filter.filter_conversations(dataset_file, output_jsonl_filepath)
-        self.result_label.config(text=f"Filtered conversations saved to {output_jsonl_filepath}")
+        if self.selected_filter_method == 1:
+            if not self.filter_files:
+                QMessageBox.critical(self, "Input Error", "Please select at least one filter file.")
+                return
+
+            filter_criteria = load_filter_criteria(self.filter_files) or []
+            if not filter_criteria:
+                QMessageBox.critical(self, "Input Error", "Filter criteria are empty. Please check your filter files.")
+                return
+
+            threshold_value = self.threshold_entry.text().strip()
+
+            self.append_output("Starting string matching filtering...")
+
+            def progress_callback(current, total):
+                self.set_progress(current, total)  # Only update progress bar, no spam in status
+
+            try:
+                threshold = None
+                if threshold_value:
+                    average_results = self.calculate_average_phrases(dataset_file, filter_criteria)
+                    average_matched = average_results['average']
+                    threshold_multiplier = float(threshold_value)
+                    threshold = average_matched * threshold_multiplier
+
+                output_message = filter_dataset(
+                    dataset_file,
+                    self.filter_files,
+                    threshold,
+                    progress_callback=progress_callback
+                )
+                self.append_output(output_message)
+            except Exception as e:
+                QMessageBox.critical(self, "Processing Error", str(e))
+
+            self.progress_bar.setValue(100)
+
+        elif self.selected_filter_method == 2:
+            self.slop_filter = CharacterSlopFilter(batch_size=self.batch_size, confidence_margin=0.1)
+            output_dir = Path('./deslopped')
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_jsonl_filepath = output_dir / (Path(dataset_file).stem + "_deslopped.jsonl")
+
+            self.slop_worker = SlopFilterWorker(self.slop_filter, dataset_file, output_jsonl_filepath)
+            self.slop_worker.status_update.connect(self.append_output)
+            self.slop_worker.progress_update.connect(self.set_progress)
+            self.slop_worker.finished.connect(self.on_slop_filter_finished)
+            self.slop_worker.start()
+        else:
+            QMessageBox.critical(self, "Error", "Invalid filter method selected.")
+
+    def update_progress(self, current, total):
+        self.set_progress(current, total)
+
+    def on_slop_filter_finished(self, message):
+        self.progress_bar.setValue(100)
+        self.append_output(message)
 
     def calculate_average_phrases(self, dataset_file, filter_criteria):
         data = load_jsonl(dataset_file)
@@ -266,15 +382,11 @@ class DeslopToolApp:
         above_average_count = 0
 
         for conversation in data:
-            # Ensure conversation is a dictionary
             if not isinstance(conversation, dict):
-                print(f"Skipping non-dictionary conversation: {conversation}")
                 continue
 
-            # Get the conversation list, ensure it's a list
             conversation_list = conversation.get("conversations", [])
             if not isinstance(conversation_list, list):
-                print(f"Invalid conversation format: {conversation_list}")
                 continue
 
             matched_count = sum(
@@ -282,7 +394,7 @@ class DeslopToolApp:
                 for msg in conversation_list if msg.get("from") == "gpt"
             )
             total_phrases += matched_count
-            
+
             if matched_count > (total_phrases / total_conversations if total_conversations > 0 else 0):
                 above_average_count += 1
 
@@ -294,21 +406,13 @@ class DeslopToolApp:
             "above_average": above_average_count
         }
 
+
 def run_app():
-    root = tk.Tk()
-    root.withdraw()  # Hide the main root window
+    app = QApplication(sys.argv)
+    window = DeslopToolApp()
+    window.show()
+    sys.exit(app.exec_())
 
-    theme = {
-        'bg': 'lightgray',
-        'fg': 'black',
-        'entry_bg': 'white',
-        'entry_fg': 'black',
-        'button_bg': 'gray',
-        'button_fg': 'white'
-    }
-    app = DeslopToolApp(root, theme)
-
-    root.mainloop()
 
 if __name__ == "__main__":
     run_app()

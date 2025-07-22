@@ -11,7 +11,7 @@ import tkinter as tk
 from theme import Theme
 from dataset_converter_app import DatasetConverterApp
 from datamaxxer_app import DataMaxxerApp
-from DeslopTool_app import DeslopToolApp
+from DeslopTool_app import DeslopToolApp  # PyQt5 version of DeslopToolApp
 from WordCloudGenerator_app import GenerateWordCloudApp
 from music_player_app import MusicPlayerApp
 from binary_classification_app import BinaryClassificationApp
@@ -22,7 +22,7 @@ from safetensormaxxer_app import SafetensorMaxxerApp
 from linemancer_app import LineMancerFrame
 from parquetmaxxer_app import ParquetMaxxer
 from english_filter_app import EnglishFilterApp
-from tokenmaxxerv3_app import TokenMaxxerV3App   
+from tokenmaxxerv3_app import TokenMaxxerV3App
 
 import sys
 from PyQt5.QtWidgets import QApplication
@@ -70,7 +70,18 @@ class UIManager:
         self.qt_windows.append(win)
 
     def open_deslop_tool(self):
-        DeslopToolApp(self.root, self.theme)
+        from DeslopTool_app import DeslopToolApp  # PyQt5 version
+
+        win = DeslopToolApp()  # Create the PyQt5 window
+        win.setWindowTitle("DeslopMancer")
+
+        # Apply dark theme background and text colors
+        bg = self.theme.get('bg', '#222222')
+        fg = self.theme.get('fg', '#ffffff')
+        win.setStyleSheet(f"background-color: {bg}; color: {fg};")
+
+        win.show()
+        self.qt_windows.append(win)
 
     def open_binary_classification_app(self):
         BinaryClassificationApp(self.root, self.theme)

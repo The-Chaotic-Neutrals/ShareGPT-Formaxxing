@@ -8,14 +8,7 @@ app.log
 /deduplicated
 /deslopped
 /filtered
-output2.jsonl
 volume.txt
-*.ftz
-*.txt
-*.txt
-filter_criteria.txt
-*.txt
-filter_criteria.txt
 filter_criteria.txt
 tokenmaxxer_config.json
-tokenmaxxer_config.json
+lid.176.ftz

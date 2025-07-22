@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 class DatasetConverterApp:
     def __init__(self, parent, theme):
         self.top = tk.Toplevel(parent)
-        self.top.title("Formaxxer")
+        self.top.title("ForMaxxer")
         self.theme = theme
         self.top.configure(bg=self.theme['bg'])
         self.setup_ui()

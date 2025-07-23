@@ -1,4 +1,3 @@
-import sys
 import os
 import threading
 from PyQt5.QtWidgets import (
@@ -9,7 +8,7 @@ from PyQt5.QtGui import QIcon, QImage, QPixmap, QPalette, QColor, QFont
 from PyQt5.QtCore import pyqtSignal, QObject
 from PIL import Image
 from WordCloudGenerator import WordCloudGenerator
-from theme import Theme  # Use your exact theme
+from theme import Theme
 
 
 class GenerateWordCloudApp(QObject):
@@ -28,6 +27,7 @@ class GenerateWordCloudApp(QObject):
         self.setup_ui()
         self.set_icon()
         self.apply_theme()
+        self.add_background_to_main()
         self.window.show()
 
     def apply_theme(self):
@@ -40,20 +40,27 @@ class GenerateWordCloudApp(QObject):
         palette.setColor(QPalette.ButtonText, QColor(self.theme.get('button_fg', '#ffffff')))
         self.window.setPalette(palette)
 
-        button_style = f"""
+        # Stylesheet with explicit button protection and hover effect
+        stylesheet = f"""
+            QMainWindow, QWidget#centralWidget {{
+                background-color: rgba(0, 0, 0, 0.8);
+            }}
             QPushButton {{
                 background-color: {self.theme.get('button_bg', '#1e90ff')};
                 color: {self.theme.get('button_fg', '#ffffff')};
                 border-radius: 10px;
                 padding: 8px 16px;
                 font-size: 14px;
+                border: 1px solid {self.theme.get('fg', '#1e90ff')};
             }}
             QPushButton:hover {{
-                background-color: {self.theme.get('fg', '#1e90ff')};
-                color: {self.theme.get('bg', '#000000')};
+                background-color: #4682b4;
+                color: #ffffff;
+                border: 1px solid #ffffff;
             }}
-        """
-        entry_style = f"""
+            QPushButton:pressed {{
+                background-color: #2f4f4f;
+            }}
             QLineEdit {{
                 background-color: {self.theme.get('entry_bg', '#000000')};
                 color: {self.theme.get('entry_fg', '#ffffff')};
@@ -62,13 +69,17 @@ class GenerateWordCloudApp(QObject):
                 padding: 4px;
                 font-size: 14px;
             }}
+            QLabel {{
+                background-color: transparent;
+                color: {self.theme.get('text_fg', '#ffffff')};
+                font-size: 14px;
+            }}
         """
-        label_style = f"QLabel {{ color: {self.theme.get('text_fg', '#ffffff')}; font-size: 14px; }}"
-
-        self.window.setStyleSheet(button_style + entry_style + label_style)
+        self.window.setStyleSheet(stylesheet)
 
     def setup_ui(self):
         central = QWidget()
+        central.setObjectName("centralWidget")
         self.window.setCentralWidget(central)
         layout = QGridLayout()
         layout.setColumnStretch(0, 1)
@@ -96,6 +107,22 @@ class GenerateWordCloudApp(QObject):
         layout.addWidget(self.status_label, 2, 0, 1, 3)
 
         central.setLayout(layout)
+
+    def add_background_to_main(self):
+        central = self.window.centralWidget()
+        bg_class = self.theme.get('background_widget_class')
+        if bg_class:
+            bg = bg_class(central)
+            bg.lower()
+            original_resize = central.resizeEvent if hasattr(central, 'resizeEvent') else None
+            def new_resize(event):
+                bg.resize(central.size())
+                if original_resize:
+                    original_resize(event)
+                else:
+                    super(QWidget, central).resizeEvent(event)
+            central.resizeEvent = new_resize
+            bg.resize(central.size())
 
     def set_icon(self):
         if os.path.exists(self.icon_path):
@@ -126,13 +153,43 @@ class GenerateWordCloudApp(QObject):
         top = QMainWindow(self.window)
         top.setWindowTitle("☁️ Word Cloud")
         top.resize(616, 308)
-        top.setStyleSheet(f"background-color: {self.theme['bg']};")
-        if os.path.exists(self.icon_path):
-            top.setWindowIcon(QIcon(self.icon_path))
+
+        # Apply same stylesheet to popup for consistency
+        stylesheet = f"""
+            QMainWindow, QWidget#centralWidget {{
+                background-color: rgba(0, 0, 0, 0.8);
+            }}
+            QLabel {{
+                background-color: transparent;
+            }}
+        """
+        top.setStyleSheet(stylesheet)
+
+        central_widget = QWidget()
+        central_widget.setObjectName("centralWidget")
+        layout = QVBoxLayout(central_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         label = QLabel()
         label.setPixmap(pix)
-        top.setCentralWidget(label)
+        layout.addWidget(label)
+
+        top.setCentralWidget(central_widget)
+
+        bg_class = self.theme.get('background_widget_class')
+        if bg_class:
+            bg = bg_class(central_widget)
+            bg.lower()
+            original_resize = central_widget.resizeEvent if hasattr(central_widget, 'resizeEvent') else None
+            def new_resize(event):
+                bg.resize(central_widget.size())
+                if original_resize:
+                    original_resize(event)
+                else:
+                    super(QWidget, central_widget).resizeEvent(event)
+            central_widget.resizeEvent = new_resize
+            bg.resize(central_widget.size())
+
         top.show()
 
     def update_status(self, message):
@@ -144,5 +201,5 @@ class GenerateWordCloudApp(QObject):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    generate_app = GenerateWordCloudApp(None, Theme.DARK)  # Using your theme
+    generate_app = GenerateWordCloudApp(None, Theme.DARK)
     sys.exit(app.exec_())

@@ -1,13 +1,15 @@
 import os
 import sys
-import random
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QTabWidget
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QTabWidget, QMainWindow
 )
-from PyQt5.QtGui import QIcon, QPalette, QColor, QPainter, QFont
-from PyQt5.QtCore import Qt, QTimer, QPointF
+from PyQt5.QtGui import QIcon, QPalette, QColor, QFont
+from PyQt5.QtCore import Qt
+
+# Import the background widget
+from bg import FloatingPixelsWidget
 
 # Import your tools
 from theme import Theme
@@ -26,58 +28,6 @@ from english_filter_app import EnglishFilterApp
 from tokenmaxxerv3_app import TokenMaxxerV3App
 
 
-class FloatingPixelsWidget(QWidget):
-    def __init__(self, parent=None, pixel_count=100):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.pixels = []
-        self.pixel_count = pixel_count
-        self.init_pixels()
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.animate)
-        self.timer.start(30)  # ~33 FPS
-
-    def init_pixels(self):
-        self.pixels = []
-        w = self.width() or 800
-        h = self.height() or 480
-        for _ in range(self.pixel_count):
-            pos = QPointF(random.uniform(0, w), random.uniform(0, h))
-            vel = QPointF(random.uniform(-0.3, 0.3), random.uniform(-0.3, 0.3))
-            size = random.uniform(1, 3)
-            alpha = random.uniform(0.3, 1.0)
-            self.pixels.append({'pos': pos, 'vel': vel, 'size': size, 'alpha': alpha})
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.init_pixels()
-
-    def animate(self):
-        w = self.width()
-        h = self.height()
-        for p in self.pixels:
-            p['pos'] += p['vel']
-            if p['pos'].x() < 0 or p['pos'].x() > w:
-                p['vel'].setX(-p['vel'].x())
-            if p['pos'].y() < 0 or p['pos'].y() > h:
-                p['vel'].setY(-p['vel'].y())
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), Qt.black)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(Qt.white)
-        for p in self.pixels:
-            color = QColor(255, 255, 255)
-            color.setAlphaF(p['alpha'])
-            painter.setBrush(color)
-            size = p['size']
-            pos = p['pos']
-            painter.drawEllipse(pos, size, size)
-
-
 class UIManager(QWidget):
     def __init__(self, theme=None):
         super().__init__()
@@ -85,6 +35,7 @@ class UIManager(QWidget):
         self.qt_windows = []
         self.setWindowTitle("Chaotic Neutral's ShareGPT Formaxxing-Tool")
         self.resize(800, 480)
+        self.icon_path = Path(__file__).parent / "icon.ico"
 
         self.background_widget = FloatingPixelsWidget(self)
         self.background_widget.lower()
@@ -148,12 +99,14 @@ class UIManager(QWidget):
             QTabBar::tab {{
                 background-color: #1c2526;
                 color: #ffffff;
-                padding: 8px 20px;
+                padding: 14px 14px;
                 font-family: 'Arial', sans-serif;
+                font-size: 14px;
                 font-weight: bold;
                 border-top-left-radius: 8px;
                 border-top-right-radius: 8px;
                 margin-right: 2px;
+                min-width: 120px;
             }}
             QTabBar::tab:selected {{
                 background-color: {self.theme.get('button_bg', '#1e90ff')};
@@ -165,9 +118,8 @@ class UIManager(QWidget):
         """)
 
     def set_icon(self):
-        icon_path = Path(__file__).parent / "icon.ico"
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
+        if self.icon_path.exists():
+            self.setWindowIcon(QIcon(str(self.icon_path)))
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -231,72 +183,176 @@ class UIManager(QWidget):
         frame.setLayout(column)
         return frame
 
+    def add_background_to_window(self, win):
+        bg_class = self.theme.get('background_widget_class')
+        if bg_class:
+            if isinstance(win, QMainWindow):
+                central = win.centralWidget()
+                if central:
+                    bg = bg_class(central)
+                    bg.lower()
+                    # Force transparent background on central to show animated bg
+                    current_ss = central.styleSheet()
+                    if current_ss:
+                        current_ss = current_ss.replace("background-color: #000000;", "background-color: transparent;")
+                    else:
+                        current_ss = "background-color: transparent;"
+                    central.setStyleSheet(current_ss)
+                    # Patch resizeEvent on central
+                    original_resize = central.resizeEvent if hasattr(central, 'resizeEvent') else None
+                    def new_resize(event):
+                        bg.resize(central.size())
+                        if original_resize:
+                            original_resize(event)
+                        else:
+                            super(type(central), central).resizeEvent(event)
+                    central.resizeEvent = new_resize
+                    # Initial resize
+                    bg.resize(central.size())
+                else:
+                    # If no central, fallback to win
+                    bg = bg_class(win)
+                    bg.lower()
+                    win.setStyleSheet("background-color: transparent;")
+                    original_resize = win.resizeEvent if hasattr(win, 'resizeEvent') else None
+                    def new_resize(event):
+                        bg.resize(win.size())
+                        if original_resize:
+                            original_resize(event)
+                        else:
+                            super(type(win), win).resizeEvent(event)
+                    win.resizeEvent = new_resize
+                    bg.resize(win.size())
+            else:
+                bg = bg_class(win)
+                bg.lower()
+                # Force transparent background on win
+                current_ss = win.styleSheet()
+                if current_ss:
+                    current_ss = current_ss.replace("background-color: #000000;", "background-color: transparent;")
+                else:
+                    current_ss = "background-color: transparent;"
+                win.setStyleSheet(current_ss)
+                original_resize = win.resizeEvent if hasattr(win, 'resizeEvent') else None
+                def new_resize(event):
+                    bg.resize(win.size())
+                    if original_resize:
+                        original_resize(event)
+                    else:
+                        super(type(win), win).resizeEvent(event)
+                win.resizeEvent = new_resize
+                # Initial resize
+                bg.resize(win.size())
+
     # ---- Window Launchers ----
     def open_dataset_converter_app(self):
         win = DatasetConverterApp(self.theme)
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_filter_app(self):
         win = DataMaxxerApp(self.theme)
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_deslop_tool(self):
         win = DeslopToolApp()
-        win.setStyleSheet(f"background-color: {self.theme.get('bg')}; color: {self.theme.get('text_fg')};")
+        win.setStyleSheet(f"background-color: transparent; color: {self.theme.get('text_fg')};")
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_binary_classification_app(self):
         win = BinaryClassificationApp(self.theme)
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_deduplication_app(self):
         win = DeduplicationApp(self.theme)
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_ngram_analyzer_app(self):
         win = NgramAnalyzerApp(self.theme)
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_text_correction_app(self):
         win = GrammarMaxxerApp(self.theme)
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_safetensormaxxer_app(self):
         win = SafetensorMaxxerApp(self.theme)
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_linemancer_app(self):
         win = LineMancerFrame()
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        win.setStyleSheet(f"background-color: transparent; color: {self.theme.get('text_fg')};")
         win.resize(640, 520)
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_parquetmaxxer_app(self):
         win = ParquetMaxxer()
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        win.setStyleSheet(f"background-color: transparent; color: {self.theme.get('text_fg')};")
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_englishfilter_app(self):
         win = EnglishFilterApp()
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        win.setStyleSheet(f"background-color: transparent; color: {self.theme.get('text_fg')};")
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_tokenmaxxer_app(self):
         win = TokenMaxxerV3App()
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        win.setStyleSheet(f"background-color: transparent; color: {self.theme.get('text_fg')};")
+        self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
 
     def open_wordcloud_generator_app(self):
         app = GenerateWordCloudApp(None, self.theme)
         if hasattr(app, 'window'):
+            if self.icon_path.exists():
+                app.window.setWindowIcon(QIcon(str(self.icon_path)))
+            self.add_background_to_window(app.window)
             app.window.show()
             self.qt_windows.append(app.window)
 

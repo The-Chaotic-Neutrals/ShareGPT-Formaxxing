@@ -11,7 +11,6 @@ from ngram_analyzer import process_jsonl, count_ngrams
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.pyplot as plt
 
-
 def format_results(ngrams):
     results = []
     for n in sorted(ngrams):
@@ -21,38 +20,33 @@ def format_results(ngrams):
         results.append('\n')
     return ''.join(results)
 
-
 class PlotDialog(QDialog):
     def __init__(self, parent, ngrams, theme):
         super().__init__(parent)
         self.setWindowTitle("📊 N-gram Frequencies")
         self.setWindowIcon(QIcon('icon.ico'))
         layout = QVBoxLayout(self)
-
         fig, ax = plt.subplots(figsize=(12, 8))
         fig.patch.set_facecolor(theme.get('bg', 'black'))
         ax.set_facecolor(theme.get('bg', 'black'))
-
         for spine in ['left', 'right', 'bottom', 'top']:
             ax.spines[spine].set_color(theme.get('fg', 'white'))
-
         ax.tick_params(axis='both', colors=theme.get('fg', 'white'))
 
+        colors = ['#1e90ff', '#ffd700', '#9400d3']  # Blue, Gold, Violet
         for i, n in enumerate(sorted(ngrams)):
             data = ngrams[n].most_common(10)
             words = [' '.join(gram) for gram, _ in data]
             counts = [count for _, count in data]
-            ax.barh(words, counts, color=theme.get('button_bg', '#1e90ff'), label=f"{n}-grams")
+            ax.barh(words, counts, color=colors[i % len(colors)], label=f"{n}-grams")
 
         ax.set_xlabel('Frequency', color=theme.get('fg', 'white'))
         ax.set_ylabel('N-grams', color=theme.get('fg', 'white'))
         ax.set_title('Top N-grams Frequency', color=theme.get('fg', 'white'))
         ax.legend()
-
         fig.tight_layout()
         canvas = FigureCanvas(fig)
         layout.addWidget(canvas)
-
 
 class Worker(QThread):
     update_results = pyqtSignal(str)
@@ -66,24 +60,31 @@ class Worker(QThread):
     def run(self):
         start_time = time.time()
         try:
-            content = process_jsonl(self.params['input_filename'], self.params['role_filter'])
-            ngrams = count_ngrams(
-                content,
-                self.params['min_length'],
-                self.params['max_length'],
-                stopword_limit=self.params['max_stop_tokens'] if self.params['exclude_stopwords'] else 0,
-                no_punctuation=self.params['exclude_punctuation'],
-                punctuation_limit=self.params['punctuation_limit']
+            content = process_jsonl(
+                self.params['input_filename'],
+                self.params['role_filter'],
+                no_punctuation=self.params['exclude_punctuation']
             )
-
+            ngrams, _ = count_ngrams(
+                content,
+                min_length=self.params['min_length'],
+                max_length=self.params['max_length'],
+                stopword_limit=self.params['max_stop_tokens'] if self.params['exclude_stopwords'] else 0,
+                punctuation_limit=self.params['punctuation_limit'],
+                no_punctuation=self.params['exclude_punctuation'],
+                similarity_threshold=self.params['similarity_threshold']
+            )
             results = format_results(ngrams)
             elapsed_time = time.time() - start_time
             results += f'Took {elapsed_time:.03f} seconds\n'
+            if self.params['output_file']:
+                with open(self.params['output_file'], 'w', encoding='utf-8') as f:
+                    f.write(results)
+                results += f'\nResults saved to {self.params["output_file"]}\n'
             self.update_results.emit(results)
             self.plot_results.emit(ngrams)
         except Exception as e:
             self.show_error.emit(f"Error during processing: {str(e)}")
-
 
 class NgramAnalyzerApp(QMainWindow):
     def __init__(self, theme):
@@ -91,11 +92,9 @@ class NgramAnalyzerApp(QMainWindow):
         self.theme = theme
         self.setWindowTitle("📈 N-gram Analyzer")
         self.setWindowIcon(QIcon('icon.ico'))
-
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
-
         self.setup_ui()
         self.apply_theme()
 
@@ -105,24 +104,25 @@ class NgramAnalyzerApp(QMainWindow):
         palette.setColor(QPalette.WindowText, QColor(self.theme.get('text_fg', '#ffffff')))
         palette.setColor(QPalette.Base, QColor(self.theme.get('entry_bg', '#000000')))
         palette.setColor(QPalette.Text, QColor(self.theme.get('entry_fg', '#ffffff')))
-        palette.setColor(QPalette.Button, QColor(self.theme.get('button_bg', '#1e90ff')))
+        palette.setColor(QPalette.Button, QColor(self.theme.get('button_bg', '#4169e1')))
         palette.setColor(QPalette.ButtonText, QColor(self.theme.get('button_fg', '#ffffff')))
         self.setPalette(palette)
 
         button_style = f"""
             QPushButton {{
-                background-color: {self.theme.get('button_bg', '#1e90ff')};
+                background-color: {self.theme.get('button_bg', '#4169e1')};
                 color: {self.theme.get('button_fg', '#ffffff')};
+                border: 1px solid {self.theme.get('fg', '#1e90ff')};
                 border-radius: 10px;
                 padding: 8px 16px;
                 font-size: 14px;
             }}
             QPushButton:hover {{
-                background-color: {self.theme.get('fg', '#1e90ff')};
-                color: {self.theme.get('bg', '#000000')};
+                background-color: #6495ed;
+                color: #ffffff;
+                border: 1px solid #ffffff;
             }}
         """
-
         label_style = f"color: {self.theme.get('text_fg', '#ffffff')}; font-size: 14px;"
         entry_style = f"""
             QLineEdit, QComboBox, QTextEdit {{
@@ -135,24 +135,48 @@ class NgramAnalyzerApp(QMainWindow):
             }}
         """
         checkbox_style = f"QCheckBox {{ color: {self.theme.get('text_fg', '#ffffff')}; font-size: 13px; }}"
-
-        self.setStyleSheet(button_style + entry_style + checkbox_style)
+        menu_style = f"""
+            QMenu {{
+                background-color: {self.theme.get('entry_bg', '#000000')};
+                color: {self.theme.get('text_fg', '#ffffff')};
+                border: 1px solid {self.theme.get('fg', '#1e90ff')};
+            }}
+            QMenu::item {{
+                color: {self.theme.get('text_fg', '#ffffff')};
+            }}
+            QMenu::item:selected {{
+                background-color: #6495ed;
+                color: {self.theme.get('fg', '#1e90ff')};
+            }}
+        """
+        self.setStyleSheet(button_style + entry_style + checkbox_style + menu_style)
 
         for label in self.findChildren(QLabel):
             label.setStyleSheet(label_style)
             label.setFont(QFont("Segoe UI", 12))
 
     def setup_ui(self):
-        # File selection
-        file_layout = QHBoxLayout()
+        # Input file selection
+        input_file_layout = QHBoxLayout()
         self.input_file_label = QLabel("📂 Select Input File:")
-        file_layout.addWidget(self.input_file_label)
+        input_file_layout.addWidget(self.input_file_label)
         self.input_file_entry = QLineEdit()
-        file_layout.addWidget(self.input_file_entry)
+        input_file_layout.addWidget(self.input_file_entry)
         self.input_file_button = QPushButton("Browse")
-        self.input_file_button.clicked.connect(self.browse_file)
-        file_layout.addWidget(self.input_file_button)
-        self.main_layout.addLayout(file_layout)
+        self.input_file_button.clicked.connect(self.browse_input_file)
+        input_file_layout.addWidget(self.input_file_button)
+        self.main_layout.addLayout(input_file_layout)
+
+        # Output file selection
+        output_file_layout = QHBoxLayout()
+        self.output_file_label = QLabel("💾 Select Output File (optional):")
+        output_file_layout.addWidget(self.output_file_label)
+        self.output_file_entry = QLineEdit()
+        output_file_layout.addWidget(self.output_file_entry)
+        self.output_file_button = QPushButton("Browse")
+        self.output_file_button.clicked.connect(self.browse_output_file)
+        output_file_layout.addWidget(self.output_file_button)
+        self.main_layout.addLayout(output_file_layout)
 
         # Role filter
         role_layout = QHBoxLayout()
@@ -177,6 +201,15 @@ class NgramAnalyzerApp(QMainWindow):
         self.max_length_entry.setMaximumWidth(50)
         length_layout.addWidget(self.max_length_entry)
         self.main_layout.addLayout(length_layout)
+
+        # Similarity threshold
+        similarity_layout = QHBoxLayout()
+        self.similarity_label = QLabel("Similarity Threshold (0-1):")
+        similarity_layout.addWidget(self.similarity_label)
+        self.similarity_entry = QLineEdit('0.85')
+        self.similarity_entry.setMaximumWidth(50)
+        similarity_layout.addWidget(self.similarity_entry)
+        self.main_layout.addLayout(similarity_layout)
 
         # Checkboxes
         self.stopwords_checkbox = QCheckBox("Exclude Stop Words")
@@ -218,13 +251,22 @@ class NgramAnalyzerApp(QMainWindow):
         self.results_area.setReadOnly(True)
         self.main_layout.addWidget(self.results_area)
 
-    def browse_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select File", "", "JSONL files (*.jsonl)")
+    def browse_input_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Input File", "", "JSONL files (*.jsonl)")
         if file_path:
             self.input_file_entry.setText(file_path)
 
+    def browse_output_file(self):
+        file_path, _ = QFileDialog.getSaveFileName(self, "Select Output File", "", "Text files (*.txt)")
+        if file_path:
+            self.output_file_entry.setText(file_path)
+
     def start_analysis(self):
         input_filename = self.input_file_entry.text()
+        if not input_filename:
+            self.show_error("Please select an input file.")
+            return
+
         selected_role = self.role_combo.currentText()
         role_filter = ['human', 'gpt', 'system'] if selected_role == 'all' else [selected_role]
 
@@ -233,6 +275,14 @@ class NgramAnalyzerApp(QMainWindow):
             max_length = int(self.max_length_entry.text())
             if min_length < 1 or max_length < min_length:
                 raise ValueError("Invalid length range.")
+        except ValueError as e:
+            self.show_error(str(e))
+            return
+
+        try:
+            similarity_threshold = float(self.similarity_entry.text())
+            if not 0 <= similarity_threshold <= 1:
+                raise ValueError("Similarity threshold must be between 0 and 1.")
         except ValueError as e:
             self.show_error(str(e))
             return
@@ -246,7 +296,9 @@ class NgramAnalyzerApp(QMainWindow):
             'exclude_numerical': self.numerical_checkbox.isChecked(),
             'exclude_punctuation': self.punctuation_checkbox.isChecked(),
             'max_stop_tokens': int(self.stop_token_entry.text() or 0),
-            'punctuation_limit': int(self.punctuation_limit_entry.text() or 0)
+            'punctuation_limit': int(self.punctuation_limit_entry.text() or 0),
+            'similarity_threshold': similarity_threshold,
+            'output_file': self.output_file_entry.text() or None
         }
 
         self.results_area.clear()
@@ -269,7 +321,6 @@ class NgramAnalyzerApp(QMainWindow):
         dialog = PlotDialog(self, ngrams, self.theme)
         dialog.show()
 
-
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = NgramAnalyzerApp(theme={
@@ -278,7 +329,7 @@ if __name__ == "__main__":
         'text_fg': '#ffffff',
         'entry_bg': '#000000',
         'entry_fg': '#ffffff',
-        'button_bg': '#1e90ff',
+        'button_bg': '#4169e1',
         'button_fg': '#ffffff'
     })
     window.show()

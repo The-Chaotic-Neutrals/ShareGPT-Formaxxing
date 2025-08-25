@@ -10,11 +10,9 @@ from PIL import Image
 from WordCloudGenerator import WordCloudGenerator
 from theme import Theme
 
-
 class GenerateWordCloudApp(QObject):
     status_updated = pyqtSignal(str)
-    image_ready = pyqtSignal(object)  # PIL Image
-
+    image_ready = pyqtSignal(object) # PIL Image
     def __init__(self, parent, theme):
         super().__init__()
         self.theme = theme
@@ -29,7 +27,7 @@ class GenerateWordCloudApp(QObject):
         self.apply_theme()
         self.add_background_to_main()
         self.window.show()
-
+    
     def apply_theme(self):
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(self.theme.get('bg', '#000000')))
@@ -39,7 +37,6 @@ class GenerateWordCloudApp(QObject):
         palette.setColor(QPalette.Button, QColor(self.theme.get('button_bg', '#1e90ff')))
         palette.setColor(QPalette.ButtonText, QColor(self.theme.get('button_fg', '#ffffff')))
         self.window.setPalette(palette)
-
         # Stylesheet with explicit button protection and hover effect
         stylesheet = f"""
             QMainWindow, QWidget#centralWidget {{
@@ -76,7 +73,7 @@ class GenerateWordCloudApp(QObject):
             }}
         """
         self.window.setStyleSheet(stylesheet)
-
+    
     def setup_ui(self):
         central = QWidget()
         central.setObjectName("centralWidget")
@@ -85,29 +82,23 @@ class GenerateWordCloudApp(QObject):
         layout.setColumnStretch(0, 1)
         layout.setColumnStretch(1, 3)
         layout.setColumnStretch(2, 1)
-
         # File selection
         self.label = QLabel("📂 Select JSONL File:")
         layout.addWidget(self.label, 0, 0)
-
         self.entry_file = QLineEdit()
         layout.addWidget(self.entry_file, 0, 1)
-
         browse_button = QPushButton("Browse")
         browse_button.clicked.connect(self.select_file)
         layout.addWidget(browse_button, 0, 2)
-
         # Generate button
         generate_button = QPushButton("🚀 Generate Word Cloud")
         generate_button.clicked.connect(self.start_wordcloud_generation)
         layout.addWidget(generate_button, 1, 0, 1, 3)
-
         # Status label
         self.status_label = QLabel("Status: Ready")
         layout.addWidget(self.status_label, 2, 0, 1, 3)
-
         central.setLayout(layout)
-
+    
     def add_background_to_main(self):
         central = self.window.centralWidget()
         bg_class = self.theme.get('background_widget_class')
@@ -123,37 +114,35 @@ class GenerateWordCloudApp(QObject):
                     super(QWidget, central).resizeEvent(event)
             central.resizeEvent = new_resize
             bg.resize(central.size())
-
+    
     def set_icon(self):
         if os.path.exists(self.icon_path):
             self.window.setWindowIcon(QIcon(self.icon_path))
-
+    
     def select_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self.window, "Select JSONL File", "", "JSON Lines files (*.jsonl)")
         if file_path:
             self.entry_file.setText(file_path)
-
+    
     def start_wordcloud_generation(self):
         file_path = self.entry_file.text()
         if os.path.isfile(file_path):
             threading.Thread(target=self.generate_wordcloud, args=(file_path,), daemon=True).start()
         else:
             self.update_status("❌ Input Error: The file does not exist.")
-
+    
     def generate_wordcloud(self, file_path):
-        pil_image = self.generator.generate_wordcloud(file_path)
+        pil_image = self.generator.generate_wordcloud(file_path, width=1600, height=1200)
         if pil_image:
             self.image_ready.emit(pil_image)
-
+    
     def show_image(self, pil_image):
         data = pil_image.convert("RGBA").tobytes("raw", "RGBA")
         qim = QImage(data, pil_image.size[0], pil_image.size[1], QImage.Format_RGBA8888)
         pix = QPixmap.fromImage(qim)
-
         top = QMainWindow(self.window)
         top.setWindowTitle("☁️ Word Cloud")
-        top.resize(616, 308)
-
+        top.resize(800, 600)
         # Apply same stylesheet to popup for consistency
         stylesheet = f"""
             QMainWindow, QWidget#centralWidget {{
@@ -164,18 +153,14 @@ class GenerateWordCloudApp(QObject):
             }}
         """
         top.setStyleSheet(stylesheet)
-
         central_widget = QWidget()
         central_widget.setObjectName("centralWidget")
         layout = QVBoxLayout(central_widget)
         layout.setContentsMargins(0, 0, 0, 0)
-
         label = QLabel()
         label.setPixmap(pix)
         layout.addWidget(label)
-
         top.setCentralWidget(central_widget)
-
         bg_class = self.theme.get('background_widget_class')
         if bg_class:
             bg = bg_class(central_widget)
@@ -189,15 +174,13 @@ class GenerateWordCloudApp(QObject):
                     super(QWidget, central_widget).resizeEvent(event)
             central_widget.resizeEvent = new_resize
             bg.resize(central_widget.size())
-
         top.show()
-
+    
     def update_status(self, message):
         self.status_updated.emit(message)
-
+    
     def _update_status(self, message):
         self.status_label.setText(message)
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

@@ -9,34 +9,33 @@ class WordCloudGenerator:
     def __init__(self, theme, update_status_callback):
         self.theme = theme
         self.update_status = update_status_callback
-
-    def generate_wordcloud(self, file_path):
+    
+    def generate_wordcloud(self, file_path, width=1600, height=1200):
         self.update_status("Loading file...")
         try:
             text = self.load_and_process_text(file_path)
             if not text.strip():
                 self.update_status("No text found in the file to generate a word cloud.")
                 return
-
             self.update_status("Generating word cloud...")
-            wordcloud = WordCloud(width=616, height=308, background_color=self.theme['bg']).generate(text)
-            
+            wordcloud = WordCloud(width=width, height=height, background_color=self.theme['bg']).generate(text)
+           
             # Get the word cloud as a PIL Image
             pil_image = wordcloud.to_image()
-            
+           
             # Save the image to file
             output_dir = "wordclouds"
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, "wordcloud.png")
             pil_image.save(output_path)
-            
+           
             # Update GUI with the generated image and status
             self.update_status(f"Word cloud generated and saved to {output_path}.")
             return pil_image
-            
+           
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
-
+    
     def load_and_process_text(self, file_path):
         text = ''
         try:

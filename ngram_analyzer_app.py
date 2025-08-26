@@ -33,7 +33,7 @@ class PlotDialog(QDialog):
             ax.spines[spine].set_color(theme.get('fg', 'white'))
         ax.tick_params(axis='both', colors=theme.get('fg', 'white'))
 
-        colors = ['#1e90ff', '#ffd700', '#9400d3']  # Blue, Gold, Violet
+        colors = ['#1e90ff', '#ffd700', '#9400d3']
         for i, n in enumerate(sorted(ngrams)):
             data = ngrams[n].most_common(10)
             words = [' '.join(gram) for gram, _ in data]
@@ -60,12 +60,13 @@ class Worker(QThread):
     def run(self):
         start_time = time.time()
         try:
+            # Removed unsupported no_punctuation argument
             content = process_jsonl(
                 self.params['input_filename'],
-                self.params['role_filter'],
-                no_punctuation=self.params['exclude_punctuation']
+                self.params['role_filter']
             )
-            ngrams, _ = count_ngrams(
+
+            ngrams = count_ngrams(
                 content,
                 min_length=self.params['min_length'],
                 max_length=self.params['max_length'],
@@ -77,10 +78,12 @@ class Worker(QThread):
             results = format_results(ngrams)
             elapsed_time = time.time() - start_time
             results += f'Took {elapsed_time:.03f} seconds\n'
+
             if self.params['output_file']:
                 with open(self.params['output_file'], 'w', encoding='utf-8') as f:
                     f.write(results)
                 results += f'\nResults saved to {self.params["output_file"]}\n'
+
             self.update_results.emit(results)
             self.plot_results.emit(ngrams)
         except Exception as e:
@@ -188,7 +191,7 @@ class NgramAnalyzerApp(QMainWindow):
         role_layout.addWidget(self.role_combo)
         self.main_layout.addLayout(role_layout)
 
-        # N-gram length range
+        # N-gram length
         length_layout = QHBoxLayout()
         self.min_length_label = QLabel("Min Length:")
         length_layout.addWidget(self.min_length_label)
@@ -246,7 +249,7 @@ class NgramAnalyzerApp(QMainWindow):
         button_layout.addWidget(self.clear_button)
         self.main_layout.addLayout(button_layout)
 
-        # Results area
+        # Results
         self.results_area = QTextEdit()
         self.results_area.setReadOnly(True)
         self.main_layout.addWidget(self.results_area)

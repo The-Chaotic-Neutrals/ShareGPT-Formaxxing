@@ -21,11 +21,39 @@ EXTRA_STOPWORDS = {'said', 'ask', 'tell', 'response', 'question'}
 STOP_WORDS.update(EXTRA_STOPWORDS)
 
 # Precompiled regex patterns for speed
-RE_APOSTROPHE = re.compile(r"’")
-RE_NEWLINES = re.compile(r"[\n\t]+")
+RE_APOSTROPHE = re.compile(r"’|‘|`")
+RE_QUOTES = re.compile(r"['\"]+")
+RE_NEWLINES = re.compile(r"[\n\t\r]+")
+RE_EXTRA_SPACES = re.compile(r"\s+")
 RE_NO_PUNCT = re.compile(r"[^\w\s']")
 RE_WORDS_NOPUNCT = re.compile(r"\b[\w']+\b")
 RE_WORDS_PUNCT = re.compile(r"[\w']+|[^\w\s]")
+RE_CONTRACTIONS = re.compile(r"\b(I|you|we|they|he|she|it)'(ll|ve|re|d|m)\b", re.IGNORECASE)
+
+def preprocess_text(text):
+    """Preprocess text with additional token modifications."""
+    # Normalize different types of apostrophes and quotes
+    text = RE_APOSTROPHE.sub("'", text)
+    text = RE_QUOTES.sub('"', text)
+    
+    # Handle common contractions (e.g., I'll -> I will)
+    contraction_map = {
+        "i'll": "i will", "you'll": "you will", "we'll": "we will", "they'll": "they will",
+        "he'll": "he will", "she'll": "she will", "it'll": "it will",
+        "i've": "i have", "you've": "you have", "we've": "we have", "they've": "they have",
+        "he's": "he is", "she's": "she is", "it's": "it is",
+        "i'm": "i am", "you're": "you are", "we're": "we are", "they're": "they are",
+        "i'd": "i would", "you'd": "you would", "he'd": "he would", "she'd": "she would",
+        "we'd": "we would", "they'd": "they would"
+    }
+    for contraction, expanded in contraction_map.items():
+        text = re.sub(r"\b" + re.escape(contraction) + r"\b", expanded, text, flags=re.IGNORECASE)
+    
+    # Normalize newlines and extra spaces
+    text = RE_NEWLINES.sub(" ", text)
+    text = RE_EXTRA_SPACES.sub(" ", text).strip()
+    
+    return text
 
 def get_line_count(filename):
     """Get the line count of a file quickly using OS tools."""
@@ -54,9 +82,9 @@ def get_line_count(filename):
 
 def tokenize(text, no_punctuation=False):
     """Fast tokenization with optional punctuation stripping."""
-    text = RE_APOSTROPHE.sub("'", text)
-    text = RE_NEWLINES.sub(" ", text)
-
+    # Apply preprocessing first
+    text = preprocess_text(text)
+    
     if no_punctuation:
         text = RE_NO_PUNCT.sub('', text)
         return RE_WORDS_NOPUNCT.findall(text.lower())
@@ -67,26 +95,21 @@ def count_ngrams(lines, min_length=3, max_length=5, stopword_limit=1, punctuatio
     """Count n-grams with filtering and deduplication."""
     lengths = range(min_length, max_length + 1)
     ngrams = {length: collections.Counter() for length in lengths}
-
     # Precompute hash buckets for deduplication
     seen = {length: [] for length in lengths}
-
     for line in lines:
         words = tokenize(line, no_punctuation=no_punctuation)
         if len(words) < min_length:
             continue
-
         for n in lengths:
             for i in range(len(words) - n + 1):
                 current_slice = tuple(words[i:i + n])
-
                 stopwords_in_ngram = sum(1 for w in current_slice if w in STOP_WORDS)
                 if stopwords_in_ngram > stopword_limit:
                     continue
                 punctuation_in_ngram = sum(1 for w in current_slice if w in string.punctuation)
                 if punctuation_in_ngram > punctuation_limit:
                     continue
-
                 # Fast deduplication: compare against only a few recent entries
                 skip = False
                 for kept in seen[n][-50:]:  # only check last 50 seen
@@ -95,10 +118,8 @@ def count_ngrams(lines, min_length=3, max_length=5, stopword_limit=1, punctuatio
                         break
                 if skip:
                     continue
-
                 seen[n].append(current_slice)
                 ngrams[n][current_slice] += 1
-
     return ngrams
 
 def _similar_enough(ngram1, ngram2, threshold):
@@ -115,7 +136,6 @@ def process_jsonl(filename, role_filter):
             tqdm_kwargs = {"desc": "Processing JSONL", "unit": "line"}
             if total_lines is not None:
                 tqdm_kwargs["total"] = total_lines
-
             with tqdm(**tqdm_kwargs) as pbar:
                 for line in f:
                     try:
@@ -123,7 +143,6 @@ def process_jsonl(filename, role_filter):
                     except json.JSONDecodeError:
                         pbar.update(1)
                         continue
-
                     for conversation in json_obj.get("conversations", []):
                         if "value" in conversation:
                             sender = conversation.get("from", "").lower()
@@ -150,7 +169,6 @@ def main():
     args = parser.parse_args()
 
     lines = list(process_jsonl(args.filename, args.role_filter))
-
     ngrams = count_ngrams(
         lines,
         min_length=args.min_ngram,
@@ -170,7 +188,6 @@ def main():
             ngram_str = ' '.join(ngram)
             print(f"{ngram_str}: {count}")
             output_lines.append(f"{ngram_str}: {count}")
-
     if args.output_file:
         with open(args.output_file, 'w', encoding='utf-8') as f:
             f.write("\n".join(output_lines))

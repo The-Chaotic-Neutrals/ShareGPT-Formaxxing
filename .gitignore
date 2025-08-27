@@ -16,3 +16,4 @@ volume.txt
 fasttext-0.9.2-cp311-cp311-win_amd64.whl
 *.png
 /datasets
+/split

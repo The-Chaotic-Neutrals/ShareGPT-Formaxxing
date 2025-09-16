@@ -76,7 +76,7 @@ class DeduplicationApp(QWidget):
         browse_button.setFont(font_button)
         browse_button.setCursor(Qt.PointingHandCursor)
         browse_button.setStyleSheet(self._button_style())
-        browse_button.setFixedWidth(120)
+        browse_button.setFixedWidth(150)  # Increased width to prevent text cutoff
         browse_button.clicked.connect(self.browse_input_files)
         button_layout.addWidget(browse_button)
         clear_button = QPushButton("Clear Files")

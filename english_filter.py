@@ -92,7 +92,7 @@ def process_batch(args):
 
     return valid_entries, rejected_entries, english_count, non_english_count, json_error_count
 
-def filter_english_jsonl(input_path, output_path=None, rejected_path=None, threshold=0.69, batch_size=256, workers=None):
+def filter_english_jsonl(input_path, output_path=None, rejected_path=None, threshold=0.69, batch_size=128, workers=None):
     if workers is None:
         workers = max(1, cpu_count() - 1)
 

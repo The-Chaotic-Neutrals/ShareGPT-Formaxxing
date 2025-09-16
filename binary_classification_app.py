@@ -162,7 +162,7 @@ class BinaryClassificationApp(QWidget):
         batch_size_label.setStyleSheet(f"color: {self.theme['fg']}; font-size: 16px; font-weight: 600;")
         main_layout.addWidget(batch_size_label)
 
-        self.batch_size_entry = QLineEdit("16")
+        self.batch_size_entry = QLineEdit("64")
         self.batch_size_entry.setStyleSheet(
             f"""
             color: {self.theme['fg']};

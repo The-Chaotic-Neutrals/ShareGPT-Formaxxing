@@ -1,4 +1,5 @@
 from PyQt5 import QtWidgets, QtGui, QtCore
+from PyQt5.QtCore import Qt
 import os
 import json
 from pathlib import Path
@@ -73,25 +74,24 @@ class DataMaxxerApp(QtWidgets.QMainWindow):
         self.null_gpt_cb = QtWidgets.QCheckBox("Check Null GPT")
         self.duplicate_system_cb = QtWidgets.QCheckBox("Check Duplicate System")
         self.allow_empty_system_cb = QtWidgets.QCheckBox("Allow Empty System Role")
+        # NEW: duplicate human→GPT turns
+        self.duplicate_turns_cb = QtWidgets.QCheckBox("Check Duplicate Human → GPT Turns")
 
-        for cb in [
+        checkboxes = [
             self.blank_turns_cb,
             self.invalid_endings_cb,
             self.null_gpt_cb,
             self.duplicate_system_cb,
             self.allow_empty_system_cb,
-        ]:
+            self.duplicate_turns_cb,   # include new checkbox
+        ]
+
+        for cb in checkboxes:
             cb.setChecked(True)
             cb.setStyleSheet(f"color: {self.theme['fg']}; spacing: 8px; {font_checkbox}")
 
         # arrange in 2 columns
-        for idx, cb in enumerate([
-            self.blank_turns_cb,
-            self.invalid_endings_cb,
-            self.null_gpt_cb,
-            self.duplicate_system_cb,
-            self.allow_empty_system_cb,
-        ]):
+        for idx, cb in enumerate(checkboxes):
             row, col = divmod(idx, 2)
             grid.addWidget(cb, row, col)
 
@@ -118,11 +118,11 @@ class DataMaxxerApp(QtWidgets.QMainWindow):
             """
         )
         process_button.clicked.connect(self.process_dataset)
-        layout.addWidget(process_button, alignment=QtCore.Qt.AlignCenter)
+        layout.addWidget(process_button, alignment=Qt.AlignHCenter)  # type: ignore
 
         # Result label
         self.result_label = QtWidgets.QLabel("")
-        self.result_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.result_label.setAlignment(Qt.AlignCenter)  # type: ignore
         self.result_label.setStyleSheet("font-size: 13px; margin-top: 10px;")
         layout.addWidget(self.result_label)
 
@@ -168,6 +168,7 @@ class DataMaxxerApp(QtWidgets.QMainWindow):
                 check_null_gpt=self.null_gpt_cb.isChecked(),
                 check_duplicate_system=self.duplicate_system_cb.isChecked(),
                 allow_empty_system_role=self.allow_empty_system_cb.isChecked(),
+                check_duplicate_turns=self.duplicate_turns_cb.isChecked(),  # NEW
             )
             self.result_label.setText(output_message)
         except Exception as e:

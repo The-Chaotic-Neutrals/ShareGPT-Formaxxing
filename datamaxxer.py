@@ -12,12 +12,42 @@ def ends_with_letter_number_comma(text):
         return bool(re.search(r'[a-zA-Z0-9,]$', text.strip()))
     return False
 
-def filter_dataset(input_path, output_dir, 
-                   check_blank_turns=True, 
-                   check_invalid_endings=True, 
-                   check_null_gpt=True, 
-                   check_duplicate_system=True, 
-                   allow_empty_system_role=True):
+def normalize_text(text):
+    """
+    Normalize text for comparison: strip, lowercase, collapse whitespace.
+    """
+    if not isinstance(text, str):
+        return ""
+    text = text.strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+def has_human_gpt_duplicate(conversations):
+    """
+    Return True if any human turn is exactly duplicated by the following gpt turn
+    (after normalization).
+    """
+    for i in range(len(conversations) - 1):
+        cur_msg = conversations[i]
+        next_msg = conversations[i + 1]
+
+        if cur_msg.get("from") == "human" and next_msg.get("from") == "gpt":
+            cur_val = normalize_text(cur_msg.get("value", ""))
+            next_val = normalize_text(next_msg.get("value", ""))
+            if cur_val and cur_val == next_val:
+                return True
+    return False
+
+def filter_dataset(
+    input_path,
+    output_dir,
+    check_blank_turns=True,
+    check_invalid_endings=True,
+    check_null_gpt=True,
+    check_duplicate_system=True,
+    allow_empty_system_role=True,
+    check_duplicate_turns=True,  # NEW
+):
     """
     Filters a dataset of conversations based on specified criteria.
 
@@ -29,6 +59,7 @@ def filter_dataset(input_path, output_dir,
         check_null_gpt (bool): Remove conversations with null GPT responses.
         check_duplicate_system (bool): Remove duplicate system messages.
         allow_empty_system_role (bool): Allow conversations with empty system role.
+        check_duplicate_turns (bool): Remove conversations with duplicate human→gpt turns.
 
     Returns:
         str: Summary of filtering results.
@@ -43,6 +74,8 @@ def filter_dataset(input_path, output_dir,
         
         filtered_data_count = 0
         original_data_count = 0
+        json_error_count = 0
+        duplicate_turn_conv_count = 0
 
         with open(input_path, 'r', encoding='utf-8', errors='ignore') as infile, \
              output_file.open('w', encoding='utf-8') as outfile:
@@ -57,6 +90,7 @@ def filter_dataset(input_path, output_dir,
                 try:
                     item = json.loads(line)
                 except json.JSONDecodeError as e:
+                    json_error_count += 1
                     logging.error(f"JSON decode error at line {original_data_count}: {e}")
                     continue
                 
@@ -95,10 +129,16 @@ def filter_dataset(input_path, output_dir,
                     if check_duplicate_system and role == 'system' and i < len(conversations) - 1:
                         next_msg = conversations[i + 1]
                         next_value = next_msg.get('value')
-                        if next_msg.get('from') == 'human' and value and next_value and value.strip().lower() == next_value.strip().lower():
+                        if (
+                            next_msg.get('from') == 'human'
+                            and value
+                            and next_value
+                            and value.strip().lower() == next_value.strip().lower()
+                        ):
+                            # Skip this system message (do not append)
                             continue
 
-                    # Check for empty system role if allowed
+                    # Check for empty system role if not allowed
                     if role == "system" and not allow_empty_system_role and not value:
                         has_blank_turn = True
                         break
@@ -107,6 +147,11 @@ def filter_dataset(input_path, output_dir,
 
                 # Skip conversations that fail checks
                 if has_blank_turn or has_invalid_ending or has_null_gpt_value:
+                    continue
+
+                # NEW: optionally drop conversations with human→gpt duplicate turns
+                if check_duplicate_turns and has_human_gpt_duplicate(filtered_conversations):
+                    duplicate_turn_conv_count += 1
                     continue
 
                 # Ensure valid roles exist in the conversation
@@ -124,10 +169,19 @@ def filter_dataset(input_path, output_dir,
                         filtered_data_count += 1
         
         logging.info(f"Filtered data saved to {output_file}")
-        logging.info(f"Original size: {original_data_count}")
-        logging.info(f"Filtered size: {filtered_data_count}")
+        logging.info(f"Original lines read             : {original_data_count}")
+        logging.info(f"Lines dropped (JSON errors)     : {json_error_count}")
+        logging.info(f"Conversations dropped (dups)    : {duplicate_turn_conv_count}")
+        logging.info(f"Filtered size (written)         : {filtered_data_count}")
 
-        return f"Filtered data saved to {output_file}\nOriginal size: {original_data_count}\nFiltered size: {filtered_data_count}"
+        summary = (
+            f"Filtered data saved to {output_file}\n"
+            f"Original lines read             : {original_data_count}\n"
+            f"Lines dropped (JSON errors)     : {json_error_count}\n"
+            f"Conversations dropped (dups)    : {duplicate_turn_conv_count}\n"
+            f"Filtered size (written)         : {filtered_data_count}"
+        )
+        return summary
 
     except Exception as e:
         logging.error("Unexpected error during filtering", exc_info=True)
@@ -151,6 +205,8 @@ def main():
     parser.add_argument('--check_null_gpt', action='store_true', default=True, help="Enable null GPT response filtering")
     parser.add_argument('--check_duplicate_system', action='store_true', default=True, help="Enable duplicate system message filtering")
     parser.add_argument('--allow_empty_system_role', action='store_true', default=True, help="Allow empty system role filtering")
+    parser.add_argument('--check_duplicate_turns', action='store_true', default=True,
+                        help="Enable duplicate human→gpt turn filtering")  # NEW
 
     args = parser.parse_args()
 
@@ -162,7 +218,8 @@ def main():
         check_invalid_endings=args.check_invalid_endings,
         check_null_gpt=args.check_null_gpt,
         check_duplicate_system=args.check_duplicate_system,
-        allow_empty_system_role=args.allow_empty_system_role
+        allow_empty_system_role=args.allow_empty_system_role,
+        check_duplicate_turns=args.check_duplicate_turns,
     )
     print(result)
 

@@ -85,7 +85,7 @@ class ParquetMaxxer(QMainWindow):
         self.title_label = QLabel("🧬 ParquetMaxxer")
         self.title_label.setFont(QFont("Arial", 28, QFont.Bold))
         self.title_label.setStyleSheet(f"color: {self.theme['fg']};")
-        self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.setAlignment(Qt.AlignCenter)  # type: ignore
         main_layout.addWidget(self.title_label)
 
         button_layout = QHBoxLayout()
@@ -105,7 +105,7 @@ class ParquetMaxxer(QMainWindow):
         self.preview_label = QLabel("📝 Preview Panel")
         self.preview_label.setFont(QFont("Arial", 16, QFont.Bold))
         self.preview_label.setStyleSheet(f"color: {self.theme['fg']};")
-        self.preview_label.setAlignment(Qt.AlignLeft)
+        self.preview_label.setAlignment(Qt.AlignLeft)  # type: ignore
         main_layout.addWidget(self.preview_label)
 
         self.preview_box = QTextEdit()
@@ -127,7 +127,7 @@ class ParquetMaxxer(QMainWindow):
         self.status_label = QLabel("💤 Waiting for action...")
         self.status_label.setFont(QFont("Consolas", 12))
         self.status_label.setStyleSheet(f"color: {self.theme['text_fg']}; background-color: {self.theme['bg']};")
-        self.status_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.status_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # type: ignore
         self.status_label.setWordWrap(True)
         self.status_label.setMinimumHeight(100)
         main_layout.addWidget(self.status_label)

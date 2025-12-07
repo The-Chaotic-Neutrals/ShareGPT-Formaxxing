@@ -44,8 +44,8 @@ class UIManager(QWidget):
         self.set_icon()
         self.setup_ui()
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
+    def resizeEvent(self, a0):
+        super().resizeEvent(a0)
         self.background_widget.resize(self.size())
 
     def apply_theme(self):
@@ -129,7 +129,7 @@ class UIManager(QWidget):
         # Main title
         title_label = QLabel(self.windowTitle())
         title_label.setObjectName("titleLabel")
-        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
 
         # Tab widget
@@ -200,12 +200,12 @@ class UIManager(QWidget):
                     central.setStyleSheet(current_ss)
                     # Patch resizeEvent on central
                     original_resize = central.resizeEvent if hasattr(central, 'resizeEvent') else None
-                    def new_resize(event):
+                    def new_resize(a0):
                         bg.resize(central.size())
                         if original_resize:
-                            original_resize(event)
+                            original_resize(a0)
                         else:
-                            super(type(central), central).resizeEvent(event)
+                            QWidget.resizeEvent(central, a0)
                     central.resizeEvent = new_resize
                     # Initial resize
                     bg.resize(central.size())
@@ -215,12 +215,12 @@ class UIManager(QWidget):
                     bg.lower()
                     win.setStyleSheet("background-color: transparent;")
                     original_resize = win.resizeEvent if hasattr(win, 'resizeEvent') else None
-                    def new_resize(event):
+                    def new_resize(a0):
                         bg.resize(win.size())
                         if original_resize:
-                            original_resize(event)
+                            original_resize(a0)
                         else:
-                            super(type(win), win).resizeEvent(event)
+                            QWidget.resizeEvent(win, a0)
                     win.resizeEvent = new_resize
                     bg.resize(win.size())
             else:
@@ -234,12 +234,12 @@ class UIManager(QWidget):
                     current_ss = "background-color: transparent;"
                 win.setStyleSheet(current_ss)
                 original_resize = win.resizeEvent if hasattr(win, 'resizeEvent') else None
-                def new_resize(event):
+                def new_resize(a0):
                     bg.resize(win.size())
                     if original_resize:
-                        original_resize(event)
+                        original_resize(a0)
                     else:
-                        super(type(win), win).resizeEvent(event)
+                        QWidget.resizeEvent(win, a0)
                 win.resizeEvent = new_resize
                 # Initial resize
                 bg.resize(win.size())

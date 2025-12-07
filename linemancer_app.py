@@ -1,4 +1,5 @@
 from PyQt5 import QtWidgets, QtGui, QtCore
+from PyQt5.QtCore import Qt
 from theme import Theme
 from linemancer import LineMancerCore
 import os
@@ -27,7 +28,7 @@ class LineMancerFrame(QtWidgets.QWidget):
 
         title_label = QtWidgets.QLabel("✨ LineMancer ✨")
         title_label.setFont(QtGui.QFont("Segoe UI", 14, QtGui.QFont.Bold))
-        main_layout.addWidget(title_label, alignment=QtCore.Qt.AlignLeft)
+        main_layout.addWidget(title_label, alignment=Qt.AlignLeft)  # type: ignore
 
         mode_layout = QtWidgets.QHBoxLayout()
         mode_label = QtWidgets.QLabel("Mode:")

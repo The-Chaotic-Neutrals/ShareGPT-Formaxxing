@@ -1,0 +1,14 @@
+{
+  "api_key": "",
+  "last_input": "",
+  "last_output": "",
+  "system_prompt": "",
+  "models_csv": "grok-4-1-fast-non-reasoning",
+  "start_line": null,
+  "end_line": null,
+  "rewrite_existing": false,
+  "extra_pairs": 0,
+  "num_new": 0,
+  "reply_in_character": false,
+  "dynamic_names_mode": false
+}

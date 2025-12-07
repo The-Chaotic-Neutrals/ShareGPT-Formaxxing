@@ -26,6 +26,7 @@ from linemancer_app import LineMancerFrame
 from parquetmaxxer_app import ParquetMaxxer
 from english_filter_app import EnglishFilterApp
 from tokenmaxxerv3_app import TokenMaxxerV3App
+from GrokMaxxer.gui import MainWindow as GrokMaxxerApp
 
 
 class UIManager(QWidget):
@@ -145,6 +146,7 @@ class UIManager(QWidget):
             ("TokenMaxxer", self.open_tokenmaxxer_app),
             ("ForMaxxer", self.open_dataset_converter_app),
             ("GrammarMaxxer", self.open_text_correction_app),
+            ("SynthMaxxer ('Gork' Edition)", self.open_grokmaxxer_app),
         ]
         maxxer_widget = QWidget()
         maxxer_layout = QHBoxLayout()
@@ -355,6 +357,14 @@ class UIManager(QWidget):
             self.add_background_to_window(app.window)
             app.window.show()
             self.qt_windows.append(app.window)
+
+    def open_grokmaxxer_app(self):
+        win = GrokMaxxerApp()
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
+        win.show()
+        self.qt_windows.append(win)
 
 
 if __name__ == "__main__":

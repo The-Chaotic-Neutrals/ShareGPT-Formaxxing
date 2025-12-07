@@ -26,3 +26,5 @@ sentence-transformers
 faiss-cpu
 datasets
 pyqt5
+json-repair
+xai_sdk

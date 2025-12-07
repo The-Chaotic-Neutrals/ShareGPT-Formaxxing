@@ -6,7 +6,7 @@ from PyQt5.QtCore import Qt, QTimer, QPointF
 class FloatingPixelsWidget(QWidget):
     def __init__(self, parent=None, pixel_count=100):
         super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.pixels = []
         self.pixel_count = pixel_count
         self.init_pixels()
@@ -25,7 +25,7 @@ class FloatingPixelsWidget(QWidget):
             alpha = random.uniform(0.3, 1.0)
             self.pixels.append({'pos': pos, 'vel': vel, 'size': size, 'alpha': alpha})
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event):  # type: ignore[override]
         super().resizeEvent(event)
         self.init_pixels()
 
@@ -40,12 +40,12 @@ class FloatingPixelsWidget(QWidget):
                 p['vel'].setY(-p['vel'].y())
         self.update()
 
-    def paintEvent(self, event):
+    def paintEvent(self, event):  # type: ignore[override]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), Qt.black)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(Qt.white)
+        painter.fillRect(self.rect(), Qt.GlobalColor.black)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(Qt.GlobalColor.white)
         for p in self.pixels:
             color = QColor(255, 255, 255)
             color.setAlphaF(p['alpha'])

@@ -8,34 +8,24 @@ try:
 except ImportError:
     repair_json = None  # Optional dependency
 
-try:
-    from .llm_helpers import (
-        improve_entry,
-        generate_new_entry,
-        extend_entry,
-        improve_and_extend_entry,
-        generate_human_turns,
-        rewrite_human_cache,
-        generate_names,
-    )
-    from .schema import ensure_system_message, fix_sharegpt_entry, validate_sharegpt_entry
-except ImportError:
-    # Fallback for when run as a script - add GrokMaxxer to path
-    import sys
-    from pathlib import Path
-    grokmaxxer_dir = Path(__file__).parent
-    if str(grokmaxxer_dir) not in sys.path:
-        sys.path.insert(0, str(grokmaxxer_dir))
-    from llm_helpers import (
-        improve_entry,
-        generate_new_entry,
-        extend_entry,
-        improve_and_extend_entry,
-        generate_human_turns,
-        rewrite_human_cache,
-        generate_names,
-    )
-    from schema import ensure_system_message, fix_sharegpt_entry, validate_sharegpt_entry
+# Ensure we can import as a package - add parent directory to path if needed
+import sys
+from pathlib import Path
+_grokmaxxer_dir = Path(__file__).parent
+_parent_dir = _grokmaxxer_dir.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from GrokMaxxer.llm_helpers import (
+    improve_entry,
+    generate_new_entry,
+    extend_entry,
+    improve_and_extend_entry,
+    generate_human_turns,
+    rewrite_human_cache,
+    generate_names,
+)
+from GrokMaxxer.schema import ensure_system_message, fix_sharegpt_entry, validate_sharegpt_entry
 
 from xai_sdk import Client
 import concurrent.futures
@@ -71,8 +61,6 @@ def process_entry(entry, client, model, system_prompt, do_rewrite=False, extra_p
     if fixed_entry:
         result_entry = fixed_entry
 
-
-    from schema import validate_sharegpt_entry
     ok, _ = validate_sharegpt_entry(result_entry)
     return result_entry if ok else None
 

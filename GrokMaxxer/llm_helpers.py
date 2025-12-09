@@ -5,18 +5,16 @@ import os
 import time
 from json_repair import repair_json
 
-try:
-    from .model_config import SCHEMA_DESCRIPTION
-    from .schema import extract_json_object, validate_sharegpt_entry, ensure_system_message, extract_json_array, validate_conversations, fix_sharegpt_entry
-except ImportError:
-    # Fallback for when run as a script - add GrokMaxxer to path
-    import sys
-    from pathlib import Path
-    grokmaxxer_dir = Path(__file__).parent
-    if str(grokmaxxer_dir) not in sys.path:
-        sys.path.insert(0, str(grokmaxxer_dir))
-    from model_config import SCHEMA_DESCRIPTION
-    from schema import extract_json_object, validate_sharegpt_entry, ensure_system_message, extract_json_array, validate_conversations, fix_sharegpt_entry
+# Ensure we can import as a package - add parent directory to path if needed
+import sys
+from pathlib import Path
+_grokmaxxer_dir = Path(__file__).parent
+_parent_dir = _grokmaxxer_dir.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from GrokMaxxer.model_config import SCHEMA_DESCRIPTION
+from GrokMaxxer.schema import extract_json_object, validate_sharegpt_entry, ensure_system_message, extract_json_array, validate_conversations, fix_sharegpt_entry
 
 import re
 
@@ -352,7 +350,7 @@ def improve_and_extend_entry(
     combined_instructions = (
         "You are improving and extending a ShareGPT-style conversation in one step.\n"
         "The conversations is a list of messages.\n"
-        "Each message: {'from': 'system'|'human'|'gpt', 'value': str}\n\n"
+        "Each message: dict with 'from' field ('system'|'human'|'gpt') and 'value' field (str)\n\n"
         "CRITICAL SCHEMA RULES - MUST FOLLOW EXACTLY:\n"
         "  1) Rewrite ALL existing 'value' strings for higher quality, coherence, style consistency, and diversity (vary human phrasing and topics to avoid repetition).\n"
         "     Do NOT change 'from' fields, order, or number of existing messages.\n"

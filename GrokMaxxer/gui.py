@@ -27,30 +27,22 @@ from PyQt5.QtWidgets import (
     QFrame,
 )
 
-try:
-    from .model_config import (
-        APP_TITLE,
-        ICON_FILE,
-        DEFAULT_MODEL,
-        load_config,
-        save_config,
-    )
-    from .worker import worker
-except ImportError:
-    # Fallback for when run as a script - add GrokMaxxer to path
-    import sys
-    from pathlib import Path
-    grokmaxxer_dir = Path(__file__).parent
-    if str(grokmaxxer_dir) not in sys.path:
-        sys.path.insert(0, str(grokmaxxer_dir))
-    from model_config import (
-        APP_TITLE,
-        ICON_FILE,
-        DEFAULT_MODEL,
-        load_config,
-        save_config,
-    )
-    from worker import worker
+# Ensure we can import as a package - add parent directory to path if needed
+import sys
+from pathlib import Path
+_grokmaxxer_dir = Path(__file__).parent
+_parent_dir = _grokmaxxer_dir.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+from GrokMaxxer.model_config import (
+    APP_TITLE,
+    ICON_FILE,
+    DEFAULT_MODEL,
+    load_config,
+    save_config,
+)
+from GrokMaxxer.worker import worker
 
 
 class MainWindow(QMainWindow):

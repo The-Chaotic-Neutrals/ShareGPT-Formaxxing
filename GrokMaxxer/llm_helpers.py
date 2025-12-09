@@ -48,7 +48,7 @@ def improve_entry(
     client,
     model,
     system_prompt,
-    temperature: float = None,
+    temperature: float | None = None,
 ):
 
     schema_instructions = (
@@ -119,8 +119,8 @@ def generate_new_entry(
     model,
     system_prompt,
     example_entries=None,
-    starting_human: str = None,
-    temperature: float = None,
+    starting_human: str | None = None,
+    temperature: float | None = None,
 ):
 
     if example_entries is None:
@@ -211,7 +211,7 @@ def extend_entry(
     system_prompt,
     num_pairs,
     example_entries=None,
-    temperature: float = None,
+    temperature: float | None = None,
 ):
 
     if num_pairs <= 0:
@@ -317,7 +317,7 @@ def improve_and_extend_entry(
     system_prompt,
     num_pairs,
     example_entries=None,
-    temperature: float = None,
+    temperature: float | None = None,
 ):
 
     if num_pairs <= 0:
@@ -640,7 +640,7 @@ def generate_single_gpt_response(
     model,
     system_prompt,
     conversations,
-    temperature: float = None,
+    temperature: float | None = None,
 ) -> str:
 
     prefix = _with_system_prefix(system_prompt)

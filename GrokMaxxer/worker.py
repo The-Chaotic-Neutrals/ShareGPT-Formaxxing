@@ -463,13 +463,13 @@ def worker(
                             if candidate_domain != last_domain:
                                 non_empty_items.pop(item_idx)
                                 domain = candidate_domain
-                                starting_human = item['message']
+                                starting_human = str(item['message']) if item['message'] is not None else None
                                 break
                         if starting_human is None and non_empty_items:
                             item_idx = random.randint(0, len(non_empty_items) - 1)
                             item = non_empty_items.pop(item_idx)
                             domain = item['domain']
-                            starting_human = item['message']
+                            starting_human = str(item['message']) if item['message'] is not None else None
                     with last_domain_lock:
                         last_domain = domain
                     

@@ -85,7 +85,7 @@ run_update() {
     python -m pip install --upgrade fasttext
 
     echo "Starting the program..."
-    python ui_manager.py &
+    python -m App.Other.UI_Manager &
     read -rp "Press Enter to return to menu..."
     menu
 }
@@ -95,7 +95,7 @@ run_no_update() {
     echo -e "${YELLOW_FG}Starting program without updates...${RESET}"
 
     source venv/bin/activate
-    python ui_manager.py &
+    python -m App.Other.UI_Manager &
     read -rp "Press Enter to return to menu..."
     menu
 }

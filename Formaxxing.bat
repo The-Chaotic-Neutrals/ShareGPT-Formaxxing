@@ -144,7 +144,7 @@ powershell -Command "(New-Object Net.WebClient).DownloadFile('https://github.com
 python -m pip install --upgrade fasttext-0.9.2-cp311-cp311-win_amd64.whl
 
 set TRANSFORMERS_USE_FLASH_ATTENTION=1
-python ui_manager.py
+python -m App.Other.UI_Manager
 pause >nul
 goto MENU
 
@@ -153,7 +153,7 @@ cls
 echo %YELLOW_FG%Starting program without updates...%RESET%
 call venv\Scripts\activate.bat
 set TRANSFORMERS_USE_FLASH_ATTENTION=1
-python ui_manager.py
+python -m App.Other.UI_Manager
 pause >nul
 goto MENU
 

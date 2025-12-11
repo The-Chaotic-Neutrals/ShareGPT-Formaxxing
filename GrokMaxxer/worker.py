@@ -45,14 +45,19 @@ def process_entry(entry, client, model, system_prompt, do_rewrite=False, extra_p
         category = name_info['category']
         char_system_prompt += f"\n\nRoleplay guidance: You are conversing with {name}, a {category}. Address {name} by name naturally throughout the conversation and personalize your responses accordingly."
     
-    if do_rewrite and extra_pairs > 0:
-        result_entry = improve_and_extend_entry(
-            result_entry, client, model, char_system_prompt, extra_pairs, temperature=temp
-        )
-    elif do_rewrite:
-        result_entry = improve_entry(result_entry, client, model, char_system_prompt, temperature=temp)
-    elif extra_pairs > 0:
-        result_entry = extend_entry(result_entry, client, model, char_system_prompt, extra_pairs, temperature=temp)
+    try:
+        if do_rewrite and extra_pairs > 0:
+            result_entry = improve_and_extend_entry(
+                result_entry, client, model, char_system_prompt, extra_pairs, temperature=temp
+            )
+        elif do_rewrite:
+            result_entry = improve_entry(result_entry, client, model, char_system_prompt, temperature=temp)
+        elif extra_pairs > 0:
+            result_entry = extend_entry(result_entry, client, model, char_system_prompt, extra_pairs, temperature=temp)
+    except Exception as e:
+        # If improvement fails, log and return None to skip this entry
+        # The error details are already logged in the improvement functions
+        return None
     
     if reply_in_character and char_system_prompt:
         result_entry = ensure_system_message(result_entry, char_system_prompt)
@@ -407,6 +412,16 @@ def worker(
                         temperature=1.0
                     )
                     human_turns.extend(new_turns)
+                    
+                    # Save the updated cache with new turns
+                    try:
+                        with open(cache_file, 'w', encoding='utf-8') as f:
+                            json.dump(human_turns, f, indent=2, ensure_ascii=False)
+                        if q:
+                            q.put(("log", f"Saved {len(human_turns)} human turns to cache (added {len(new_turns)} new)"))
+                    except Exception as save_e:
+                        if q:
+                            q.put(("log", f"Failed to save cache after generation: {save_e}"))
                 
 
                 # NO deduplication or cache overwrite after rewrite_human_cache - preserve ALL rewritten entries

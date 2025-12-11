@@ -4,10 +4,10 @@ import logging
 from deduplication import Deduplication
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QFileDialog, QRadioButton, QButtonGroup, QProgressBar, QMessageBox, QSizePolicy, QListWidget
+    QFileDialog, QRadioButton, QProgressBar, QMessageBox, QSizePolicy, QListWidget
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QIcon
+from PyQt5.QtGui import QFont
 
 class DedupWorker(QThread):
     status_update = pyqtSignal(str)
@@ -57,28 +57,34 @@ class DeduplicationApp(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(15)
+
         font_label = QFont("Arial", 14)
         font_button = QFont("Arial", 13, QFont.Bold)
         font_status = QFont("Arial", 12)
-        # Input file selection
+
+        # ----------------- Input file selection -----------------
         file_layout = QVBoxLayout()
         file_layout.setSpacing(10)
+
         lbl_input = QLabel("📁 Input Files:")
         lbl_input.setFont(font_label)
         file_layout.addWidget(lbl_input)
+
         self.input_file_list = QListWidget()
         self.input_file_list.setFont(font_label)
         self.input_file_list.setMinimumHeight(100)
         self.input_file_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         file_layout.addWidget(self.input_file_list)
+
         button_layout = QHBoxLayout()
         browse_button = QPushButton("Add Files 🔎")
         browse_button.setFont(font_button)
         browse_button.setCursor(Qt.PointingHandCursor)
         browse_button.setStyleSheet(self._button_style())
-        browse_button.setFixedWidth(150)  # Increased width to prevent text cutoff
+        browse_button.setFixedWidth(150)
         browse_button.clicked.connect(self.browse_input_files)
         button_layout.addWidget(browse_button)
+
         clear_button = QPushButton("Clear Files")
         clear_button.setFont(font_button)
         clear_button.setCursor(Qt.PointingHandCursor)
@@ -106,8 +112,10 @@ class DeduplicationApp(QWidget):
         button_layout.addWidget(clear_button)
         button_layout.addStretch()
         file_layout.addLayout(button_layout)
+
         main_layout.addLayout(file_layout)
-        # Radio buttons for dedup method
+
+        # ----------------- Method selection -----------------
         method_layout = QHBoxLayout()
         method_layout.setSpacing(40)
         self.min_hash_radio = QRadioButton("Min-Hash / Semantic 🔍")
@@ -120,7 +128,41 @@ class DeduplicationApp(QWidget):
         method_layout.addWidget(self.sha256_radio)
         method_layout.addStretch()
         main_layout.addLayout(method_layout)
-        # Dedup button
+
+        # ----------------- Settings row (thresholds, prefix bits) -----------------
+        settings_layout = QHBoxLayout()
+        settings_layout.setSpacing(20)
+
+        # MinHash Jaccard threshold
+        lbl_jaccard = QLabel("MinHash Jaccard:")
+        lbl_jaccard.setFont(font_status)
+        self.jaccard_input = QLineEdit(str(self.deduplication.threshold))
+        self.jaccard_input.setFixedWidth(80)
+        settings_layout.addWidget(lbl_jaccard)
+        settings_layout.addWidget(self.jaccard_input)
+
+        # Semantic cosine threshold
+        lbl_sem = QLabel("Semantic cosine:")
+        lbl_sem.setFont(font_status)
+        self.semantic_input = QLineEdit(str(self.deduplication.semantic_threshold))
+        self.semantic_input.setFixedWidth(80)
+        settings_layout.addWidget(lbl_sem)
+        settings_layout.addWidget(self.semantic_input)
+
+        # SimHash prefix bits
+        lbl_prefix = QLabel("SimHash prefix bits:")
+        lbl_prefix.setFont(font_status)
+        # fallback if attribute missing (older deduplication.py)
+        prefix_default = getattr(self.deduplication, "prefix_bits", 16)
+        self.prefix_bits_input = QLineEdit(str(prefix_default))
+        self.prefix_bits_input.setFixedWidth(80)
+        settings_layout.addWidget(lbl_prefix)
+        settings_layout.addWidget(self.prefix_bits_input)
+
+        settings_layout.addStretch()
+        main_layout.addLayout(settings_layout)
+
+        # ----------------- Dedup button -----------------
         self.dedup_button = QPushButton("🗑️ Remove Duplicates")
         self.dedup_button.setFont(font_button)
         self.dedup_button.setCursor(Qt.PointingHandCursor)
@@ -128,7 +170,8 @@ class DeduplicationApp(QWidget):
         self.dedup_button.setFixedHeight(40)
         self.dedup_button.clicked.connect(self.start_deduplication)
         main_layout.addWidget(self.dedup_button)
-        # Status bar + speed
+
+        # ----------------- Status bar + speed -----------------
         status_layout = QHBoxLayout()
         status_layout.setSpacing(15)
         self.status_label = QLabel("Status: Ready")
@@ -141,7 +184,8 @@ class DeduplicationApp(QWidget):
         status_layout.addWidget(self.progress_percent_label, stretch=1, alignment=Qt.AlignCenter)
         status_layout.addWidget(self.speed_label, stretch=2, alignment=Qt.AlignRight)
         main_layout.addLayout(status_layout)
-        # Progress bar
+
+        # ----------------- Progress bar -----------------
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
         self.progress_bar.setFixedHeight(25)
@@ -208,6 +252,31 @@ class DeduplicationApp(QWidget):
         if not self.input_files:
             QMessageBox.critical(self, "Error", "❌ Please select at least one .jsonl file.")
             return
+
+        # Pull settings from UI → Deduplication instance
+        if self.min_hash_radio.isChecked():
+            try:
+                jacc = float(self.jaccard_input.text())
+                sem = float(self.semantic_input.text())
+                prefix_bits = int(self.prefix_bits_input.text())
+
+                if not (0.0 <= jacc <= 1.0):
+                    raise ValueError("MinHash Jaccard must be between 0 and 1.")
+                if not (0.0 <= sem <= 1.0):
+                    raise ValueError("Semantic cosine must be between 0 and 1.")
+                if prefix_bits <= 0 or prefix_bits > 32:
+                    raise ValueError("Prefix bits should be between 1 and 32.")
+
+                self.deduplication.threshold = jacc
+                self.deduplication.semantic_threshold = sem
+                # only set if the deduplication object supports it
+                if hasattr(self.deduplication, "prefix_bits"):
+                    self.deduplication.prefix_bits = prefix_bits
+
+            except ValueError as e:
+                QMessageBox.critical(self, "Invalid Settings", f"❌ {e}")
+                return
+
         self.current_file_index = 0
         self.dedup_button.setEnabled(False)
         self.progress_bar.setValue(0)
@@ -223,16 +292,19 @@ class DeduplicationApp(QWidget):
             self.progress_bar.setValue(100)
             self.progress_percent_label.setText("100%")
             return
+
         input_file = self.input_files[self.current_file_index]
         if not input_file.endswith('.jsonl'):
             self.update_status(f"❌ Skipping {input_file}: Invalid file type. Must be .jsonl.")
             self.current_file_index += 1
             self.process_next_file()
             return
+
         output_dir = "deduplicated"
         os.makedirs(output_dir, exist_ok=True)
         base_name = os.path.splitext(os.path.basename(input_file))[0]
         output_file = os.path.join(output_dir, f"{base_name}-deduplicated.jsonl")
+
         self.start_time = time.time()
         use_min_hash = self.min_hash_radio.isChecked()
         self.worker = DedupWorker(self.deduplication, input_file, output_file, use_min_hash)
@@ -253,6 +325,7 @@ class DeduplicationApp(QWidget):
             percent = (current / total) * 100
         self.progress_bar.setValue(int(percent))
         self.progress_percent_label.setText(f"{percent:.2f}%")
+
         elapsed = time.time() - self.start_time if self.start_time else 1
         speed = current / elapsed if elapsed > 0 else 0
         self.speed_label.setText(f"Speed: {speed:.2f} it/s")
@@ -260,6 +333,7 @@ class DeduplicationApp(QWidget):
     def dedup_finished(self):
         self.current_file_index += 1
         self.process_next_file()
+
 
 if __name__ == "__main__":
     import sys

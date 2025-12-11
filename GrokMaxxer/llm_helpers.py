@@ -100,11 +100,56 @@ def improve_entry(
                 raise ValueError("Model JSON did not contain a conversations array")
 
     if len(improved_conv) != len(entry["conversations"]):
-        raise ValueError("Improved conversations length mismatch")
+        raise ValueError(f"Improved conversations length mismatch: expected {len(entry['conversations'])}, got {len(improved_conv)}")
 
+    # Try to fix the improved conversations
     fixed_entry = fix_sharegpt_entry({"conversations": improved_conv})
     if fixed_entry is None:
-        raise ValueError("Could not auto-fix improved conversations")
+        # Try a more aggressive fix: ensure all messages have required fields
+        aggressive_fix_conv = []
+        for i, msg in enumerate(improved_conv):
+            if not isinstance(msg, dict):
+                continue
+            # Ensure 'from' and 'value' exist
+            if "from" not in msg:
+                # Try to infer from position
+                if i == 0 and entry["conversations"][0].get("from") == "system":
+                    msg["from"] = "system"
+                elif (i - (1 if entry["conversations"][0].get("from") == "system" else 0)) % 2 == 0:
+                    msg["from"] = "human"
+                else:
+                    msg["from"] = "gpt"
+            if "value" not in msg or not isinstance(msg.get("value"), str):
+                msg["value"] = msg.get("value", " ") if isinstance(msg.get("value"), str) else " "
+            aggressive_fix_conv.append(msg)
+        
+        if len(aggressive_fix_conv) >= 2:
+            fixed_entry = fix_sharegpt_entry({"conversations": aggressive_fix_conv})
+        
+        if fixed_entry is None:
+            # Last resort: try to preserve original structure but with improved values where possible
+            fallback_conv = []
+            original_conv = entry["conversations"]
+            for i, orig_msg in enumerate(original_conv):
+                if i < len(improved_conv) and isinstance(improved_conv[i], dict):
+                    # Use improved value if available, but preserve original structure
+                    fallback_msg = {
+                        "from": orig_msg.get("from", "human" if i % 2 == 0 else "gpt"),
+                        "value": improved_conv[i].get("value", orig_msg.get("value", " "))
+                    }
+                else:
+                    fallback_msg = orig_msg.copy()
+                fallback_conv.append(fallback_msg)
+            
+            fixed_entry = fix_sharegpt_entry({"conversations": fallback_conv})
+            if fixed_entry is None:
+                raise ValueError(
+                    f"Could not auto-fix improved conversations. "
+                    f"Original length: {len(entry['conversations'])}, "
+                    f"Improved length: {len(improved_conv)}, "
+                    f"After aggressive fix length: {len(aggressive_fix_conv) if 'aggressive_fix_conv' in locals() else 0}"
+                )
+    
     improved_conv = fixed_entry["conversations"]
 
     ok, err = validate_conversations(improved_conv)
@@ -394,9 +439,23 @@ def improve_and_extend_entry(
 
     ok, err = validate_conversations(combined_conv)
     if not ok:
-    
-        improved = improve_entry(entry, client, model, system_prompt, temperature)
-        return extend_entry(improved, client, model, system_prompt, num_pairs, example_entries, temperature)
+        # Fallback: try improve then extend separately
+        try:
+            improved = improve_entry(entry, client, model, system_prompt, temperature)
+            return extend_entry(improved, client, model, system_prompt, num_pairs, example_entries, temperature)
+        except Exception as fallback_error:
+            # If improve_entry fails, try to fix the combined_conv directly
+            fixed_entry = fix_sharegpt_entry({"conversations": combined_conv})
+            if fixed_entry is not None:
+                fixed_conv = fixed_entry["conversations"]
+                ok2, err2 = validate_conversations(fixed_conv)
+                if ok2:
+                    return {"conversations": fixed_conv}
+            # If all else fails, raise with context
+            raise ValueError(
+                f"Could not improve and extend entry. Combined validation error: {err}. "
+                f"Fallback improve_entry error: {fallback_error}"
+            )
 
     if len(combined_conv) < len(entry["conversations"]):
         raise ValueError("Combined conversations too short")

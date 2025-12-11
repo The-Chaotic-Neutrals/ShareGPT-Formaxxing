@@ -32,8 +32,9 @@ ShareGPT Formaxxing Tool is a modular application designed to help researchers a
 
 - Python 3.11+
 - CUDA-capable GPU (for PyTorch operations)
-- Windows 10+ or Linux
+- Windows 10+ or Linux/Mac
 - ~10GB disk space for dependencies
+- NumPy 2.0.x (automatically installed by setup scripts)
 
 ## 🚀 Installation
 
@@ -51,6 +52,9 @@ ShareGPT Formaxxing Tool is a modular application designed to help researchers a
    ```
 
 3. Select option `1` to set up the environment (creates virtual environment and installs dependencies)
+   - The script will automatically generate `requirements.txt` in the root directory using `pipreqs` if it doesn't exist
+   - It will also install NumPy 2.0.x and PyTorch with CUDA support
+   - If `extra_requirements.txt` exists, it will be installed as well
 
 4. Select option `3` to start the program
 
@@ -68,7 +72,11 @@ ShareGPT Formaxxing Tool is a modular application designed to help researchers a
    ./Formaxxing.sh
    ```
 
-3. Follow the menu prompts to set up and run
+3. Select option `1` to set up the environment (creates virtual environment and installs dependencies)
+
+4. Select option `3` to start the program
+
+**Note**: The Linux/Mac script (`Formaxxing.sh`) has a simpler setup process compared to the Windows version. For full feature parity, you may need to manually install NumPy 2.0.x and ensure all dependencies are up to date.
 
 ### Manual Installation
 
@@ -84,19 +92,36 @@ venv\Scripts\activate
 # Linux/Mac:
 source venv/bin/activate
 
-# Install dependencies
+# Upgrade pip
+python -m pip install --upgrade pip
+
+# Install NumPy 2.0.x (required)
+pip install "numpy>=2.0.0,<2.1.0"
+
+# Install dependencies from Assets folder
 pip install -r App/Assets/requirements.txt
+
+# Install extra dependencies if extra_requirements.txt exists
+# (Optional, only if present in repository root)
+if exist extra_requirements.txt pip install -r extra_requirements.txt
 
 # Install PyTorch with CUDA support
 pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
 
+# Verify CUDA availability
+python -c "import torch; assert torch.cuda.is_available(), 'CUDA GPU not detected!'"
+
 # Install SpaCy model
 python -m spacy download en_core_web_sm
 
-# Install fastText (Windows - use wheel from Assets folder)
+# Install fastText
+# Windows - use wheel from Assets folder:
+pip install App/Assets/fasttext-0.9.2-cp311-cp311-win_amd64.whl
 # Linux/Mac:
 pip install fasttext
 ```
+
+**Note**: The launcher scripts (`Formaxxing.bat`/`Formaxxing.sh`) automatically generate a `requirements.txt` file in the repository root using `pipreqs` if it doesn't exist. This is used for dependency management during setup.
 
 ## 🎮 Usage
 
@@ -201,13 +226,44 @@ Corrects grammar and spelling in conversations:
 **Output**: Corrected dataset saved to `corrected/`
 
 ### SynthMaxxer
-Generates synthetic conversation data:
-- Supports multiple LLM APIs (Anthropic, OpenAI, etc.)
-- Configurable system prompts and message templates
-- Automatic retry on refusals
-- Batch processing capabilities
+Comprehensive synthetic data generation and processing tool with multiple modes:
 
-**Output**: Generated conversations saved to `Datasets/Raw/`
+**Generation Tab:**
+- Generate new synthetic conversations using LLM APIs
+- Supports multiple API providers (Anthropic Claude, OpenAI, Google Gemini, xAI Grok, etc.)
+- Configurable system prompts, message templates, and conversation tags
+- Automatic retry on refusals with configurable refusal detection
+- Streaming support for real-time generation
+- Configurable temperature, delays, and stopping criteria
+
+**Processing Tab:**
+- **Improve**: Enhance existing conversation entries using LLM APIs
+- **Extend**: Add more conversation turns to existing entries
+- **Improve & Extend**: Combined improvement and extension in one operation
+- **Generate New Entries**: Create entirely new entries from scratch
+- Dynamic names mode with automatic name generation and caching
+- Human turn cache system for consistent character names
+- Batch processing with configurable concurrency
+- Schema validation and auto-fixing
+
+**Multimodal Tab:**
+- Image captioning using vision models (OpenAI Vision, Google Gemini Vision, etc.)
+- Process image datasets and generate text captions
+- Support for existing caption columns or new caption generation
+- Batch processing with progress tracking
+- Output to Parquet format
+
+**Features:**
+- Human cache generation and improvement tools
+- Global names cache for consistent character naming
+- Automatic schema validation and repair
+- Support for both chat and instruct formats
+- Configurable API endpoints and authentication
+
+**Output**: 
+- Generated conversations: `Datasets/Raw/{directory_name}/`
+- Processed files: `Outputs/` (or custom location)
+- Multimodal outputs: Parquet files in specified location
 
 ### RefusalMancer
 Classification tool for detecting refusals:
@@ -295,8 +351,13 @@ ShareGPT-Formaxxing/
 
 ### Tool-Specific Configs
 
-- **TokenMaxxer**: `App/TokenMaxxer/tokenmaxxer_config.json` - Stores recent models
-- **SynthMaxxer**: `App/SynthMaxxer/synthmaxxer_config.json` - API and generation settings
+- **TokenMaxxer**: `App/TokenMaxxer/tokenmaxxer_config.json` - Stores recent tokenizer models
+- **SynthMaxxer**: 
+  - `App/SynthMaxxer/synthmaxxer_config.json` - API keys, endpoints, and generation settings
+  - `App/SynthMaxxer/grok_tool_config.json` - xAI Grok-specific configuration
+  - `App/SynthMaxxer/global_human_cache.json` - Cached human conversation turns
+  - `App/SynthMaxxer/global_names_cache.json` - Cached character names for dynamic naming
+  - `App/SynthMaxxer/config.py` - Template configuration for generation patterns
 - **DeslopMancer**: `App/DeslopMancer/filter_criteria.txt` - Custom filter phrases
 
 ## 📝 Output Locations
@@ -318,7 +379,9 @@ All tools save their output to the `Outputs/` directory in the repository root, 
 ### Import Errors
 - Ensure virtual environment is activated
 - Run: `pip install -r App/Assets/requirements.txt`
+- If `requirements.txt` exists in root, the launcher uses that instead
 - Check that all dependencies are installed
+- Ensure NumPy 2.0.x is installed: `pip install "numpy>=2.0.0,<2.1.0"`
 
 ### Memory Issues
 - Use chunked processing options where available
@@ -336,6 +399,8 @@ All tools save their output to the `Outputs/` directory in the repository root, 
 - Uses transformers, sentence-transformers, and other excellent libraries
 - FastText for language detection
 - LanguageTool for grammar checking
+- xAI SDK for Grok API integration
+- Various LLM API providers (Anthropic, OpenAI, Google, xAI, etc.)
 
 ---
 

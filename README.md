@@ -54,6 +54,7 @@ ShareGPT Formaxxing Tool is a modular application designed to help researchers a
 3. Select option `1` to set up the environment (creates virtual environment and installs dependencies)
    - The script will automatically generate `requirements.txt` in the root directory using `pipreqs` if it doesn't exist
    - It will also install NumPy 2.0.x and PyTorch with CUDA support
+   - fastText wheel will be automatically downloaded from [fasttext_wheels_for_windows](https://github.com/mdrehan4all/fasttext_wheels_for_windows) repository
    - If `extra_requirements.txt` exists, it will be installed as well
 
 4. Select option `3` to start the program
@@ -77,6 +78,11 @@ ShareGPT Formaxxing Tool is a modular application designed to help researchers a
 4. Select option `3` to start the program
 
 **Note**: The Linux/Mac script (`Formaxxing.sh`) has a simpler setup process compared to the Windows version. For full feature parity, you may need to manually install NumPy 2.0.x and ensure all dependencies are up to date.
+
+**fastText Installation on Linux/Mac:**
+- The script attempts `pip install fasttext`, which may work on some systems
+- If installation fails, you'll need to compile fastText from source or find a precompiled wheel for your system
+- See the [Troubleshooting](#-troubleshooting) section for detailed fastText installation instructions
 
 ### Manual Installation
 
@@ -115,10 +121,16 @@ python -c "import torch; assert torch.cuda.is_available(), 'CUDA GPU not detecte
 python -m spacy download en_core_web_sm
 
 # Install fastText
-# Windows - use wheel from Assets folder:
-pip install App/Assets/fasttext-0.9.2-cp311-cp311-win_amd64.whl
-# Linux/Mac:
-pip install fasttext
+# Windows - download appropriate wheel from GitHub repository:
+# Visit https://github.com/mdrehan4all/fasttext_wheels_for_windows
+# Download the wheel matching your Python version (e.g., fasttext-0.9.2-cp311-cp311-win_amd64.whl for Python 3.11)
+# Then install: pip install fasttext-0.9.2-cp311-cp311-win_amd64.whl
+# Or use direct download:
+# pip install https://github.com/mdrehan4all/fasttext_wheels_for_windows/raw/main/fasttext-0.9.2-cp311-cp311-win_amd64.whl
+# Linux/Mac - compile from source or find precompiled wheels:
+# Option 1: Try pip install fasttext (may work on some systems)
+# Option 2: Compile from source: https://github.com/facebookresearch/fastText/tree/main/python
+# Option 3: Search for precompiled wheels online for your specific Python version and architecture
 ```
 
 **Note**: The launcher scripts (`Formaxxing.bat`/`Formaxxing.sh`) automatically generate a `requirements.txt` file in the repository root using `pipreqs` if it doesn't exist. This is used for dependency management during setup.
@@ -226,44 +238,99 @@ Corrects grammar and spelling in conversations:
 **Output**: Corrected dataset saved to `corrected/`
 
 ### SynthMaxxer
-Comprehensive synthetic data generation and processing tool with multiple modes:
+Comprehensive synthetic data generation and processing tool with multiple modes and mechanisms:
 
-**Generation Tab:**
-- Generate new synthetic conversations using LLM APIs
-- Supports multiple API providers (Anthropic Claude, OpenAI, Google Gemini, xAI Grok, etc.)
-- Configurable system prompts, message templates, and conversation tags
-- Automatic retry on refusals with configurable refusal detection
-- Streaming support for real-time generation
-- Configurable temperature, delays, and stopping criteria
+**Generation Tab - Conversation Generation:**
+- **API Providers Supported:**
+  - Anthropic Claude (Messages API)
+  - OpenAI Official (Chat Completions)
+  - OpenAI Chat Completions (Custom endpoints)
+  - OpenAI Text Completions (Legacy format)
+  - Grok (xAI) - Uses xAI SDK
+  - Gemini (Google) - Stream Generate Content API
+  - OpenRouter - Multi-provider routing
+  - DeepSeek - DeepSeek API
 
-**Processing Tab:**
-- **Improve**: Enhance existing conversation entries using LLM APIs
-- **Extend**: Add more conversation turns to existing entries
-- **Improve & Extend**: Combined improvement and extension in one operation
-- **Generate New Entries**: Create entirely new entries from scratch
-- Dynamic names mode with automatic name generation and caching
-- Human turn cache system for consistent character names
-- Batch processing with configurable concurrency
-- Schema validation and auto-fixing
+- **Generation Mechanisms:**
+  - **Streaming Support**: Real-time token streaming for all supported APIs
+  - **Refusal Detection**: Automatic detection and retry on refusal phrases
+  - **Force Retry Phrases**: Configurable phrases that trigger mandatory retries
+  - **Conversation Tags**: Custom start/end tags for user and assistant messages
+  - **Instruct vs Chat Mode**: Toggle between instruction-following and conversational formats
+  - **Temperature Control**: Configurable temperature (0.69-1.42 range) for generation diversity
+  - **Top-p/Top-k Sampling**: Advanced sampling controls for response quality
+  - **Delay Mechanisms**: Configurable min/max delays between API calls to respect rate limits
+  - **Stop Percentage**: Probabilistic stopping after minimum turns (25% for instruct, 5% for chat)
+  - **Minimum Turns**: Enforce minimum conversation length before stopping
 
-**Multimodal Tab:**
-- Image captioning using vision models (OpenAI Vision, Google Gemini Vision, etc.)
-- Process image datasets and generate text captions
-- Support for existing caption columns or new caption generation
-- Batch processing with progress tracking
-- Output to Parquet format
+**Processing Tab - Entry Enhancement:**
+- **Improvement Mechanisms:**
+  - **Improve**: Rewrite existing conversations for clarity, coherence, and style diversity
+  - **Extend**: Add additional conversation turns to existing entries
+  - **Improve & Extend**: Combined operation for simultaneous enhancement and extension
+  - **Generate New Entries**: Create entirely new entries from scratch with optional example-based generation
 
-**Features:**
-- Human cache generation and improvement tools
-- Global names cache for consistent character naming
-- Automatic schema validation and repair
-- Support for both chat and instruct formats
-- Configurable API endpoints and authentication
+- **Advanced Features:**
+  - **Dynamic Names Mode**: Automatic character name generation and injection into conversations
+  - **Names Cache System**: Persistent cache of generated names with categories for consistency
+  - **Human Cache System**: Pre-generated human conversation turns for consistent character interactions
+  - **Human Cache Tools**: 
+    - Generate new human turns for the cache
+    - Improve/rewrite existing human turns for better quality
+  - **Reply in Character**: Ensures system messages are preserved and responses stay in character
+  - **Schema Validation**: Automatic validation of ShareGPT format compliance
+  - **Auto-Fixing**: Intelligent repair of schema violations (missing fields, incorrect structure)
+  - **Batch Processing**: Configurable concurrency for parallel processing
+  - **Line Range Processing**: Process specific line ranges from input files
+  - **Resume Capability**: Automatic resume from last processed entry
 
-**Output**: 
+- **Processing Worker Mechanisms:**
+  - Uses xAI SDK (Grok) for processing operations
+  - JSON repair for handling malformed model responses
+  - Temperature randomization (0.69-1.42) for diversity
+  - Entry filtering: Invalid entries are skipped automatically
+  - Progress tracking with byte and entry counters
+
+**Multimodal Tab - Image Captioning:**
+- **Vision API Support:**
+  - OpenAI Vision API
+  - Anthropic Claude (Vision capabilities)
+  - Grok (xAI) Vision API
+  - OpenRouter (Vision models)
+
+- **Captioning Mechanisms:**
+  - **Batch Processing**: Process multiple images with configurable batch sizes
+  - **Resume Support**: Automatically resume from last processed image
+  - **Existing Caption Detection**: Skip images that already have valid captions
+  - **Custom Prompts**: Configurable caption generation prompts
+  - **Max Captions Limit**: Optional limit on number of images to process
+  - **Parquet Output**: HuggingFace Dataset format with text and images columns
+  - **Image Format Support**: JPEG, PNG, GIF, WebP, BMP
+
+**Core Mechanisms:**
+- **Worker Functions:**
+  - `worker.py`: Handles generation loop with streaming and refusal detection
+  - `processing_worker.py`: Manages JSONL file processing, improvement, and extension
+  - `multimodal_worker.py`: Handles image captioning with multiple API support
+  - `llm_helpers.py`: Core LLM interaction functions (improve, extend, generate)
+
+- **Schema Management:**
+  - Automatic ShareGPT format validation
+  - Schema repair for common violations
+  - Conversation structure enforcement (system → human → gpt alternation)
+  - Final message validation (must end with GPT response)
+
+- **Configuration System:**
+  - Per-API-type configuration storage
+  - Separate API keys for different providers
+  - Model name caching and auto-refresh
+  - Template-based configuration system
+
+**Output Locations:**
 - Generated conversations: `Datasets/Raw/{directory_name}/`
 - Processed files: `Outputs/` (or custom location)
 - Multimodal outputs: Parquet files in specified location
+- Cache files: `App/SynthMaxxer/global_human_cache.json`, `global_names_cache.json`
 
 ### RefusalMancer
 Classification tool for detecting refusals:
@@ -388,9 +455,18 @@ All tools save their output to the `Outputs/` directory in the repository root, 
 - Reduce batch sizes in tool settings
 - Close other applications to free memory
 
-### FastText Model Issues (Windows)
-- The wheel file is included in `App/Assets/`
-- If download fails, manually install: `pip install App/Assets/fasttext-0.9.2-cp311-cp311-win_amd64.whl`
+### FastText Installation Issues
+
+**Windows:**
+- Download the appropriate wheel file from [fasttext_wheels_for_windows](https://github.com/mdrehan4all/fasttext_wheels_for_windows)
+- Choose the wheel matching your Python version (e.g., `fasttext-0.9.2-cp311-cp311-win_amd64.whl` for Python 3.11 on 64-bit Windows)
+- Install directly: `pip install https://github.com/mdrehan4all/fasttext_wheels_for_windows/raw/main/fasttext-0.9.2-cp311-cp311-win_amd64.whl`
+- Or download the wheel file first, then: `pip install fasttext-0.9.2-cp311-cp311-win_amd64.whl`
+
+**Linux/Mac:**
+- Try `pip install fasttext` first (may work on some systems)
+- If that fails, compile from source: Follow instructions at [fastText Python bindings](https://github.com/facebookresearch/fastText/tree/main/python)
+- Alternatively, search for precompiled wheels online for your specific Python version and system architecture
 
 
 ## 🙏 Acknowledgments

@@ -19,10 +19,6 @@ fasttext-0.9.2-cp311-cp311-win_amd64.whl
 /split
 .vscode/settings.json
 pyrightconfig.json
-/GrokMaxxer/__pycache__
-GrokMaxxer/grok_tool_config.json
-GrokMaxxer/grok_tool_config.json
-GrokMaxxer/grok_tool_config.json
 /App/__pycache__
 /App/DataMaxxer/__pycache__
 /App/DeslopMancer/__pycache__

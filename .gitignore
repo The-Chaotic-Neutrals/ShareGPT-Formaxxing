@@ -41,3 +41,4 @@ GrokMaxxer/grok_tool_config.json
 /App/DedupeMancer/__pycache__
 App/SynthMaxxer/global_names_cache.json
 App/SynthMaxxer/synthmaxxer_config.json
+App/SynthMaxxer/grok_tool_config.json

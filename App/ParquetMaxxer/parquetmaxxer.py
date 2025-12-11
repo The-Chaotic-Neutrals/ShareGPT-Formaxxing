@@ -6,7 +6,7 @@ import pyarrow.parquet as pq
 import pyarrow as pa
 
 # Set output dir globally (will be created when needed)
-OUTPUT_DIR = "./converted"
+OUTPUT_DIR = "./Outputs"
 
 # ---------- Utility ----------
 def sanitize_for_json(obj):
@@ -33,7 +33,7 @@ def sanitize_for_json(obj):
 def convert_jsonl_to_parquet(file_path, chunk_size=10000):
     """
     Convert a JSONL file to a Parquet file in chunks, writing each chunk directly.
-    Outputs to ./converted directory.
+    Outputs to ./Outputs directory.
     Returns:
         (out_path, preview): Path to output parquet, and a preview string of first rows.
     """
@@ -79,7 +79,7 @@ def convert_jsonl_to_parquet(file_path, chunk_size=10000):
 def convert_parquet_to_jsonl(file_path):
     """
     Convert a Parquet file to a JSONL file.
-    Outputs to ./converted directory.
+    Outputs to ./Outputs directory.
     Returns:
         (out_path, preview): Path to output JSONL, and a preview string of first rows.
     """

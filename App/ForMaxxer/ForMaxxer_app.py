@@ -149,19 +149,35 @@ class DatasetConverterApp(QWidget):
             os.makedirs(output_dir, exist_ok=True)
 
             # Process each file
+            format_info = []
             for input_path in input_paths:
-                self.update_status(f"Processing file: {input_path}")
+                filename = os.path.basename(input_path)
+                self.update_status(f"Processing file: {filename}...")
                 logging.info(f"Processing file: {input_path}")
 
-                preview_entries = DatasetConverter.process_multiple_files([input_path], output_dir)
-                self.update_preview(preview_entries.get(os.path.basename(input_path), []))
+                results = DatasetConverter.process_multiple_files([input_path], output_dir)
+                result = results.get(filename, ([], "unknown"))
+                
+                if isinstance(result, tuple):
+                    preview_entries, detected_format = result
+                else:
+                    # Backward compatibility
+                    preview_entries = result if isinstance(result, list) else []
+                    detected_format = "unknown"
+                
+                format_info.append(f"{filename}: {detected_format}")
+                self.update_preview(preview_entries)
 
-            self.update_status("✅ Conversion completed for all selected files.")
+            format_summary = " | ".join(format_info)
+            self.update_status(f"✅ Conversion completed. Detected formats: {format_summary}")
         except Exception as e:
             self.update_status(f"Error: {str(e)}")
             QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
 
     def update_preview(self, preview_entries):
+        if not preview_entries:
+            self.preview_text.setPlainText("No preview available.")
+            return
         preview_data = preview_entries[:10] if isinstance(preview_entries, list) else [preview_entries]
         self.preview_text.setPlainText(json.dumps(preview_data, ensure_ascii=False, indent=2))
 

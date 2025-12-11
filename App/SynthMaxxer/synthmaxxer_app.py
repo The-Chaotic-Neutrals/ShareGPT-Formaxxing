@@ -10,7 +10,7 @@ import requests
 from datetime import datetime
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt5.QtGui import QIcon, QFont, QTextCharFormat, QTextCursor, QColor
+from PyQt5.QtGui import QIcon, QFont, QTextCharFormat, QTextCursor, QColor, QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -57,6 +57,10 @@ class ModelFetcher(QObject):
     """Helper class to emit signals from background thread"""
     models_ready = pyqtSignal(list)
 
+class MultimodalModelFetcher(QObject):
+    """Helper class to emit signals from background thread for multimodal tab"""
+    models_ready = pyqtSignal(list)
+
 class MainWindow(QMainWindow):
 
     def __init__(self):
@@ -68,6 +72,10 @@ class MainWindow(QMainWindow):
         # Create model fetcher for thread-safe signals
         self.model_fetcher = ModelFetcher()
         self.model_fetcher.models_ready.connect(self._on_models_ready)
+        
+        # Create multimodal model fetcher
+        self.mm_model_fetcher = MultimodalModelFetcher()
+        self.mm_model_fetcher.models_ready.connect(self._on_mm_models_ready)
 
         if os.path.exists(ICON_FILE):
             try:
@@ -566,6 +574,53 @@ class MainWindow(QMainWindow):
         # Add processing tab to tabs widget
         self.tabs.addTab(processing_tab, "⚙️ Processing")
         
+        # Multimodal tab
+        multimodal_tab = QWidget()
+        multimodal_layout = QVBoxLayout()
+        multimodal_layout.setContentsMargins(0, 0, 0, 0)
+        multimodal_tab.setLayout(multimodal_layout)
+        
+        mm_header = QHBoxLayout()
+        self.mm_start_button = QPushButton("Start Captioning")
+        self.mm_start_button.clicked.connect(self.start_image_captioning)
+        self.mm_stop_button = QPushButton("Stop")
+        self.mm_stop_button.clicked.connect(self.stop_image_captioning)
+        self.mm_stop_button.setEnabled(False)
+        mm_header.addStretch()
+        mm_header.addWidget(self.mm_start_button)
+        mm_header.addWidget(self.mm_stop_button)
+        multimodal_layout.addLayout(mm_header)
+        
+        mm_split = QHBoxLayout()
+        mm_split.setSpacing(14)
+        multimodal_layout.addLayout(mm_split, stretch=1)
+        
+        mm_left_scroll = QScrollArea()
+        mm_left_scroll.setWidgetResizable(True)
+        mm_left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        mm_left_scroll.setFrameShape(QFrame.NoFrame)
+        
+        mm_left_container = QWidget()
+        mm_left_panel = QVBoxLayout()
+        mm_left_panel.setSpacing(10)
+        mm_left_container.setLayout(mm_left_panel)
+        mm_left_scroll.setWidget(mm_left_container)
+        
+        mm_split.addWidget(mm_left_scroll, stretch=3)
+        
+        mm_right_container = QWidget()
+        mm_right_panel = QVBoxLayout()
+        mm_right_panel.setSpacing(10)
+        mm_right_container.setLayout(mm_right_panel)
+        
+        mm_split.addWidget(mm_right_container, stretch=4)
+        
+        # Build multimodal UI
+        self._build_multimodal_ui(mm_left_panel, mm_right_panel)
+        
+        # Add multimodal tab to tabs widget
+        self.tabs.addTab(multimodal_tab, "🖼️ Multimodal")
+        
         # Processing log view is created in _build_processing_ui
 
     def _build_processing_ui(self, left_panel, right_panel):
@@ -768,6 +823,199 @@ class MainWindow(QMainWindow):
 
         right_panel.addWidget(proc_progress_group, stretch=1)
 
+    def _build_multimodal_ui(self, left_panel, right_panel):
+        """Build the multimodal image captioning UI"""
+        # Files group
+        mm_files_group = QGroupBox("📁 Image Input")
+        mm_files_layout = QFormLayout()
+        mm_files_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        mm_files_layout.setHorizontalSpacing(10)
+        mm_files_layout.setVerticalSpacing(6)
+        mm_files_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        mm_files_group.setLayout(mm_files_layout)
+
+        image_dir_row = QHBoxLayout()
+        self.mm_image_dir_edit = QLineEdit()
+        self.mm_image_dir_edit.setPlaceholderText("Path to folder containing images")
+        image_dir_browse_btn = QPushButton("Browse")
+        image_dir_browse_btn.setFixedWidth(80)
+        image_dir_browse_btn.clicked.connect(self.browse_mm_image_dir)
+        image_dir_row.addWidget(self.mm_image_dir_edit)
+        image_dir_row.addWidget(image_dir_browse_btn)
+        mm_files_layout.addRow(QLabel("Image Folder:"), self._wrap_row(image_dir_row))
+
+        output_row = QHBoxLayout()
+        self.mm_output_edit = QLineEdit()
+        # Get repo root (go up from App/SynthMaxxer to repo root)
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        outputs_dir = os.path.join(repo_root, "outputs")
+        default_output = os.path.join(outputs_dir, "image_captions.parquet")
+        self.mm_output_edit.setPlaceholderText(f"Leave empty to auto-generate in outputs folder (will be .parquet)")
+        self.mm_output_edit.setText(default_output)
+        output_browse_btn = QPushButton("Browse")
+        output_browse_btn.setFixedWidth(80)
+        output_browse_btn.clicked.connect(self.browse_mm_output)
+        output_row.addWidget(self.mm_output_edit)
+        output_row.addWidget(output_browse_btn)
+        mm_files_layout.addRow(QLabel("Output JSONL:"), self._wrap_row(output_row))
+        left_panel.addWidget(mm_files_group)
+
+        # API Configuration
+        mm_api_group = QGroupBox("🔑 API Configuration")
+        mm_api_layout = QFormLayout()
+        mm_api_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        mm_api_layout.setHorizontalSpacing(10)
+        mm_api_layout.setVerticalSpacing(6)
+        mm_api_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        mm_api_group.setLayout(mm_api_layout)
+
+        mm_api_row = QHBoxLayout()
+        self.mm_api_key_edit = QLineEdit()
+        self.mm_api_key_edit.setEchoMode(QLineEdit.Password)
+        self.mm_api_key_edit.setPlaceholderText("Your API key")
+        self.mm_show_key_check = QCheckBox("Show")
+        self.mm_show_key_check.toggled.connect(self.toggle_mm_api_visibility)
+        mm_api_row.addWidget(self.mm_api_key_edit)
+        mm_api_row.addWidget(self.mm_show_key_check)
+        mm_api_layout.addRow(QLabel("API Key:"), self._wrap_row(mm_api_row))
+
+        self.mm_endpoint_edit = QLineEdit()
+        self.mm_endpoint_edit.setPlaceholderText("https://api.openai.com/v1/chat/completions")
+        mm_api_layout.addRow(QLabel("API Endpoint:"), self.mm_endpoint_edit)
+
+        mm_model_row = QHBoxLayout()
+        self.mm_model_combo = QComboBox()
+        self.mm_model_combo.setEditable(True)
+        self.mm_model_combo.setPlaceholderText("Select or enter model name")
+        self.mm_model_combo.addItem("(Click Refresh to load models)")
+        self.mm_refresh_models_button = QPushButton("Refresh")
+        self.mm_refresh_models_button.setFixedWidth(80)
+        self.mm_refresh_models_button.setToolTip("Refresh available models from API")
+        self.mm_refresh_models_button.setEnabled(True)
+        self.mm_refresh_models_button.clicked.connect(self._refresh_mm_models)
+        mm_model_row.addWidget(self.mm_model_combo)
+        mm_model_row.addWidget(self.mm_refresh_models_button)
+        mm_api_layout.addRow(QLabel("Model:"), self._wrap_row(mm_model_row))
+
+        self.mm_api_type_combo = QComboBox()
+        self.mm_api_type_combo.addItems([
+            "OpenAI Vision",
+            "Anthropic Claude",
+            "Grok (xAI)",
+            "OpenRouter"
+        ])
+        self.mm_api_type_combo.setToolTip("Select the API format to use")
+        self.mm_api_type_combo.currentTextChanged.connect(self._update_mm_endpoint_placeholder)
+        self.mm_api_type_combo.currentTextChanged.connect(self._update_mm_api_key_for_type)
+        mm_api_layout.addRow(QLabel("API Type:"), self.mm_api_type_combo)
+        left_panel.addWidget(mm_api_group)
+
+        # HuggingFace Dataset Input
+        hf_dataset_group = QGroupBox("🤗 HuggingFace Dataset (Optional)")
+        hf_dataset_layout = QFormLayout()
+        hf_dataset_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        hf_dataset_layout.setHorizontalSpacing(10)
+        hf_dataset_layout.setVerticalSpacing(6)
+        hf_dataset_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        hf_dataset_group.setLayout(hf_dataset_layout)
+
+        self.mm_hf_dataset_edit = QLineEdit()
+        self.mm_hf_dataset_edit.setPlaceholderText("e.g., dataset_name or org/dataset_name (leave empty to use image folder)")
+        hf_dataset_layout.addRow(QLabel("HF Dataset:"), self.mm_hf_dataset_edit)
+
+        hf_token_row = QHBoxLayout()
+        self.mm_hf_token_edit = QLineEdit()
+        self.mm_hf_token_edit.setEchoMode(QLineEdit.Password)
+        self.mm_hf_token_edit.setPlaceholderText("hf_... (optional, for private/gated datasets)")
+        self.mm_hf_show_token_check = QCheckBox("Show")
+        self.mm_hf_show_token_check.toggled.connect(self.toggle_mm_hf_token_visibility)
+        hf_token_row.addWidget(self.mm_hf_token_edit)
+        hf_token_row.addWidget(self.mm_hf_show_token_check)
+        hf_dataset_layout.addRow(QLabel("HF Token:"), self._wrap_row(hf_token_row))
+
+        self.mm_use_hf_dataset_check = QCheckBox("Use HuggingFace dataset instead of image folder")
+        self.mm_use_hf_dataset_check.setChecked(False)
+        self.mm_use_hf_dataset_check.toggled.connect(self._toggle_hf_dataset_mode)
+        # Initialize state
+        self.mm_hf_dataset_edit.setEnabled(False)
+        self.mm_hf_token_edit.setEnabled(False)
+        hf_dataset_layout.addRow("", self.mm_use_hf_dataset_check)
+        left_panel.addWidget(hf_dataset_group)
+
+        # Caption Settings
+        mm_caption_group = QGroupBox("📝 Caption Settings")
+        mm_caption_layout = QFormLayout()
+        mm_caption_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        mm_caption_layout.setHorizontalSpacing(10)
+        mm_caption_layout.setVerticalSpacing(6)
+        mm_caption_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        mm_caption_group.setLayout(mm_caption_layout)
+
+        self.mm_caption_prompt_edit = QPlainTextEdit()
+        self.mm_caption_prompt_edit.setPlaceholderText("Describe what you see in this image in detail. Include all important elements, objects, people, text, colors, composition, and context.")
+        self.mm_caption_prompt_edit.setFixedHeight(80)
+        mm_caption_layout.addRow(QLabel("Caption Prompt:"), self.mm_caption_prompt_edit)
+
+        self.mm_max_tokens_spin = QSpinBox()
+        self.mm_max_tokens_spin.setRange(50, 4000)
+        self.mm_max_tokens_spin.setValue(500)
+        self.mm_max_tokens_spin.setMaximumWidth(100)
+        self.mm_max_tokens_spin.setToolTip("Maximum tokens for caption generation")
+        max_tokens_row = QHBoxLayout()
+        max_tokens_row.addWidget(self.mm_max_tokens_spin)
+        max_tokens_row.addStretch()
+        mm_caption_layout.addRow(QLabel("Max Tokens:"), self._wrap_row(max_tokens_row))
+
+        self.mm_temperature_spin = QDoubleSpinBox()
+        self.mm_temperature_spin.setRange(0.0, 2.0)
+        self.mm_temperature_spin.setValue(0.7)
+        self.mm_temperature_spin.setSingleStep(0.1)
+        self.mm_temperature_spin.setDecimals(1)
+        self.mm_temperature_spin.setMaximumWidth(100)
+        self.mm_temperature_spin.setToolTip("Temperature for caption generation")
+        temp_row = QHBoxLayout()
+        temp_row.addWidget(self.mm_temperature_spin)
+        temp_row.addStretch()
+        mm_caption_layout.addRow(QLabel("Temperature:"), self._wrap_row(temp_row))
+
+        self.mm_batch_size_spin = QSpinBox()
+        self.mm_batch_size_spin.setRange(1, 20)
+        self.mm_batch_size_spin.setValue(1)
+        self.mm_batch_size_spin.setMaximumWidth(100)
+        self.mm_batch_size_spin.setToolTip("Number of images to process in parallel (1 recommended for most APIs)")
+        batch_row = QHBoxLayout()
+        batch_row.addWidget(self.mm_batch_size_spin)
+        batch_row.addStretch()
+        mm_caption_layout.addRow(QLabel("Batch Size:"), self._wrap_row(batch_row))
+
+        self.mm_max_captions_spin = QSpinBox()
+        self.mm_max_captions_spin.setRange(0, 100000)
+        self.mm_max_captions_spin.setValue(0)
+        self.mm_max_captions_spin.setSpecialValueText("Unlimited")
+        self.mm_max_captions_spin.setMaximumWidth(100)
+        self.mm_max_captions_spin.setToolTip("Maximum number of captions to generate (0 = unlimited, processes all images)")
+        max_captions_row = QHBoxLayout()
+        max_captions_row.addWidget(self.mm_max_captions_spin)
+        max_captions_row.addStretch()
+        mm_caption_layout.addRow(QLabel("Max Captions:"), self._wrap_row(max_captions_row))
+        left_panel.addWidget(mm_caption_group)
+        left_panel.addStretch(1)
+
+        # Right panel - Logs
+        mm_progress_group = QGroupBox("Run Status")
+        mm_progress_layout = QVBoxLayout()
+        mm_progress_layout.setSpacing(6)
+        mm_progress_group.setLayout(mm_progress_layout)
+
+        self.mm_log_view = QPlainTextEdit()
+        self.mm_log_view.setReadOnly(True)
+        self.mm_log_view.setMaximumBlockCount(1000)
+        self.mm_log_view.setPlaceholderText("Logs will appear here...")
+        mm_progress_layout.addWidget(QLabel("Logs:"))
+        mm_progress_layout.addWidget(self.mm_log_view, stretch=1)
+
+        right_panel.addWidget(mm_progress_group, stretch=1)
+
     def _wrap_row(self, layout):
         container = QWidget()
         container.setLayout(layout)
@@ -953,6 +1201,66 @@ class MainWindow(QMainWindow):
                 self.proc_concurrency_spin.setValue(int(proc_cfg.get("concurrency", 20)))
             if "batch_size" in proc_cfg:
                 self.proc_batch_size_spin.setValue(int(proc_cfg.get("batch_size", 16)))
+        
+        # Load multimodal config
+        if hasattr(self, 'mm_image_dir_edit'):
+            if cfg.get("mm_image_dir"):
+                self.mm_image_dir_edit.setText(cfg.get("mm_image_dir", ""))
+            if cfg.get("mm_output"):
+                saved_output = cfg.get("mm_output", "")
+                # Fix old paths that point to App\outputs
+                if "App\\outputs" in saved_output or "App/outputs" in saved_output:
+                    # Replace with correct repo root outputs
+                    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                    outputs_dir = os.path.join(repo_root, "outputs")
+                    filename = os.path.basename(saved_output)
+                    saved_output = os.path.join(outputs_dir, filename)
+                self.mm_output_edit.setText(saved_output)
+            if cfg.get("mm_api_key"):
+                self.mm_api_key_edit.setText(cfg.get("mm_api_key", ""))
+            elif cfg.get("api_keys"):
+                api_keys = cfg.get("api_keys", {})
+                # Try to get API key for multimodal (default to OpenAI Vision)
+                mm_api_type = cfg.get("mm_api_type", "OpenAI Vision")
+                mm_api_key = api_keys.get(mm_api_type, "")
+                if mm_api_key:
+                    self.mm_api_key_edit.setText(mm_api_key)
+            if cfg.get("mm_endpoint"):
+                self.mm_endpoint_edit.setText(cfg.get("mm_endpoint", ""))
+            if cfg.get("mm_model"):
+                model_name = cfg.get("mm_model", "")
+                if model_name:
+                    index = self.mm_model_combo.findText(model_name)
+                    if index >= 0:
+                        self.mm_model_combo.setCurrentIndex(index)
+                    else:
+                        self.mm_model_combo.setCurrentText(model_name)
+            if cfg.get("mm_api_type"):
+                api_type = cfg.get("mm_api_type", "OpenAI Vision")
+                index = self.mm_api_type_combo.findText(api_type)
+                if index >= 0:
+                    self.mm_api_type_combo.setCurrentIndex(index)
+                    # Only update endpoint if it wasn't saved (to preserve custom endpoints)
+                    if not cfg.get("mm_endpoint"):
+                        self._update_mm_endpoint_placeholder(api_type)
+            if cfg.get("mm_caption_prompt"):
+                self.mm_caption_prompt_edit.setPlainText(cfg.get("mm_caption_prompt", ""))
+            if "mm_max_tokens" in cfg:
+                self.mm_max_tokens_spin.setValue(int(cfg.get("mm_max_tokens", 500)))
+            if "mm_temperature" in cfg:
+                self.mm_temperature_spin.setValue(float(cfg.get("mm_temperature", 0.7)))
+            if "mm_batch_size" in cfg:
+                self.mm_batch_size_spin.setValue(int(cfg.get("mm_batch_size", 1)))
+            if "mm_max_captions" in cfg:
+                self.mm_max_captions_spin.setValue(int(cfg.get("mm_max_captions", 0)))
+            if cfg.get("mm_hf_dataset"):
+                self.mm_hf_dataset_edit.setText(cfg.get("mm_hf_dataset", ""))
+            if "mm_use_hf_dataset" in cfg:
+                use_hf = bool(cfg.get("mm_use_hf_dataset", False))
+                self.mm_use_hf_dataset_check.setChecked(use_hf)
+                self._toggle_hf_dataset_mode(use_hf)
+            if cfg.get("mm_hf_token"):
+                self.mm_hf_token_edit.setText(cfg.get("mm_hf_token", ""))
 
     def _save_config(self):
         config_file = CONFIG_FILE
@@ -1007,6 +1315,21 @@ class MainWindow(QMainWindow):
             "proc_dynamic_names_mode": self.proc_dynamic_names_check.isChecked(),
             "proc_concurrency": self.proc_concurrency_spin.value(),
             "proc_batch_size": self.proc_batch_size_spin.value(),
+            # Multimodal tab config
+            "mm_image_dir": self.mm_image_dir_edit.text().strip() if hasattr(self, 'mm_image_dir_edit') else "",
+            "mm_output": self.mm_output_edit.text().strip() if hasattr(self, 'mm_output_edit') else "",
+            "mm_api_key": self.mm_api_key_edit.text().strip() if hasattr(self, 'mm_api_key_edit') else "",
+            "mm_endpoint": self.mm_endpoint_edit.text().strip() if hasattr(self, 'mm_endpoint_edit') else "",
+            "mm_model": self.mm_model_combo.currentText().strip() if hasattr(self, 'mm_model_combo') else "",
+            "mm_api_type": self.mm_api_type_combo.currentText() if hasattr(self, 'mm_api_type_combo') else "",
+            "mm_caption_prompt": self.mm_caption_prompt_edit.toPlainText().strip() if hasattr(self, 'mm_caption_prompt_edit') else "",
+            "mm_max_tokens": self.mm_max_tokens_spin.value() if hasattr(self, 'mm_max_tokens_spin') else 500,
+            "mm_temperature": self.mm_temperature_spin.value() if hasattr(self, 'mm_temperature_spin') else 0.7,
+            "mm_batch_size": self.mm_batch_size_spin.value() if hasattr(self, 'mm_batch_size_spin') else 1,
+            "mm_max_captions": self.mm_max_captions_spin.value() if hasattr(self, 'mm_max_captions_spin') else 0,
+            "mm_hf_dataset": self.mm_hf_dataset_edit.text().strip() if hasattr(self, 'mm_hf_dataset_edit') else "",
+            "mm_use_hf_dataset": self.mm_use_hf_dataset_check.isChecked() if hasattr(self, 'mm_use_hf_dataset_check') else False,
+            "mm_hf_token": self.mm_hf_token_edit.text().strip() if hasattr(self, 'mm_hf_token_edit') else "",
         }
         
         # Save processing API key if it exists
@@ -1018,6 +1341,14 @@ class MainWindow(QMainWindow):
                 api_keys[proc_api_type] = proc_api_key
                 cfg["api_keys"] = api_keys
                 cfg["proc_api_key"] = proc_api_key  # Also save directly for backward compat
+        
+        # Save multimodal API key if it exists
+        if hasattr(self, 'mm_api_key_edit'):
+            mm_api_key = self.mm_api_key_edit.text().strip()
+            if mm_api_key:
+                mm_api_type = self.mm_api_type_combo.currentText() if hasattr(self, 'mm_api_type_combo') else "OpenAI Vision"
+                api_keys[mm_api_type] = mm_api_key
+                cfg["api_keys"] = api_keys
         try:
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, indent=2, ensure_ascii=False)
@@ -1443,6 +1774,40 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(False)
 
     def check_queue(self):
+        # Check multimodal queue
+        if hasattr(self, 'mm_queue') and self.mm_queue:
+            try:
+                while True:
+                    msg_type, msg = self.mm_queue.get_nowait()
+                    if msg_type == "log":
+                        self._append_mm_log(str(msg))
+                    elif msg_type == "success":
+                        self.setWindowTitle(f"{APP_TITLE} - Done")
+                        self.mm_start_button.setEnabled(True)
+                        self.mm_stop_button.setEnabled(False)
+                        self.timer.stop()
+                        self._append_mm_log(str(msg))
+                        self._show_info(str(msg))
+                    elif msg_type == "error":
+                        self.setWindowTitle(f"{APP_TITLE} - Error")
+                        self.mm_start_button.setEnabled(True)
+                        self.mm_stop_button.setEnabled(False)
+                        self.timer.stop()
+                        self._append_mm_log(str(msg))
+                        self._show_error(str(msg))
+                    elif msg_type == "preview_image":
+                        # Display the preview image
+                        self._show_preview_image(msg)
+                    elif msg_type == "stopped":
+                        self.mm_start_button.setEnabled(True)
+                        self.mm_stop_button.setEnabled(False)
+                        self.setWindowTitle(APP_TITLE)
+                        self.timer.stop()
+                        if msg:  # Only log if there's a message
+                            self._append_mm_log(str(msg))
+            except queue.Empty:
+                pass
+        
         # Always check proc_queue if it exists, even if main queue doesn't
         proc_queue_checked = False
         if hasattr(self, 'proc_queue') and self.proc_queue:
@@ -1547,6 +1912,298 @@ class MainWindow(QMainWindow):
             self.proc_api_key_edit.setEchoMode(QLineEdit.Normal)
         else:
             self.proc_api_key_edit.setEchoMode(QLineEdit.Password)
+
+    def browse_mm_image_dir(self):
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select image folder",
+            "",
+        )
+        if directory:
+            self.mm_image_dir_edit.setText(directory)
+
+    def browse_mm_output(self):
+        # Get repo root (go up from App/SynthMaxxer to repo root)
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        default_path = os.path.join(repo_root, "outputs")
+        if not os.path.exists(default_path):
+            os.makedirs(default_path, exist_ok=True)
+        
+        current_path = self.mm_output_edit.text().strip()
+        if current_path and os.path.dirname(current_path):
+            start_dir = os.path.dirname(current_path)
+        else:
+            start_dir = default_path
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select output Parquet file",
+            os.path.join(start_dir, "image_captions.parquet"),
+            "Parquet files (*.parquet);;All files (*.*)",
+        )
+        if filename:
+            self.mm_output_edit.setText(filename)
+
+    def toggle_mm_api_visibility(self, checked):
+        if checked:
+            self.mm_api_key_edit.setEchoMode(QLineEdit.Normal)
+        else:
+            self.mm_api_key_edit.setEchoMode(QLineEdit.Password)
+
+    def _update_mm_endpoint_placeholder(self, api_type):
+        """Update endpoint placeholder based on selected API type"""
+        if api_type == "OpenAI Vision":
+            endpoint = "https://api.openai.com/v1/chat/completions"
+            self.mm_endpoint_edit.setPlaceholderText(endpoint)
+            self.mm_endpoint_edit.setText(endpoint)
+        elif api_type == "Anthropic Claude":
+            endpoint = "https://api.anthropic.com/v1/messages"
+            self.mm_endpoint_edit.setPlaceholderText(endpoint)
+            self.mm_endpoint_edit.setText(endpoint)
+        elif api_type == "Grok (xAI)":
+            endpoint = "https://api.x.ai/v1/chat/completions"
+            self.mm_endpoint_edit.setPlaceholderText(endpoint)
+            self.mm_endpoint_edit.setText(endpoint)
+        elif api_type == "OpenRouter":
+            endpoint = "https://openrouter.ai/api/v1/chat/completions"
+            self.mm_endpoint_edit.setPlaceholderText(endpoint)
+            self.mm_endpoint_edit.setText(endpoint)
+
+    def _update_mm_api_key_for_type(self, api_type):
+        """Update API key field when API type changes"""
+        config_file = CONFIG_FILE
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+                api_keys = cfg.get("api_keys", {})
+                api_key = api_keys.get(api_type, "")
+                if api_key:
+                    self.mm_api_key_edit.setText(api_key)
+            except Exception:
+                pass
+
+    def _refresh_mm_models(self):
+        """Manually refresh models for the current API type in multimodal tab"""
+        api_type = self.mm_api_type_combo.currentText()
+        api_key = self.mm_api_key_edit.text().strip()
+        self._update_mm_models(api_type, api_key)
+
+    def _update_mm_models(self, api_type, api_key):
+        """Fetch and update model dropdown based on selected API type for multimodal tab"""
+        if not api_key:
+            self.mm_model_combo.clear()
+            self.mm_model_combo.addItem("(Enter API key and click Refresh)")
+            self.mm_model_combo.setEnabled(True)
+            self.mm_refresh_models_button.setEnabled(True)
+            return
+
+        self.mm_model_combo.clear()
+        self.mm_model_combo.addItem("Loading models...")
+        self.mm_model_combo.setEnabled(False)
+        self.mm_refresh_models_button.setEnabled(False)
+
+        # Fetch models in a separate thread
+        thread = threading.Thread(
+            target=self._fetch_mm_models,
+            args=(api_type, api_key),
+            daemon=True
+        )
+        thread.start()
+
+    def _fetch_mm_models(self, api_type, api_key):
+        """Fetch available models from the API for multimodal tab"""
+        models = []
+        error_msg = None
+
+        try:
+            if api_type == "Anthropic Claude":
+                # Anthropic doesn't have a public models endpoint, use common models
+                models = [
+                    "claude-3-5-sonnet-20241022",
+                    "claude-3-5-sonnet-20240620",
+                    "claude-3-opus-20240229",
+                    "claude-3-sonnet-20240229",
+                    "claude-3-haiku-20240307",
+                ]
+            elif api_type == "OpenAI Vision":
+                if api_key:
+                    try:
+                        headers = {"Authorization": f"Bearer {api_key}"}
+                        resp = requests.get("https://api.openai.com/v1/models", headers=headers, timeout=15)
+                        resp.raise_for_status()
+                        data = resp.json()
+                        for model in data.get("data", []):
+                            model_id = model.get("id", "")
+                            # Filter for vision-capable models
+                            if any(x in model_id for x in ["gpt-4o", "gpt-4-vision"]):
+                                models.append(model_id)
+                    except requests.exceptions.RequestException as e:
+                        error_msg = f"OpenAI API error: {str(e)}"
+                    except Exception as e:
+                        error_msg = f"Error parsing OpenAI response: {str(e)}"
+                if not models:
+                    models = ["gpt-4o", "gpt-4o-mini", "gpt-4-vision-preview"]
+            elif api_type == "Grok (xAI)":
+                if api_key:
+                    try:
+                        headers = {"Authorization": f"Bearer {api_key}"}
+                        resp = requests.get("https://api.x.ai/v1/models", headers=headers, timeout=15)
+                        resp.raise_for_status()
+                        data = resp.json()
+                        items = data.get("data") or data.get("models") or data.get("model_list") or []
+                        if isinstance(items, list):
+                            for m in items:
+                                if isinstance(m, dict):
+                                    mid = m.get("id") or m.get("name") or m.get("model_id")
+                                    if mid and isinstance(mid, str):
+                                        models.append(mid)
+                        elif isinstance(data, list):
+                            for m in data:
+                                if isinstance(m, dict):
+                                    mid = m.get("id") or m.get("name") or m.get("model_id")
+                                    if mid and isinstance(mid, str):
+                                        models.append(mid)
+                    except requests.exceptions.RequestException as e:
+                        error_msg = f"Grok API error: {str(e)}"
+                    except Exception as e:
+                        error_msg = f"Error parsing Grok response: {str(e)}"
+                if not models:
+                    # Default to grok-4.1-fast-non-reasoning (has vision, latest, faster, cheaper)
+                    models = ["grok-4.1-fast-non-reasoning"]
+            elif api_type == "OpenRouter":
+                if api_key:
+                    try:
+                        headers = {
+                            "Authorization": f"Bearer {api_key}",
+                            "HTTP-Referer": "https://github.com/ShareGPT-Formaxxing",
+                            "X-Title": "SynthMaxxer"
+                        }
+                        resp = requests.get("https://openrouter.ai/api/v1/models", headers=headers, timeout=15)
+                        resp.raise_for_status()
+                        data = resp.json()
+                        for model in data.get("data", []):
+                            model_id = model.get("id", "")
+                            if model_id:
+                                models.append(model_id)
+                    except requests.exceptions.RequestException as e:
+                        error_msg = f"OpenRouter API error: {str(e)}"
+                    except Exception as e:
+                        error_msg = f"Error parsing OpenRouter response: {str(e)}"
+                if not models:
+                    models = ["openai/gpt-4o", "openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet"]
+        except Exception as e:
+            error_msg = f"Unexpected error: {str(e)}"
+
+        # Update UI on main thread
+        if not models and not error_msg:
+            models = ["(No models found - enter manually)"]
+        elif error_msg:
+            models = [f"(Error: {error_msg[:50]})"]
+
+        # Emit signal to update UI on main thread
+        self.mm_model_fetcher.models_ready.emit(models)
+
+    def _on_mm_models_ready(self, models):
+        """Handle models ready signal on main thread for multimodal tab"""
+        try:
+            self.mm_model_combo.clear()
+            self.mm_model_combo.addItems(models)
+            self.mm_model_combo.setEnabled(True)
+            self.mm_refresh_models_button.setEnabled(True)
+            if models and not models[0].startswith("(Error:") and models[0] != "(No models found - enter manually)":
+                self.mm_model_combo.setCurrentIndex(0)
+        except Exception as e:
+            try:
+                self.mm_model_combo.clear()
+                self.mm_model_combo.addItem(f"(UI Error: {str(e)})")
+                self.mm_model_combo.setEnabled(True)
+                self.mm_refresh_models_button.setEnabled(True)
+            except:
+                pass
+
+    def _toggle_hf_dataset_mode(self, checked):
+        """Enable/disable image folder input based on HF dataset mode"""
+        if checked:
+            self.mm_image_dir_edit.setEnabled(False)
+            self.mm_hf_dataset_edit.setEnabled(True)
+            self.mm_hf_token_edit.setEnabled(True)
+        else:
+            self.mm_image_dir_edit.setEnabled(True)
+            self.mm_hf_dataset_edit.setEnabled(False)
+            self.mm_hf_token_edit.setEnabled(False)
+
+    def toggle_mm_hf_token_visibility(self, checked):
+        if checked:
+            self.mm_hf_token_edit.setEchoMode(QLineEdit.Normal)
+        else:
+            self.mm_hf_token_edit.setEchoMode(QLineEdit.Password)
+
+    def _append_mm_log(self, text):
+        if not text:
+            return
+        cursor = self.mm_log_view.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.mm_log_view.setTextCursor(cursor)
+        ansi_stripped = self.strip_ansi(text)
+        lines = ansi_stripped.split('\n')
+        for line in lines:
+            if line.strip():
+                fmt = self._get_log_format(line)
+                cursor.insertText(line + '\n', fmt)
+            else:
+                cursor.insertText('\n')
+        self.mm_log_view.ensureCursorVisible()
+
+    def _show_preview_image(self, pil_image):
+        """Display a preview image in a popup window"""
+        try:
+            from PIL import Image as PILImage
+            
+            if not pil_image or not isinstance(pil_image, PILImage.Image):
+                return
+            
+            # Convert PIL Image to QPixmap
+            data = pil_image.convert("RGBA").tobytes("raw", "RGBA")
+            qim = QImage(data, pil_image.size[0], pil_image.size[1], QImage.Format_RGBA8888)
+            pix = QPixmap.fromImage(qim)
+            
+            # Create preview window
+            preview_window = QMainWindow(self)
+            preview_window.setWindowTitle("🖼️ Captioned Image Preview")
+            preview_window.resize(800, 600)
+            
+            # Apply dark theme
+            preview_window.setStyleSheet("""
+                QMainWindow {
+                    background-color: #000000;
+                }
+                QLabel {
+                    background-color: #000000;
+                }
+            """)
+            
+            # Create central widget with image
+            central_widget = QWidget()
+            layout = QVBoxLayout(central_widget)
+            layout.setContentsMargins(10, 10, 10, 10)
+            
+            image_label = QLabel()
+            image_label.setAlignment(Qt.AlignCenter)
+            # Scale image to fit window while maintaining aspect ratio
+            scaled_pix = pix.scaled(780, 580, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            image_label.setPixmap(scaled_pix)
+            
+            layout.addWidget(image_label)
+            preview_window.setCentralWidget(central_widget)
+            
+            # Show the window
+            preview_window.show()
+            preview_window.raise_()
+            preview_window.activateWindow()
+            
+        except Exception as e:
+            self._append_mm_log(f"Could not display preview image: {str(e)}")
 
     def _append_proc_log(self, text):
         if not text:
@@ -1974,6 +2631,162 @@ class MainWindow(QMainWindow):
             self._show_error(f"Missing dependency: {str(e)}")
         except Exception as e:
             self._show_error(f"Setup error: {str(e)}")
+
+    def start_image_captioning(self):
+        use_hf_dataset = self.mm_use_hf_dataset_check.isChecked()
+        hf_dataset = self.mm_hf_dataset_edit.text().strip() if use_hf_dataset else None
+        hf_token = self.mm_hf_token_edit.text().strip() if use_hf_dataset else None
+        image_dir = self.mm_image_dir_edit.text().strip() if not use_hf_dataset else None
+        output_file = self.mm_output_edit.text().strip()
+        api_key = self.mm_api_key_edit.text().strip()
+        endpoint = self.mm_endpoint_edit.text().strip()
+        model = self.mm_model_combo.currentText().strip()
+        api_type = self.mm_api_type_combo.currentText()
+        caption_prompt = self.mm_caption_prompt_edit.toPlainText().strip()
+        max_tokens = self.mm_max_tokens_spin.value()
+        temperature = self.mm_temperature_spin.value()
+        batch_size = self.mm_batch_size_spin.value()
+        max_captions = self.mm_max_captions_spin.value()
+
+        if use_hf_dataset:
+            if not hf_dataset:
+                self._show_error("Please enter a HuggingFace dataset name.")
+                return
+        else:
+            if not image_dir:
+                self._show_error("Please select an image folder.")
+                return
+            if not os.path.isdir(image_dir):
+                self._show_error("Image folder path is invalid.")
+                return
+        
+        if not api_key:
+            self._show_error("Please enter your API key.")
+            return
+        if not endpoint:
+            self._show_error("Please enter the API endpoint.")
+            return
+        if not model:
+            self._show_error("Please enter the model name.")
+            return
+
+        # Validate model is selected
+        if model == "(Click Refresh to load models)" or not model or model.startswith("("):
+            self._show_error("Please select a model. Click 'Refresh' to load available models.")
+            return
+
+        # Normalize output file path (fix any App\outputs paths)
+        if output_file and ("App\\outputs" in output_file or "App/outputs" in output_file):
+            repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            outputs_dir = os.path.join(repo_root, "outputs")
+            filename = os.path.basename(output_file)
+            output_file = os.path.join(outputs_dir, filename)
+            self.mm_output_edit.setText(output_file)
+        
+        # Auto-generate output filename if not provided
+        if not output_file:
+            # Get repo root (go up from App/SynthMaxxer to repo root)
+            repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            outputs_dir = os.path.join(repo_root, "outputs")
+            os.makedirs(outputs_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = os.path.join(outputs_dir, f"image_captions_{timestamp}.parquet")
+            self.mm_output_edit.setText(output_file)
+
+        # Save config
+        self._save_config()
+
+        # Reset UI state
+        self.mm_log_view.clear()
+        self._append_mm_log("=== Image Captioning started ===")
+        self.setWindowTitle(f"{APP_TITLE} - Captioning...")
+        self.mm_start_button.setEnabled(False)
+        self.mm_stop_button.setEnabled(True)
+        self.mm_stop_flag = threading.Event()
+
+        self.mm_queue = queue.Queue()
+        
+        # Log path correction if it happened
+        if output_file and ("App\\outputs" not in output_file and "App/outputs" not in output_file):
+            # Path is correct, log it
+            self._append_mm_log(f"Output file: {output_file}")
+
+        # Start worker thread
+        self.mm_worker_thread = threading.Thread(
+            target=self._image_captioning_worker,
+            args=(
+                image_dir,
+                output_file,
+                api_key,
+                endpoint,
+                model,
+                api_type,
+                caption_prompt,
+                max_tokens,
+                temperature,
+                batch_size,
+                max_captions,
+                self.mm_stop_flag,
+                hf_dataset,
+                hf_token,
+                self.mm_queue,
+            ),
+            daemon=True,
+        )
+        self.mm_worker_thread.start()
+        self.timer.start()
+
+    def stop_image_captioning(self):
+        if hasattr(self, 'mm_stop_flag'):
+            self.mm_stop_flag.set()
+        self._append_mm_log("Stopping image captioning...")
+        self.mm_stop_button.setEnabled(False)
+
+    def _image_captioning_worker(
+        self,
+        image_dir,
+        output_file,
+        api_key,
+        endpoint,
+        model,
+        api_type,
+        caption_prompt,
+        max_tokens,
+        temperature,
+        batch_size,
+        max_captions,
+        stop_flag,
+        hf_dataset,
+        hf_token,
+        q,
+    ):
+        """Worker function for image captioning"""
+        try:
+            from App.SynthMaxxer.multimodal_worker import image_captioning_worker
+            image_captioning_worker(
+                image_dir,
+                output_file,
+                api_key,
+                endpoint,
+                model,
+                api_type,
+                caption_prompt,
+                max_tokens,
+                temperature,
+                batch_size,
+                max_captions,
+                stop_flag,
+                hf_dataset,
+                hf_token,
+                q,
+            )
+        except Exception as e:
+            import traceback
+            error_msg = f"Image captioning worker error: {str(e)}"
+            if q:
+                q.put(("error", error_msg))
+                q.put(("log", f"Traceback:\n{traceback.format_exc()}"))
+            print(f"IMAGE_CAPTIONING_ERROR: {error_msg}")
 
 
 def main():

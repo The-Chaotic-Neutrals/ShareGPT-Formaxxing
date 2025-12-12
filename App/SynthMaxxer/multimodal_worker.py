@@ -497,8 +497,16 @@ def extract_images_from_hf_dataset(dataset, image_column="image", q=None):
                 # Always save to temp directory for captioning API (ensures valid file path)
                 image_path = os.path.join(temp_dir, f"image_{idx:06d}.png")
                 img.save(image_path)
-                images.append(img)
+                # Create a copy to avoid keeping file handles open
+                img_copy = img.copy()
+                images.append(img_copy)
                 image_paths.append(image_path)
+                # Close the original image if it has a file handle
+                if hasattr(img, 'fp') and img.fp:
+                    try:
+                        img.close()
+                    except Exception:
+                        pass
             else:
                 # Log first few failures for debugging
                 if q and idx < 10:
@@ -516,6 +524,181 @@ def extract_images_from_hf_dataset(dataset, image_column="image", q=None):
             q.put(("log", f"   Try checking dataset.features to see available columns"))
     
     return images, image_paths, temp_dir
+
+
+def get_work_directory(output_file):
+    """Get the working directory path for streaming saves"""
+    # Create a .work directory next to the output file
+    output_path = Path(output_file)
+    work_dir = output_path.parent / f"{output_path.stem}.work"
+    return str(work_dir)
+
+
+def ensure_work_directory(output_file, q=None):
+    """Ensure the working directory exists and return its path"""
+    work_dir = get_work_directory(output_file)
+    images_dir = os.path.join(work_dir, "images")
+    os.makedirs(images_dir, exist_ok=True)
+    if q:
+        q.put(("log", f"📁 Working directory: {work_dir}"))
+    return work_dir, images_dir
+
+
+def load_caption_index(work_dir, q=None):
+    """Load the JSON index file mapping image paths to captions"""
+    index_file = os.path.join(work_dir, "captions_index.json")
+    if os.path.exists(index_file):
+        try:
+            with open(index_file, 'r', encoding='utf-8') as f:
+                index = json.load(f)
+            if q:
+                q.put(("log", f"📂 Loaded caption index with {len(index)} entries"))
+            return index
+        except Exception as e:
+            if q:
+                q.put(("log", f"⚠️  Warning: Could not load caption index: {str(e)}"))
+            return {}
+    return {}
+
+
+def save_caption_index(work_dir, index, q=None):
+    """Save the JSON index file mapping image paths to captions"""
+    index_file = os.path.join(work_dir, "captions_index.json")
+    try:
+        with open(index_file, 'w', encoding='utf-8') as f:
+            json.dump(index, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        if q:
+            q.put(("log", f"⚠️  Warning: Failed to save caption index: {str(e)}"))
+
+
+def save_image_caption_streaming(original_image_path, image, caption, images_dir, index, q=None):
+    """Save a single image and caption pair to the working directory"""
+    try:
+        # Get a safe filename from the original path
+        original_name = os.path.basename(original_image_path)
+        name_without_ext = os.path.splitext(original_name)[0]
+        # Use index to ensure unique filenames
+        idx = len(index)
+        safe_filename = f"{idx:06d}_{name_without_ext}.png"
+        saved_image_path = os.path.join(images_dir, safe_filename)
+        
+        # Save the image
+        if isinstance(image, Image.Image):
+            image.save(saved_image_path)
+        else:
+            # If it's a path, copy it
+            import shutil
+            shutil.copy2(image, saved_image_path)
+        
+        # Update index
+        index[original_image_path] = {
+            "caption": caption,
+            "saved_image_path": saved_image_path,
+            "index": idx,
+            "original_filename": original_name
+        }
+        
+        # Save index immediately
+        work_dir = os.path.dirname(images_dir)
+        save_caption_index(work_dir, index, q)
+        
+        return saved_image_path
+        
+    except Exception as e:
+        if q:
+            q.put(("log", f"⚠️  Warning: Failed to save image/caption: {str(e)}"))
+        return None
+
+
+def pack_work_directory_to_parquet(work_dir, output_file, q=None):
+    """Pack the working directory contents into a Parquet file"""
+    if not DATASETS_AVAILABLE:
+        raise ImportError("datasets library is required. Install with: pip install datasets")
+    
+    try:
+        # Load the index
+        index = load_caption_index(work_dir, q)
+        if not index:
+            if q:
+                q.put(("log", "⚠️  No captions found in working directory"))
+            return False
+        
+        # Sort by index to maintain order
+        sorted_items = sorted(index.items(), key=lambda x: x[1].get("index", 0))
+        
+        texts = []
+        images = []
+        
+        images_dir = os.path.join(work_dir, "images")
+        
+        if q:
+            q.put(("log", f"📦 Packing {len(sorted_items)} items to Parquet..."))
+        
+        for original_path, entry in sorted_items:
+            caption = entry.get("caption", "")
+            saved_image_path = entry.get("saved_image_path", "")
+            
+            if not caption or not saved_image_path:
+                continue
+            
+            if not os.path.exists(saved_image_path):
+                if q:
+                    q.put(("log", f"⚠️  Warning: Image not found: {saved_image_path}"))
+                continue
+            
+            try:
+                # Load image
+                with Image.open(saved_image_path) as img:
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    img_copy = img.copy()
+                images.append(img_copy)
+                texts.append(caption)
+            except Exception as e:
+                if q:
+                    q.put(("log", f"⚠️  Warning: Could not load image {saved_image_path}: {str(e)}"))
+                continue
+        
+        if len(texts) == 0 or len(images) == 0:
+            if q:
+                q.put(("log", "⚠️  No valid data to pack"))
+            return False
+        
+        # Ensure arrays match
+        min_length = min(len(texts), len(images))
+        if len(texts) != len(images):
+            if q:
+                q.put(("log", f"⚠️  Warning: Mismatch between texts ({len(texts)}) and images ({len(images)}), using {min_length} items"))
+            texts = texts[:min_length]
+            images = images[:min_length]
+        
+        # Create dataset
+        dataset_dict = {
+            "text": texts,
+            "image": images
+        }
+        
+        dataset = Dataset.from_dict(dataset_dict)
+        
+        # Ensure output file has .parquet extension
+        if not output_file.endswith('.parquet'):
+            output_file = output_file.replace('.jsonl', '.parquet')
+            if not output_file.endswith('.parquet'):
+                output_file += '.parquet'
+        
+        # Save as Parquet
+        dataset.to_parquet(output_file)
+        
+        if q:
+            q.put(("log", f"✅ Packed {len(texts)} examples to {output_file}"))
+        
+        return True
+        
+    except Exception as e:
+        if q:
+            q.put(("log", f"❌ Error packing to Parquet: {str(e)}"))
+        raise
 
 
 def image_captioning_worker(
@@ -616,117 +799,21 @@ def image_captioning_worker(
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
         
-        # Check if output file exists and load existing data for resume
-        existing_dataset = None
-        processed_indices = set()
-        existing_texts = []
-        existing_images = []
+        # Set up working directory for streaming saves
+        work_dir, images_dir = ensure_work_directory(output_file, q)
+        caption_index = load_caption_index(work_dir, q)
         
-        if os.path.exists(output_file):
-            try:
-                if q:
-                    q.put(("log", f"📂 Found existing output file: {output_file}"))
-                # Load parquet file directly - handle both single file and DatasetDict
-                try:
-                    existing_dataset = Dataset.from_parquet(output_file)
-                except Exception as e:
-                    # If it's a DatasetDict error, try loading as a single dataset
-                    if "train" in str(e) or "split" in str(e).lower():
-                        # Try loading with explicit split or as single file
-                        try:
-                            from datasets import load_dataset
-                            existing_dataset = load_dataset("parquet", data_files=output_file, split="train")
-                        except Exception:
-                            # Last resort: try without split
-                            existing_dataset = load_dataset("parquet", data_files=output_file)
-                            if isinstance(existing_dataset, DatasetDict):
-                                # Get first split - type narrowing for DatasetDict
-                                existing_dataset_dict: DatasetDict = existing_dataset
-                                split_name = list(existing_dataset_dict.keys())[0]
-                                existing_dataset = existing_dataset_dict[split_name]
-                    else:
-                        raise
-                
-                # Check if it's an IterableDataset (doesn't support len() or indexing)
-                from datasets import IterableDataset
-                is_iterable = isinstance(existing_dataset, IterableDataset)
-                
-                if is_iterable:
-                    # IterableDataset - iterate through to collect data
-                    existing_count = 0
-                    for idx, example in enumerate(existing_dataset):
-                        existing_count += 1
-                        try:
-                            existing_text = example.get("text") if isinstance(example, dict) else None
-                            existing_image = example.get("image") if isinstance(example, dict) else None
-                            # Check if text is not empty (actually processed)
-                            if existing_text and isinstance(existing_text, str) and existing_text.strip():
-                                existing_texts.append(existing_text)
-                                existing_images.append(existing_image)
-                                processed_indices.add(idx)
-                        except (KeyError, TypeError):
-                            pass
-                    if q:
-                        q.put(("log", f"   Found {existing_count} previously processed examples (IterableDataset)"))
-                else:
-                    # Regular Dataset - can use len() and indexing
-                    # Type narrowing: at this point existing_dataset is a Dataset, not IterableDataset
-                    if isinstance(existing_dataset, Dataset):
-                        existing_count = len(existing_dataset)  # type: ignore
-                        if q:
-                            q.put(("log", f"   Found {existing_count} previously processed examples"))
-                        
-                        # Extract existing data
-                        column_names = getattr(existing_dataset, 'column_names', None)
-                        if column_names and "text" in column_names and "image" in column_names:
-                                for idx in range(existing_count):
-                                    try:
-                                        existing_text = existing_dataset[idx]["text"]  # type: ignore
-                                        existing_image = existing_dataset[idx]["image"]  # type: ignore
-                                        # Check if text is not empty (actually processed)
-                                        if existing_text and isinstance(existing_text, str) and existing_text.strip():
-                                            existing_texts.append(existing_text)
-                                            existing_images.append(existing_image)
-                                            processed_indices.add(idx)
-                                    except (KeyError, IndexError, TypeError):
-                                        pass
-                
-                # Handle processed indices for both cases
-                if is_iterable:
-                    # For IterableDataset, we already collected data, just check if we found any
-                    if processed_indices:
-                        if q:
-                            q.put(("log", f"   ✓ Resuming: {len(processed_indices)} images already captioned"))
-                            q.put(("log", f"   Will skip processed images and continue from index {len(processed_indices)}"))
-                    else:
-                        if q:
-                            q.put(("log", f"   Existing file has no valid captions, will regenerate"))
-                else:
-                    # For regular Dataset, check column_names
-                    if isinstance(existing_dataset, Dataset):
-                        column_names = getattr(existing_dataset, 'column_names', None)
-                        if column_names and "text" in column_names and "image" in column_names:
-                            if processed_indices:
-                                if q:
-                                    q.put(("log", f"   ✓ Resuming: {len(processed_indices)} images already captioned"))
-                                    q.put(("log", f"   Will skip processed images and continue from index {len(processed_indices)}"))
-                            else:
-                                if q:
-                                    q.put(("log", f"   Existing file has no valid captions, will regenerate"))
-                        else:
-                            if q:
-                                q.put(("log", f"   Existing file missing required columns, will create new"))
-            except Exception as e:
-                if q:
-                    q.put(("log", f"⚠️  Could not load existing output file: {str(e)}"))
-                    q.put(("log", f"   Will create new output file"))
-                existing_dataset = None
+        # Check for existing captions in working directory for resume
+        processed_paths = set()
+        if caption_index:
+            processed_paths = set(caption_index.keys())
+            if q:
+                q.put(("log", f"✓ Found {len(processed_paths)} previously captioned images in working directory"))
+                q.put(("log", f"   Will skip processed images and continue from where we left off"))
         
-        # Process images and collect data
-        processed = len(processed_indices)  # Start count from existing
+        # Process images, skipping already processed ones
+        processed = len(processed_paths)  # Start count from existing
         failed = 0
-        texts = existing_texts.copy()  # Start with existing texts
-        images = existing_images.copy()  # Start with existing images
         
         # Process images, skipping already processed ones
         for idx, image_path in enumerate(image_paths):
@@ -736,8 +823,8 @@ def image_captioning_worker(
                     q.put(("stopped", "Stopped by user"))
                 return
             
-            # Skip if already processed
-            if idx in processed_indices:
+            # Skip if already processed (check by path, not index)
+            if image_path in processed_paths:
                 if q:
                     q.put(("log", f"⏭️  Skipping image {idx+1}/{total_images} (already processed): {os.path.basename(image_path)}"))
                 continue
@@ -757,29 +844,36 @@ def image_captioning_worker(
                     q
                 )
                 
-                # Get image for HF dataset
+                # Get image for saving
                 if use_hf_images and idx < len(hf_images):
-                    # Use pre-extracted HF image
-                    img = hf_images[idx]
+                    # Use pre-extracted HF image - make a copy to avoid file handle issues
+                    img = hf_images[idx].copy()
                 else:
                     # Load image from path
                     try:
-                        img = Image.open(image_path)
-                        # Convert to RGB if necessary
-                        if img.mode != 'RGB':
-                            img = img.convert('RGB')
+                        with Image.open(image_path) as opened_img:
+                            # Convert to RGB if necessary
+                            if opened_img.mode != 'RGB':
+                                opened_img = opened_img.convert('RGB')
+                            # Create a copy to close the file handle (copy doesn't keep file handle open)
+                            img = opened_img.copy()
                     except Exception as img_e:
                         if q:
                             q.put(("log", f"Warning: Could not load image {image_path}: {str(img_e)}"))
                         failed += 1
                         continue
                 
-                images.append(img)
-                texts.append(caption)
-                processed += 1
-                
-                if q:
-                    q.put(("log", f"✅ Captioned image {idx+1}/{total_images}: {os.path.basename(image_path)}"))
+                # Save image and caption immediately (streaming save)
+                saved_path = save_image_caption_streaming(image_path, img, caption, images_dir, caption_index, q)
+                if saved_path:
+                    processed += 1
+                    processed_paths.add(image_path)
+                    if q:
+                        q.put(("log", f"✅ Captioned and saved image {idx+1}/{total_images}: {os.path.basename(image_path)}"))
+                else:
+                    failed += 1
+                    if q:
+                        q.put(("log", f"⚠️  Captioned but failed to save image {idx+1}/{total_images}: {os.path.basename(image_path)}"))
             
             except Exception as e:
                 failed += 1
@@ -787,58 +881,43 @@ def image_captioning_worker(
                     q.put(("log", f"❌ Failed to caption {os.path.basename(image_path)}: {str(e)}"))
                 continue
         
-        # Ensure we have valid data before creating dataset
-        if len(texts) == 0 and len(images) == 0:
+        # Check if we have any processed images
+        if processed == 0:
             error_msg = "No images were successfully processed. All images failed or were skipped."
             if q:
                 q.put(("error", error_msg))
                 q.put(("stopped", "No images processed"))
             return
         
-        # Ensure texts and images arrays match in length
-        min_length = min(len(texts), len(images))
-        if len(texts) != len(images):
+        # Pack working directory to Parquet
+        if q:
+            q.put(("log", f"📦 Packing {processed} processed images to Parquet format..."))
+        
+        try:
+            pack_work_directory_to_parquet(work_dir, output_file, q)
+        except Exception as e:
+            error_msg = f"Failed to pack dataset to Parquet: {str(e)}"
             if q:
-                q.put(("log", f"⚠️  Warning: Mismatch between texts ({len(texts)}) and images ({len(images)}), using {min_length} items"))
-            texts = texts[:min_length]
-            images = images[:min_length]
-        
-        # Create HuggingFace dataset
-        if q:
-            q.put(("log", f"Creating HuggingFace dataset with {len(texts)} examples..."))
-        
-        dataset_dict = {
-            "text": texts,
-            "image": images
-        }
-        
-        dataset = Dataset.from_dict(dataset_dict)
-        
-        # If output_file ends with .parquet, use it directly, otherwise add .parquet
-        if not output_file.endswith('.parquet'):
-            output_file = output_file.replace('.jsonl', '.parquet')
-            if not output_file.endswith('.parquet'):
-                output_file += '.parquet'
-        
-        # Save as Parquet
-        if q:
-            q.put(("log", f"Saving dataset to {output_file}..."))
-        
-        # Save dataset
-        dataset.to_parquet(output_file)
-        
-        if q:
-            q.put(("log", f"✅ Dataset saved successfully to {output_file}"))
+                q.put(("error", error_msg))
+                q.put(("log", f"⚠️  Working directory still contains all data: {work_dir}"))
+            raise
         
         # Load saved file and display sample
-        if len(texts) > 0 and len(images) > 0:
+        if processed > 0:
             try:
                 if q:
                     q.put(("log", ""))
                     q.put(("log", "📖 Loading saved file to verify..."))
                 
+                # Ensure output file has .parquet extension
+                preview_file = output_file
+                if not preview_file.endswith('.parquet'):
+                    preview_file = preview_file.replace('.jsonl', '.parquet')
+                    if not preview_file.endswith('.parquet'):
+                        preview_file += '.parquet'
+                
                 # Load the saved parquet file to verify it was saved correctly
-                saved_dataset = Dataset.from_parquet(output_file)
+                saved_dataset = Dataset.from_parquet(preview_file)
                 
                 # Check if dataset has length (IterableDataset doesn't support len())
                 # Also handle DatasetDict by getting the first split
@@ -886,20 +965,24 @@ def image_captioning_worker(
                     
                     # Handle different image formats from saved dataset
                     if sample_image:
-                        # If it's already a PIL Image, use it directly
+                        # If it's already a PIL Image, use it directly (make a copy to be safe)
                         if isinstance(sample_image, Image.Image):
-                            preview_image = sample_image
+                            preview_image = sample_image.copy()
                         # If it's a dict with path or bytes, try to load it
                         elif isinstance(sample_image, dict):
                             if 'path' in sample_image and os.path.exists(sample_image['path']):
-                                preview_image = Image.open(sample_image['path'])
+                                with Image.open(sample_image['path']) as img:
+                                    preview_image = img.copy()
                             elif 'bytes' in sample_image:
                                 preview_image = Image.open(io.BytesIO(sample_image['bytes']))
+                                # BytesIO doesn't need explicit closing, but make a copy to be safe
+                                preview_image = preview_image.copy()
                             else:
                                 preview_image = None
                         # If it's a string path, try to open it
                         elif isinstance(sample_image, str) and os.path.exists(sample_image):
-                            preview_image = Image.open(sample_image)
+                            with Image.open(sample_image) as img:
+                                preview_image = img.copy()
                         else:
                             preview_image = None
                     else:
@@ -930,17 +1013,29 @@ def image_captioning_worker(
             except Exception as preview_error:
                 if q:
                     q.put(("log", f"⚠️  Could not load preview from saved file: {str(preview_error)}"))
-                    # Fallback: use in-memory data
-                    if len(texts) > 0 and len(images) > 0:
-                        sample_text = texts[0]
-                        sample_image = images[0]
-                        q.put(("log", ""))
-                        q.put(("log", "=" * 70))
-                        q.put(("log", "📸 SAMPLE RESULT (from memory):"))
-                        q.put(("log", "=" * 70))
-                        q.put(("log", f"Caption: {sample_text}"))
-                        q.put(("log", "=" * 70))
-                        q.put(("preview_image", sample_image))
+                    # Fallback: try loading from working directory
+                    try:
+                        index = load_caption_index(work_dir, q)
+                        if index:
+                            # Get first entry
+                            sorted_items = sorted(index.items(), key=lambda x: x[1].get("index", 0))
+                            if sorted_items:
+                                first_path, first_entry = sorted_items[0]
+                                sample_text = first_entry.get("caption", "")
+                                saved_image_path = first_entry.get("saved_image_path", "")
+                                if saved_image_path and os.path.exists(saved_image_path):
+                                    with Image.open(saved_image_path) as img:
+                                        preview_image = img.copy()
+                                    q.put(("log", ""))
+                                    q.put(("log", "=" * 70))
+                                    q.put(("log", "📸 SAMPLE RESULT (from working directory):"))
+                                    q.put(("log", "=" * 70))
+                                    q.put(("log", f"Caption: {sample_text}"))
+                                    q.put(("log", "=" * 70))
+                                    q.put(("preview_image", preview_image))
+                    except Exception as fallback_error:
+                        if q:
+                            q.put(("log", f"⚠️  Could not load preview from working directory: {str(fallback_error)}"))
         
         # Final summary
         success_msg = f"Image captioning complete! Processed: {processed}, Failed: {failed}, Total: {total_images}. Saved to {output_file}"

@@ -2,6 +2,7 @@
 Multimodal worker for SynthMaxxer - handles image captioning using vision models
 Supports OpenAI Vision, Anthropic Claude, Grok (xAI), and OpenRouter APIs
 Outputs in HuggingFace dataset format (Parquet) with text and images columns
+Also handles Civitai image downloading
 """
 import os
 import json
@@ -9,8 +10,17 @@ import base64
 import requests
 from pathlib import Path
 from datetime import datetime
-from PIL import Image
+from PIL import Image, ImageFile
 import io
+import re
+import time
+import threading
+from urllib.parse import urlparse
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Allow loading truncated images (some corrupted images can still be partially loaded)
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 try:
     from datasets import Dataset, DatasetDict
@@ -29,6 +39,44 @@ def encode_image_to_base64(image_path):
             return base64.b64encode(image_file.read()).decode('utf-8')
     except Exception as e:
         raise ValueError(f"Failed to encode image {image_path}: {e}")
+
+
+def encode_image_to_base64_validated(image_path):
+    """Encode an image to base64 by re-encoding through PIL to ensure validity
+    
+    Handles truncated/corrupted images by attempting to load what's available.
+    With LOAD_TRUNCATED_IMAGES enabled, PIL will try to load partial images.
+    """
+    try:
+        # Open and process the image
+        # Note: LOAD_TRUNCATED_IMAGES is enabled globally to handle corrupted images
+        with Image.open(image_path) as img:
+            # Load the image data (this will fail if too corrupted, even with LOAD_TRUNCATED_IMAGES)
+            img.load()
+            
+            # Convert to RGB if necessary (removes transparency, ensures compatibility)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Save to bytes buffer in JPEG format (most compatible)
+            buffer = io.BytesIO()
+            img.save(buffer, format='JPEG', quality=95)
+            buffer.seek(0)
+            
+            # Encode to base64
+            return base64.b64encode(buffer.read()).decode('utf-8')
+    except (OSError, IOError, Image.UnidentifiedImageError) as e:
+        error_msg = str(e).lower()
+        if "truncated" in error_msg:
+            raise ValueError(f"Image file is truncated (incomplete/corrupted): {os.path.basename(image_path)}. "
+                           f"The file may have been interrupted during download or save. "
+                           f"Try re-downloading or regenerating this image.")
+        elif "cannot identify" in error_msg or "not recognized" in error_msg or isinstance(e, Image.UnidentifiedImageError):
+            raise ValueError(f"Image file is corrupted or not a valid image format: {os.path.basename(image_path)}")
+        else:
+            raise ValueError(f"Failed to process image {os.path.basename(image_path)}: {e}")
+    except Exception as e:
+        raise ValueError(f"Failed to encode image {os.path.basename(image_path)}: {e}")
 
 
 def get_image_mime_type(image_path):
@@ -151,9 +199,53 @@ def caption_image_claude(image_path, api_key, endpoint, model, caption_prompt, m
 
 def caption_image_grok(image_path, api_key, endpoint, model, caption_prompt, max_tokens, temperature, q=None):
     """Caption an image using Grok (xAI) Vision API"""
+    temp_file_path = None
+    original_image_path = image_path  # Keep original for error logging
     try:
-        base64_image = encode_image_to_base64(image_path)
-        mime_type = get_image_mime_type(image_path)
+        # Check image file size before encoding (Grok API has limits)
+        file_size = os.path.getsize(image_path)
+        file_size_mb = file_size / (1024 * 1024)
+        
+        # Check image dimensions and resize if needed
+        width, height = None, None
+        with Image.open(image_path) as img:
+            width, height = img.size
+            # Grok API typically supports up to 2048x2048, but let's be conservative
+            max_dimension = 2048
+            if width > max_dimension or height > max_dimension:
+                if q:
+                    q.put(("log", f"⚠️  Image {os.path.basename(image_path)} is large ({width}x{height}), resizing to fit API limits..."))
+                # Resize if too large (maintain aspect ratio)
+                ratio = min(max_dimension / width, max_dimension / height)
+                new_width = int(width * ratio)
+                new_height = int(height * ratio)
+                img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                if img_resized.mode != 'RGB':
+                    img_resized = img_resized.convert('RGB')
+                # Save resized image to temp location
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_file:
+                    temp_file_path = tmp_file.name
+                    img_resized.save(temp_file_path, 'JPEG', quality=95)
+                    image_path = temp_file_path
+                    width, height = new_width, new_height  # Update dimensions for logging
+        
+        # Warn if file is very large (base64 increases size by ~33%)
+        if file_size_mb > 15:
+            if q:
+                q.put(("log", f"⚠️  Warning: Image {os.path.basename(image_path)} is large ({file_size_mb:.2f} MB), may cause API errors"))
+        
+        # Use validated encoding to ensure image is properly formatted and decodable
+        # This re-encodes through PIL to ensure the image buffer is valid
+        base64_image = encode_image_to_base64_validated(image_path)
+        base64_size_mb = len(base64_image) / (1024 * 1024)
+        
+        # Check base64 size (Grok API typically has ~20MB limit for base64 images)
+        if base64_size_mb > 20:
+            raise ValueError(f"Image too large after encoding ({base64_size_mb:.2f} MB). Grok API limit is ~20MB. Try resizing the image.")
+        
+        # Always use JPEG MIME type since we re-encode to JPEG for validation
+        mime_type = 'image/jpeg'
         
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -193,10 +285,28 @@ def caption_image_grok(image_path, api_key, endpoint, model, caption_prompt, max
         
         response = requests.post(endpoint, headers=headers, json=payload, timeout=60)
         
-        # Better error handling
+        # Better error handling with detailed error messages
         if response.status_code == 404:
             error_detail = response.text
             raise ValueError(f"Grok API endpoint not found (404). Check endpoint: {endpoint}. Response: {error_detail[:200]}")
+        
+        if response.status_code == 400:
+            # Try to parse JSON error response for better error messages
+            try:
+                error_json = response.json()
+                error_detail = error_json.get('error', {}).get('message', response.text)
+                if 'code' in error_json.get('error', {}):
+                    error_code = error_json['error']['code']
+                    error_detail = f"[{error_code}] {error_detail}"
+            except:
+                error_detail = response.text[:500]  # Show more of the error
+            
+            error_msg = f"HTTP 400 Bad Request: {error_detail}"
+            if q:
+                q.put(("log", f"❌ Error captioning {os.path.basename(original_image_path)}: {error_msg}"))
+                if width and height:
+                    q.put(("log", f"   Image size: {file_size_mb:.2f} MB, Base64 size: {base64_size_mb:.2f} MB, Dimensions: {width}x{height}"))
+            raise ValueError(error_msg)
         
         response.raise_for_status()
         
@@ -213,14 +323,28 @@ def caption_image_grok(image_path, api_key, endpoint, model, caption_prompt, max
         return caption.strip()
         
     except requests.exceptions.HTTPError as e:
-        error_msg = f"HTTP error: {e.response.status_code} - {e.response.text[:200] if e.response else str(e)}"
+        # Handle other HTTP errors
+        try:
+            error_json = e.response.json()
+            error_detail = error_json.get('error', {}).get('message', e.response.text)
+        except:
+            error_detail = e.response.text[:500] if e.response else str(e)
+        
+        error_msg = f"HTTP error: {e.response.status_code if e.response else 'Unknown'} - {error_detail}"
         if q:
-            q.put(("log", f"Error captioning {os.path.basename(image_path)}: {error_msg}"))
+            q.put(("log", f"Error captioning {os.path.basename(original_image_path)}: {error_msg}"))
         raise ValueError(error_msg)
     except Exception as e:
         if q:
-            q.put(("log", f"Error captioning {os.path.basename(image_path)}: {str(e)}"))
+            q.put(("log", f"Error captioning {os.path.basename(original_image_path)}: {str(e)}"))
         raise
+    finally:
+        # Clean up temp file if we created one
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
 
 
 def caption_image_openrouter(image_path, api_key, endpoint, model, caption_prompt, max_tokens, temperature, q=None):
@@ -627,13 +751,19 @@ def pack_work_directory_to_parquet(work_dir, output_file, q=None):
         # Sort by index to maintain order
         sorted_items = sorted(index.items(), key=lambda x: x[1].get("index", 0))
         
-        texts = []
-        images = []
-        
         images_dir = os.path.join(work_dir, "images")
         
         if q:
             q.put(("log", f"📦 Packing {len(sorted_items)} items to Parquet..."))
+            q.put(("log", f"   Loading images from disk and creating dataset structure..."))
+        
+        # Load images in batches to balance memory usage and performance
+        # Note: Images are already processed/captioned - we're just loading them from disk
+        # to create the HuggingFace Dataset structure (needs PIL Image objects, not file paths)
+        BATCH_SIZE = 1000
+        all_datasets = []
+        loaded_count = 0
+        batch_list = []
         
         for original_path, entry in sorted_items:
             caption = entry.get("caption", "")
@@ -643,43 +773,53 @@ def pack_work_directory_to_parquet(work_dir, output_file, q=None):
                 continue
             
             if not os.path.exists(saved_image_path):
-                if q:
-                    q.put(("log", f"⚠️  Warning: Image not found: {saved_image_path}"))
                 continue
             
             try:
-                # Load image
+                # Load image from disk (images are already processed, just need to load for dataset creation)
                 with Image.open(saved_image_path) as img:
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
                     img_copy = img.copy()
-                images.append(img_copy)
-                texts.append(caption)
+                
+                batch_list.append({
+                    "text": caption,
+                    "image": img_copy
+                })
+                loaded_count += 1
+                
+                # Create dataset batch when it reaches BATCH_SIZE
+                if len(batch_list) >= BATCH_SIZE:
+                    batch_dataset = Dataset.from_list(batch_list)
+                    all_datasets.append(batch_dataset)
+                    batch_list = []  # Clear for next batch
+                    
+                    if q:
+                        q.put(("log", f"   Loaded {loaded_count}/{len(sorted_items)} images into dataset..."))
+                        
             except Exception as e:
-                if q:
-                    q.put(("log", f"⚠️  Warning: Could not load image {saved_image_path}: {str(e)}"))
+                if q and loaded_count % 1000 == 0:  # Only log occasionally
+                    q.put(("log", f"⚠️  Warning: Could not load image {os.path.basename(saved_image_path)}: {str(e)}"))
                 continue
         
-        if len(texts) == 0 or len(images) == 0:
+        # Create dataset from remaining items in the last batch
+        if batch_list:
+            batch_dataset = Dataset.from_list(batch_list)
+            all_datasets.append(batch_dataset)
+        
+        if len(all_datasets) == 0:
             if q:
                 q.put(("log", "⚠️  No valid data to pack"))
             return False
         
-        # Ensure arrays match
-        min_length = min(len(texts), len(images))
-        if len(texts) != len(images):
-            if q:
-                q.put(("log", f"⚠️  Warning: Mismatch between texts ({len(texts)}) and images ({len(images)}), using {min_length} items"))
-            texts = texts[:min_length]
-            images = images[:min_length]
-        
-        # Create dataset
-        dataset_dict = {
-            "text": texts,
-            "image": images
-        }
-        
-        dataset = Dataset.from_dict(dataset_dict)
+        # Concatenate all batches into a single dataset
+        if q:
+            q.put(("log", f"   Combining {len(all_datasets)} batches..."))
+        if len(all_datasets) == 1:
+            dataset = all_datasets[0]
+        else:
+            from datasets import concatenate_datasets
+            dataset = concatenate_datasets(all_datasets)
         
         # Ensure output file has .parquet extension
         if not output_file.endswith('.parquet'):
@@ -688,10 +828,14 @@ def pack_work_directory_to_parquet(work_dir, output_file, q=None):
                 output_file += '.parquet'
         
         # Save as Parquet
+        if q:
+            q.put(("log", f"   Saving to Parquet file..."))
         dataset.to_parquet(output_file)
         
+        # Get the actual count from the dataset
+        dataset_size = len(dataset)
         if q:
-            q.put(("log", f"✅ Packed {len(texts)} examples to {output_file}"))
+            q.put(("log", f"✅ Packed {dataset_size} examples to {output_file}"))
         
         return True
         
@@ -815,6 +959,10 @@ def image_captioning_worker(
         processed = len(processed_paths)  # Start count from existing
         failed = 0
         
+        # Track skipped images for batched logging
+        skipped_start_idx = None
+        skipped_count = 0
+        
         # Process images, skipping already processed ones
         for idx, image_path in enumerate(image_paths):
             if stop_flag and stop_flag.is_set():
@@ -825,9 +973,22 @@ def image_captioning_worker(
             
             # Skip if already processed (check by path, not index)
             if image_path in processed_paths:
-                if q:
-                    q.put(("log", f"⏭️  Skipping image {idx+1}/{total_images} (already processed): {os.path.basename(image_path)}"))
+                if skipped_start_idx is None:
+                    skipped_start_idx = idx + 1
+                skipped_count += 1
                 continue
+            
+            # Log skipped range if we have any
+            if skipped_count > 0 and skipped_start_idx is not None:
+                if q:
+                    if skipped_count == 1:
+                        # Single skipped image
+                        q.put(("log", f"⏭️  Skipped image {skipped_start_idx}/{total_images} (already processed)"))
+                    else:
+                        # Range of skipped images
+                        q.put(("log", f"⏭️  Skipped images {skipped_start_idx}-{skipped_start_idx + skipped_count - 1}/{total_images} ({skipped_count} images, already processed)"))
+                skipped_start_idx = None
+                skipped_count = 0
             
             try:
                 if q:
@@ -880,6 +1041,14 @@ def image_captioning_worker(
                 if q:
                     q.put(("log", f"❌ Failed to caption {os.path.basename(image_path)}: {str(e)}"))
                 continue
+        
+        # Log any remaining skipped images at the end
+        if skipped_count > 0 and skipped_start_idx is not None:
+            if q:
+                if skipped_count == 1:
+                    q.put(("log", f"⏭️  Skipped image {skipped_start_idx}/{total_images} (already processed)"))
+                else:
+                    q.put(("log", f"⏭️  Skipped images {skipped_start_idx}-{skipped_start_idx + skipped_count - 1}/{total_images} ({skipped_count} images, already processed)"))
         
         # Check if we have any processed images
         if processed == 0:
@@ -1066,3 +1235,433 @@ def image_captioning_worker(
             except Exception as e:
                 if q:
                     q.put(("log", f"Warning: Could not cleanup temp directory: {str(e)}"))
+
+
+# Civitai image downloader constants and helpers
+CIVITAI_API_BASE = "https://civitai.com/api/v1/images"
+CIVITAI_TAG_RE = re.compile(r"<.*?>", re.DOTALL)
+CIVITAI_CONNECT_TIMEOUT = 10
+CIVITAI_READ_TIMEOUT = 60
+CIVITAI_TIMEOUT = (CIVITAI_CONNECT_TIMEOUT, CIVITAI_READ_TIMEOUT)
+CIVITAI_API_LIMIT = 200
+CIVITAI_MAX_EMPTY_BATCHES = 40
+CIVITAI_API_WATCHDOG_SECONDS = 90
+
+
+def make_civitai_session():
+    """Create a requests session with retry logic for Civitai API"""
+    session = requests.Session()
+    retry = Retry(
+        total=6,
+        backoff_factor=1.0,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
+    session.mount("https://", adapter)
+    return session
+
+
+def sleep_backoff(i: int, base: float = 1.0, cap: float = 20.0):
+    """Sleep with exponential backoff"""
+    time.sleep(min(base * (2**i), cap))
+
+
+def get_with_watchdog(session, url, *, headers, params, timeout, watchdog_seconds=90, q=None):
+    """
+    Runs requests.get in a background thread and enforces a hard wall-clock timeout.
+    Windows-safe. If the request hangs, we bail instead of freezing forever.
+    """
+    result = {"resp": None, "err": None}
+
+    def _run():
+        try:
+            result["resp"] = session.get(url, headers=headers, params=params, timeout=timeout)
+        except Exception as e:
+            result["err"] = e
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(watchdog_seconds)
+
+    if t.is_alive():
+        error_msg = f"Hard timeout: request exceeded {watchdog_seconds}s"
+        if q:
+            q.put(("log", f"❌ {error_msg}"))
+        raise TimeoutError(error_msg)
+
+    if result["err"] is not None:
+        raise result["err"]
+
+    return result["resp"]
+
+
+def extract_prompt_text(meta: dict) -> str:
+    """Extract prompt text from Civitai image metadata"""
+    if not isinstance(meta, dict):
+        return ""
+    for k in (
+        "prompt",
+        "Prompt",
+        "positivePrompt",
+        "positive_prompt",
+        "positive",
+        "Positive prompt",
+        "caption",
+        "description",
+    ):
+        v = meta.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    try:
+        return json.dumps(meta, ensure_ascii=False)
+    except Exception:
+        return ""
+
+
+def normalize_text(s: str) -> str:
+    """Normalize text for matching"""
+    s = CIVITAI_TAG_RE.sub(" ", s)
+    return s.lower()
+
+
+def text_pass(text: str, include_terms: list[str], exclude_terms: list[str]) -> bool:
+    """
+    INCLUDE: OR semantics (if include_terms is non-empty, at least one must match)
+    EXCLUDE: OR semantics (if any exclude term matches, reject)
+    """
+    t = normalize_text(text)
+
+    # INCLUDE: OR logic
+    if include_terms and not any(x in t for x in include_terms):
+        return False
+
+    # EXCLUDE: OR logic
+    for x in exclude_terms:
+        if x in t:
+            return False
+
+    return True
+
+
+def guess_ext(url):
+    """Guess file extension from URL"""
+    ext = os.path.splitext(urlparse(url).path)[1].lower()
+    return ext if ext in (".png", ".jpg", ".jpeg", ".webp") else ".jpg"
+
+
+def download_bytes(session: requests.Session, url: str, q=None) -> bytes | None:
+    """Download image bytes with retry logic"""
+    for i in range(5):
+        try:
+            r = session.get(url, timeout=CIVITAI_TIMEOUT)
+        except requests.RequestException as e:
+            if i == 4:
+                if q:
+                    q.put(("log", f"❌ Failed to download {url}: {e}"))
+                return None
+            sleep_backoff(i)
+            continue
+
+        if r.status_code < 400:
+            return r.content
+
+        if r.status_code in (429, 500, 502, 503, 504):
+            if i == 4:
+                if q:
+                    q.put(("log", f"❌ Failed to download {url}: HTTP {r.status_code}"))
+                return None
+            sleep_backoff(i)
+            continue
+
+        return None
+    return None
+
+
+def save_image_and_text(raw: bytes, url: str, image_id: int, out_dir: str, prompt_text: str):
+    """Save image and text file to output directory"""
+    ext = guess_ext(url)
+    img_path = os.path.join(out_dir, f"{image_id}{ext}")
+    with open(img_path, "wb") as f:
+        f.write(raw)
+
+    txt_path = os.path.join(out_dir, f"{image_id}.txt")
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(prompt_text)
+
+
+def load_downloaded_urls(log_path: str) -> set:
+    """Load set of already downloaded URLs from log file"""
+    if not os.path.exists(log_path):
+        return set()
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            return {l.strip() for l in f if l.strip()}
+    except Exception:
+        return set()
+
+
+def mark_downloaded(log_path: str, url: str):
+    """Mark URL as downloaded in log file"""
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(url + "\n")
+    except Exception:
+        pass
+
+
+def civitai_image_download_worker(
+    api_key: str,
+    output_dir: str,
+    max_images: int,
+    min_width: int,
+    min_height: int,
+    nsfw_level: str | None,
+    include_terms: list[str],
+    exclude_terms: list[str],
+    sort_mode: str,
+    save_meta_jsonl: bool,
+    stop_flag: threading.Event,
+    q=None,
+):
+    """
+    Worker function for downloading images from Civitai API
+    
+    Args:
+        api_key: Civitai API key
+        output_dir: Directory to save downloaded images
+        max_images: Maximum number of images to download
+        min_width: Minimum image width
+        min_height: Minimum image height
+        nsfw_level: NSFW filter level (None, "None", "Soft", "Mature", "X")
+        include_terms: List of terms that must be present (OR logic)
+        exclude_terms: List of terms that must not be present (OR logic)
+        sort_mode: Sort mode ("Newest", "Most Reactions", "Most Comments")
+        save_meta_jsonl: Whether to save metadata JSONL file
+        stop_flag: Threading event to signal stop
+        q: Queue for GUI communication
+    """
+    if q:
+        q.put(("log", "=== Civitai Image Downloader started ==="))
+        q.put(("log", f"Output directory: {output_dir}"))
+        q.put(("log", f"Max images: {max_images}"))
+    
+    try:
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Setup log file for tracking downloaded URLs
+        log_path = os.path.join(output_dir, "downloaded_urls.log")
+        downloaded = load_downloaded_urls(log_path)
+        
+        if q:
+            q.put(("log", f"Found {len(downloaded)} previously downloaded images"))
+        
+        # Setup metadata JSONL file if requested
+        meta_jsonl_path = None
+        if save_meta_jsonl:
+            meta_jsonl_path = os.path.join(output_dir, "image_metadata.jsonl")
+            if q:
+                q.put(("log", f"Metadata JSONL: {meta_jsonl_path}"))
+        
+        # Setup HTTP session
+        session = make_civitai_session()
+        headers = {"Connection": "close"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        
+        # Setup API parameters
+        base_params = {
+            "limit": CIVITAI_API_LIMIT,
+            "sort": sort_mode,
+            "period": "AllTime",
+            "withMeta": "true",
+            "include": ["metaSelect", "tagIds", "profilePictures"],
+        }
+        
+        if nsfw_level is not None:
+            base_params["nsfw"] = nsfw_level
+        
+        has_search_terms = bool(include_terms or exclude_terms)
+        use_cursor = (sort_mode == "Newest")
+        cursor = None
+        page = 1
+        saved = 0
+        empty_batches = 0
+        
+        if q:
+            q.put(("log", f"Starting download (limit={CIVITAI_API_LIMIT}, sort={sort_mode}, paging={'cursor' if use_cursor else 'page'})"))
+        
+        while saved < max_images:
+            if stop_flag.is_set():
+                if q:
+                    q.put(("log", "Download stopped by user"))
+                    q.put(("stopped", "Stopped by user"))
+                break
+            
+            params = dict(base_params)
+            
+            if use_cursor:
+                if cursor:
+                    params["cursor"] = cursor
+            else:
+                params["page"] = page
+            
+            try:
+                if q:
+                    q.put(("log", f"Requesting {'cursor' if use_cursor else 'page'}={cursor if use_cursor else page}..."))
+                
+                r = get_with_watchdog(
+                    session,
+                    CIVITAI_API_BASE,
+                    headers=headers,
+                    params=params,
+                    timeout=CIVITAI_TIMEOUT,
+                    watchdog_seconds=CIVITAI_API_WATCHDOG_SECONDS,
+                    q=q,
+                )
+                
+                if q:
+                    q.put(("log", f"Response {r.status_code} bytes={len(r.content)}"))
+                    
+            except TimeoutError as e:
+                if q:
+                    q.put(("log", f"⚠️  {str(e)}"))
+                sleep_backoff(0)
+                continue
+            except requests.RequestException as e:
+                if q:
+                    q.put(("log", f"⚠️  RequestException: {e}"))
+                sleep_backoff(0)
+                continue
+            
+            if r.status_code >= 400:
+                if r.status_code in (429, 500, 502, 503, 504):
+                    sleep_backoff(0)
+                    continue
+                error_msg = f"Request failed: {r.status_code}"
+                if q:
+                    q.put(("log", f"❌ {error_msg}"))
+                    try:
+                        q.put(("log", f"Response: {r.text[:500]}"))
+                    except Exception:
+                        pass
+                break
+            
+            data = r.json() if r.content else {}
+            items = data.get("items") or []
+            
+            md = data.get("metadata") or {}
+            if use_cursor:
+                cursor = md.get("nextCursor")
+            else:
+                page += 1
+            
+            if not items:
+                if use_cursor and cursor:
+                    continue
+                break
+            
+            matched = []
+            for img in items:
+                if stop_flag.is_set():
+                    break
+                
+                url = img.get("url")
+                if not url:
+                    continue
+                
+                if url in downloaded:
+                    continue
+                
+                if img.get("width", 0) < min_width or img.get("height", 0) < min_height:
+                    continue
+                
+                prompt_text = extract_prompt_text(img.get("meta") or {})
+                if has_search_terms and not text_pass(prompt_text, include_terms, exclude_terms):
+                    continue
+                
+                matched.append((img, prompt_text))
+            
+            if not matched:
+                empty_batches += 1
+                if q:
+                    q.put(("log", f"Matched 0 in this batch ({empty_batches}/{CIVITAI_MAX_EMPTY_BATCHES}). items={len(items)}"))
+                if empty_batches >= CIVITAI_MAX_EMPTY_BATCHES:
+                    if q:
+                        q.put(("log", "⚠️  Stopping: too many empty batches."))
+                    break
+                continue
+            else:
+                empty_batches = 0
+            
+            remaining = max_images - saved
+            take = min(len(matched), remaining)
+            
+            for img, prompt_text in matched[:take]:
+                if stop_flag.is_set() or saved >= max_images:
+                    break
+                
+                url = img["url"]
+                image_id = img["id"]
+                
+                if q:
+                    q.put(("log", f"Downloading image {saved+1}/{max_images}: {image_id}"))
+                
+                raw = download_bytes(session, url, q)
+                if not raw:
+                    continue
+                
+                save_image_and_text(raw, url, image_id, output_dir, prompt_text)
+                
+                mark_downloaded(log_path, url)
+                downloaded.add(url)
+                saved += 1
+                
+                if save_meta_jsonl and meta_jsonl_path:
+                    try:
+                        meta_obj = {
+                            "ts": time.time(),
+                            "id": img.get("id"),
+                            "url": img.get("url"),
+                            "width": img.get("width"),
+                            "height": img.get("height"),
+                            "nsfw": img.get("nsfw"),
+                            "nsfwLevel": img.get("nsfwLevel"),
+                            "stats": img.get("stats"),
+                            "meta": img.get("meta"),
+                            "username": img.get("username"),
+                            "createdAt": img.get("createdAt"),
+                            "postId": img.get("postId"),
+                            "modelVersionIds": img.get("modelVersionIds"),
+                        }
+                        line = json.dumps(meta_obj, ensure_ascii=False)
+                        with open(meta_jsonl_path, "a", encoding="utf-8") as f:
+                            f.write(line + "\n")
+                    except Exception:
+                        pass
+                
+                if saved % 25 == 0:
+                    if q:
+                        q.put(("log", f"✅ Saved: {saved}/{max_images}"))
+            
+            if q:
+                q.put(("log", f"Batch done | matched={len(matched)} | saved={saved}/{max_images}"))
+        
+        success_msg = f"✅ Download complete! Downloaded {saved} images to {output_dir}"
+        if q:
+            q.put(("log", success_msg))
+            q.put(("success", success_msg))
+            q.put(("stopped", "Completed"))
+            
+    except Exception as e:
+        error_msg = f"Civitai download failed: {str(e)}"
+        if q:
+            q.put(("error", error_msg))
+            q.put(("stopped", "Error occurred"))
+            import traceback
+            q.put(("log", traceback.format_exc()))
+        import traceback
+        print(f"CIVITAI_DOWNLOAD_WORKER_ERROR: {error_msg}")
+        print(traceback.format_exc())

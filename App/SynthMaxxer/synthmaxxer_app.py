@@ -586,9 +586,16 @@ class MainWindow(QMainWindow):
         self.mm_stop_button = QPushButton("Stop")
         self.mm_stop_button.clicked.connect(self.stop_image_captioning)
         self.mm_stop_button.setEnabled(False)
+        self.civitai_start_button = QPushButton("Start Civitai Download")
+        self.civitai_start_button.clicked.connect(self.start_civitai_download)
+        self.civitai_stop_button = QPushButton("Stop Civitai")
+        self.civitai_stop_button.clicked.connect(self.stop_civitai_download)
+        self.civitai_stop_button.setEnabled(False)
         mm_header.addStretch()
         mm_header.addWidget(self.mm_start_button)
         mm_header.addWidget(self.mm_stop_button)
+        mm_header.addWidget(self.civitai_start_button)
+        mm_header.addWidget(self.civitai_stop_button)
         multimodal_layout.addLayout(mm_header)
         
         mm_split = QHBoxLayout()
@@ -999,6 +1006,97 @@ class MainWindow(QMainWindow):
         max_captions_row.addStretch()
         mm_caption_layout.addRow(QLabel("Max Captions:"), self._wrap_row(max_captions_row))
         left_panel.addWidget(mm_caption_group)
+        
+        # Civitai Image Downloader
+        civitai_group = QGroupBox("🎨 Civitai Image Downloader")
+        civitai_layout = QFormLayout()
+        civitai_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        civitai_layout.setHorizontalSpacing(10)
+        civitai_layout.setVerticalSpacing(6)
+        civitai_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        civitai_group.setLayout(civitai_layout)
+        
+        civitai_api_row = QHBoxLayout()
+        self.civitai_api_key_edit = QLineEdit()
+        self.civitai_api_key_edit.setEchoMode(QLineEdit.Password)
+        self.civitai_api_key_edit.setPlaceholderText("Your Civitai API key")
+        self.civitai_show_key_check = QCheckBox("Show")
+        self.civitai_show_key_check.toggled.connect(self.toggle_civitai_api_visibility)
+        civitai_api_row.addWidget(self.civitai_api_key_edit)
+        civitai_api_row.addWidget(self.civitai_show_key_check)
+        civitai_layout.addRow(QLabel("API Key:"), self._wrap_row(civitai_api_row))
+        
+        # Get repo root for default output directory
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        default_civitai_output = os.path.join(repo_root, "Outputs", "images")
+        
+        civitai_output_row = QHBoxLayout()
+        self.civitai_output_edit = QLineEdit()
+        self.civitai_output_edit.setPlaceholderText("Output folder for downloaded images")
+        self.civitai_output_edit.setText(default_civitai_output)
+        civitai_output_browse_btn = QPushButton("Browse")
+        civitai_output_browse_btn.setFixedWidth(80)
+        civitai_output_browse_btn.clicked.connect(self.browse_civitai_output)
+        civitai_output_row.addWidget(self.civitai_output_edit)
+        civitai_output_row.addWidget(civitai_output_browse_btn)
+        civitai_layout.addRow(QLabel("Output Folder:"), self._wrap_row(civitai_output_row))
+        
+        self.civitai_max_images_spin = QSpinBox()
+        self.civitai_max_images_spin.setRange(1, 100000)
+        self.civitai_max_images_spin.setValue(100)
+        self.civitai_max_images_spin.setMaximumWidth(100)
+        self.civitai_max_images_spin.setToolTip("Maximum number of images to download")
+        max_images_row = QHBoxLayout()
+        max_images_row.addWidget(self.civitai_max_images_spin)
+        max_images_row.addStretch()
+        civitai_layout.addRow(QLabel("Max Images:"), self._wrap_row(max_images_row))
+        
+        self.civitai_min_width_spin = QSpinBox()
+        self.civitai_min_width_spin.setRange(0, 10000)
+        self.civitai_min_width_spin.setValue(0)
+        self.civitai_min_width_spin.setMaximumWidth(100)
+        self.civitai_min_width_spin.setToolTip("Minimum image width (0 = no filter)")
+        min_width_row = QHBoxLayout()
+        min_width_row.addWidget(self.civitai_min_width_spin)
+        min_width_row.addStretch()
+        civitai_layout.addRow(QLabel("Min Width:"), self._wrap_row(min_width_row))
+        
+        self.civitai_min_height_spin = QSpinBox()
+        self.civitai_min_height_spin.setRange(0, 10000)
+        self.civitai_min_height_spin.setValue(0)
+        self.civitai_min_height_spin.setMaximumWidth(100)
+        self.civitai_min_height_spin.setToolTip("Minimum image height (0 = no filter)")
+        min_height_row = QHBoxLayout()
+        min_height_row.addWidget(self.civitai_min_height_spin)
+        min_height_row.addStretch()
+        civitai_layout.addRow(QLabel("Min Height:"), self._wrap_row(min_height_row))
+        
+        self.civitai_nsfw_combo = QComboBox()
+        self.civitai_nsfw_combo.addItems(["Any (no filter)", "None (SFW only)", "Soft", "Mature", "X (explicit)"])
+        self.civitai_nsfw_combo.setToolTip("NSFW filter level")
+        civitai_layout.addRow(QLabel("NSFW Level:"), self.civitai_nsfw_combo)
+        
+        self.civitai_sort_combo = QComboBox()
+        self.civitai_sort_combo.addItems(["Newest", "Most Reactions", "Most Comments"])
+        self.civitai_sort_combo.setToolTip("Sort mode for image selection")
+        civitai_layout.addRow(QLabel("Sort Mode:"), self.civitai_sort_combo)
+        
+        self.civitai_include_edit = QLineEdit()
+        self.civitai_include_edit.setPlaceholderText("Comma-separated terms (ANY match passes)")
+        self.civitai_include_edit.setToolTip("Include terms: comma-separated list. At least one term must match (OR logic)")
+        civitai_layout.addRow(QLabel("Include Terms:"), self.civitai_include_edit)
+        
+        self.civitai_exclude_edit = QLineEdit()
+        self.civitai_exclude_edit.setPlaceholderText("Comma-separated terms (ANY match blocks)")
+        self.civitai_exclude_edit.setToolTip("Exclude terms: comma-separated list. Any matching term will block the image (OR logic)")
+        civitai_layout.addRow(QLabel("Exclude Terms:"), self.civitai_exclude_edit)
+        
+        self.civitai_save_meta_check = QCheckBox("Save metadata JSONL")
+        self.civitai_save_meta_check.setChecked(True)
+        self.civitai_save_meta_check.setToolTip("Save metadata JSONL file with image information")
+        civitai_layout.addRow("", self.civitai_save_meta_check)
+        
+        left_panel.addWidget(civitai_group)
         left_panel.addStretch(1)
 
         # Right panel - Logs
@@ -1261,6 +1359,55 @@ class MainWindow(QMainWindow):
                 self._toggle_hf_dataset_mode(use_hf)
             if cfg.get("mm_hf_token"):
                 self.mm_hf_token_edit.setText(cfg.get("mm_hf_token", ""))
+        
+        # Load Civitai config
+        if hasattr(self, 'civitai_api_key_edit'):
+            # Load API key from api_keys dict with "Civitai" key
+            if cfg.get("api_keys"):
+                api_keys = cfg.get("api_keys", {})
+                civitai_api_key = api_keys.get("Civitai", "")
+                if civitai_api_key:
+                    self.civitai_api_key_edit.setText(civitai_api_key)
+            # Also check for legacy civitai_api_key
+            elif cfg.get("civitai_api_key"):
+                self.civitai_api_key_edit.setText(cfg.get("civitai_api_key", ""))
+            
+            if cfg.get("civitai_output_dir"):
+                saved_output = cfg.get("civitai_output_dir", "")
+                # Fix old paths
+                if "App\\outputs" in saved_output or "App/outputs" in saved_output:
+                    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                    outputs_dir = os.path.join(repo_root, "Outputs", "images")
+                    saved_output = outputs_dir
+                self.civitai_output_edit.setText(saved_output)
+            else:
+                # Set default
+                repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                default_output = os.path.join(repo_root, "Outputs", "images")
+                self.civitai_output_edit.setText(default_output)
+            
+            if "civitai_max_images" in cfg:
+                self.civitai_max_images_spin.setValue(int(cfg.get("civitai_max_images", 100)))
+            if "civitai_min_width" in cfg:
+                self.civitai_min_width_spin.setValue(int(cfg.get("civitai_min_width", 0)))
+            if "civitai_min_height" in cfg:
+                self.civitai_min_height_spin.setValue(int(cfg.get("civitai_min_height", 0)))
+            if cfg.get("civitai_nsfw_level"):
+                nsfw_level = cfg.get("civitai_nsfw_level", "Any (no filter)")
+                index = self.civitai_nsfw_combo.findText(nsfw_level)
+                if index >= 0:
+                    self.civitai_nsfw_combo.setCurrentIndex(index)
+            if cfg.get("civitai_sort_mode"):
+                sort_mode = cfg.get("civitai_sort_mode", "Newest")
+                index = self.civitai_sort_combo.findText(sort_mode)
+                if index >= 0:
+                    self.civitai_sort_combo.setCurrentIndex(index)
+            if cfg.get("civitai_include_terms"):
+                self.civitai_include_edit.setText(cfg.get("civitai_include_terms", ""))
+            if cfg.get("civitai_exclude_terms"):
+                self.civitai_exclude_edit.setText(cfg.get("civitai_exclude_terms", ""))
+            if "civitai_save_meta_jsonl" in cfg:
+                self.civitai_save_meta_check.setChecked(bool(cfg.get("civitai_save_meta_jsonl", True)))
 
     def _save_config(self):
         config_file = CONFIG_FILE
@@ -1349,6 +1496,24 @@ class MainWindow(QMainWindow):
                 mm_api_type = self.mm_api_type_combo.currentText() if hasattr(self, 'mm_api_type_combo') else "OpenAI Vision"
                 api_keys[mm_api_type] = mm_api_key
                 cfg["api_keys"] = api_keys
+        
+        # Save Civitai API key if it exists
+        if hasattr(self, 'civitai_api_key_edit'):
+            civitai_api_key = self.civitai_api_key_edit.text().strip()
+            if civitai_api_key:
+                api_keys["Civitai"] = civitai_api_key
+                cfg["api_keys"] = api_keys
+            # Save Civitai settings
+            cfg["civitai_output_dir"] = self.civitai_output_edit.text().strip() if hasattr(self, 'civitai_output_edit') else ""
+            cfg["civitai_max_images"] = self.civitai_max_images_spin.value() if hasattr(self, 'civitai_max_images_spin') else 100
+            cfg["civitai_min_width"] = self.civitai_min_width_spin.value() if hasattr(self, 'civitai_min_width_spin') else 0
+            cfg["civitai_min_height"] = self.civitai_min_height_spin.value() if hasattr(self, 'civitai_min_height_spin') else 0
+            cfg["civitai_nsfw_level"] = self.civitai_nsfw_combo.currentText() if hasattr(self, 'civitai_nsfw_combo') else "Any (no filter)"
+            cfg["civitai_sort_mode"] = self.civitai_sort_combo.currentText() if hasattr(self, 'civitai_sort_combo') else "Newest"
+            cfg["civitai_include_terms"] = self.civitai_include_edit.text().strip() if hasattr(self, 'civitai_include_edit') else ""
+            cfg["civitai_exclude_terms"] = self.civitai_exclude_edit.text().strip() if hasattr(self, 'civitai_exclude_edit') else ""
+            cfg["civitai_save_meta_jsonl"] = self.civitai_save_meta_check.isChecked() if hasattr(self, 'civitai_save_meta_check') else True
+        
         try:
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, indent=2, ensure_ascii=False)
@@ -1808,6 +1973,37 @@ class MainWindow(QMainWindow):
             except queue.Empty:
                 pass
         
+        # Check Civitai queue
+        if hasattr(self, 'civitai_queue') and self.civitai_queue:
+            try:
+                while True:
+                    msg_type, msg = self.civitai_queue.get_nowait()
+                    if msg_type == "log":
+                        self._append_mm_log(str(msg))
+                    elif msg_type == "success":
+                        self.setWindowTitle(f"{APP_TITLE} - Done")
+                        self.civitai_start_button.setEnabled(True)
+                        self.civitai_stop_button.setEnabled(False)
+                        self.timer.stop()
+                        self._append_mm_log(str(msg))
+                        self._show_info(str(msg))
+                    elif msg_type == "error":
+                        self.setWindowTitle(f"{APP_TITLE} - Error")
+                        self.civitai_start_button.setEnabled(True)
+                        self.civitai_stop_button.setEnabled(False)
+                        self.timer.stop()
+                        self._append_mm_log(str(msg))
+                        self._show_error(str(msg))
+                    elif msg_type == "stopped":
+                        self.civitai_start_button.setEnabled(True)
+                        self.civitai_stop_button.setEnabled(False)
+                        self.setWindowTitle(APP_TITLE)
+                        self.timer.stop()
+                        if msg:  # Only log if there's a message
+                            self._append_mm_log(str(msg))
+            except queue.Empty:
+                pass
+        
         # Always check proc_queue if it exists, even if main queue doesn't
         proc_queue_checked = False
         if hasattr(self, 'proc_queue') and self.proc_queue:
@@ -1949,6 +2145,33 @@ class MainWindow(QMainWindow):
             self.mm_api_key_edit.setEchoMode(QLineEdit.Normal)
         else:
             self.mm_api_key_edit.setEchoMode(QLineEdit.Password)
+    
+    def toggle_civitai_api_visibility(self, checked):
+        if checked:
+            self.civitai_api_key_edit.setEchoMode(QLineEdit.Normal)
+        else:
+            self.civitai_api_key_edit.setEchoMode(QLineEdit.Password)
+    
+    def browse_civitai_output(self):
+        """Browse for Civitai output directory"""
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        default_path = os.path.join(repo_root, "Outputs", "images")
+        if not os.path.exists(default_path):
+            os.makedirs(default_path, exist_ok=True)
+        
+        current_path = self.civitai_output_edit.text().strip()
+        if current_path and os.path.exists(current_path):
+            start_dir = current_path
+        else:
+            start_dir = default_path
+        
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select output folder for Civitai images",
+            start_dir,
+        )
+        if directory:
+            self.civitai_output_edit.setText(directory)
 
     def _update_mm_endpoint_placeholder(self, api_type):
         """Update endpoint placeholder based on selected API type"""
@@ -2741,6 +2964,127 @@ class MainWindow(QMainWindow):
             self.mm_stop_flag.set()
         self._append_mm_log("Stopping image captioning...")
         self.mm_stop_button.setEnabled(False)
+    
+    def start_civitai_download(self):
+        """Start Civitai image download"""
+        api_key = self.civitai_api_key_edit.text().strip()
+        output_dir = self.civitai_output_edit.text().strip()
+        max_images = self.civitai_max_images_spin.value()
+        min_width = self.civitai_min_width_spin.value()
+        min_height = self.civitai_min_height_spin.value()
+        nsfw_level_text = self.civitai_nsfw_combo.currentText()
+        sort_mode = self.civitai_sort_combo.currentText()
+        include_terms_text = self.civitai_include_edit.text().strip()
+        exclude_terms_text = self.civitai_exclude_edit.text().strip()
+        save_meta_jsonl = self.civitai_save_meta_check.isChecked()
+        
+        # Parse NSFW level
+        nsfw_mapping = {
+            "Any (no filter)": None,
+            "None (SFW only)": "None",
+            "Soft": "Soft",
+            "Mature": "Mature",
+            "X (explicit)": "X",
+        }
+        nsfw_level = nsfw_mapping.get(nsfw_level_text, None)
+        
+        # Parse include/exclude terms
+        include_terms = [x.strip().lower() for x in include_terms_text.split(",") if x.strip()]
+        exclude_terms = [x.strip().lower() for x in exclude_terms_text.split(",") if x.strip()]
+        
+        if not api_key:
+            self._show_error("Please enter your Civitai API key.")
+            return
+        
+        if not output_dir:
+            # Use default if empty
+            repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            output_dir = os.path.join(repo_root, "Outputs", "images")
+            self.civitai_output_edit.setText(output_dir)
+        
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Save config
+        self._save_config()
+        
+        # Reset UI state
+        self.mm_log_view.clear()
+        self._append_mm_log("=== Civitai Image Download started ===")
+        self.setWindowTitle(f"{APP_TITLE} - Civitai Downloading...")
+        self.civitai_start_button.setEnabled(False)
+        self.civitai_stop_button.setEnabled(True)
+        self.civitai_stop_flag = threading.Event()
+        
+        self.civitai_queue = queue.Queue()
+        
+        # Start worker thread
+        self.civitai_worker_thread = threading.Thread(
+            target=self._civitai_download_worker,
+            args=(
+                api_key,
+                output_dir,
+                max_images,
+                min_width,
+                min_height,
+                nsfw_level,
+                include_terms,
+                exclude_terms,
+                sort_mode,
+                save_meta_jsonl,
+                self.civitai_stop_flag,
+                self.civitai_queue,
+            ),
+            daemon=True,
+        )
+        self.civitai_worker_thread.start()
+        self.timer.start()
+    
+    def stop_civitai_download(self):
+        """Stop Civitai image download"""
+        if hasattr(self, 'civitai_stop_flag'):
+            self.civitai_stop_flag.set()
+        self._append_mm_log("Stopping Civitai download...")
+        self.civitai_stop_button.setEnabled(False)
+    
+    def _civitai_download_worker(
+        self,
+        api_key,
+        output_dir,
+        max_images,
+        min_width,
+        min_height,
+        nsfw_level,
+        include_terms,
+        exclude_terms,
+        sort_mode,
+        save_meta_jsonl,
+        stop_flag,
+        q,
+    ):
+        """Worker function for Civitai image download"""
+        try:
+            from App.SynthMaxxer.multimodal_worker import civitai_image_download_worker
+            civitai_image_download_worker(
+                api_key,
+                output_dir,
+                max_images,
+                min_width,
+                min_height,
+                nsfw_level,
+                include_terms,
+                exclude_terms,
+                sort_mode,
+                save_meta_jsonl,
+                stop_flag,
+                q,
+            )
+        except Exception as e:
+            import traceback
+            if q:
+                q.put(("error", f"Civitai download worker error: {str(e)}"))
+                q.put(("log", traceback.format_exc()))
+                q.put(("stopped", "Error occurred"))
 
     def _image_captioning_worker(
         self,

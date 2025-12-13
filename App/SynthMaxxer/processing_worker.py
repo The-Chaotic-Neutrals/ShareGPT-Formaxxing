@@ -93,6 +93,7 @@ def processing_worker(
     dynamic_names_mode=False,
     rewrite_cache=False,
     q=None,
+    stop_flag=None,
 ):
     # Immediate debug output
     print("PROCESSING_WORKER: Function called!")
@@ -293,6 +294,10 @@ def processing_worker(
                 try:
                     dataset = load_dataset("json", data_files=input_file, split="train", streaming=True)
                     for line_num, ex in enumerate(dataset, start=1):
+                        if stop_flag and stop_flag.is_set():
+                            if q:
+                                q.put(("stopped", "Processing stopped by user"))
+                            break
                         if end_line is not None and line_num > end_line:
                             break
                         progress_state["bytes"] += len(json.dumps(ex).encode("utf-8"))
@@ -337,6 +342,10 @@ def processing_worker(
 
                     with open(input_file, "r", encoding="utf-8") as infile:
                         for line_num, line in enumerate(infile, start=1):
+                            if stop_flag and stop_flag.is_set():
+                                if q:
+                                    q.put(("stopped", "Processing stopped by user"))
+                                break
                             if end_line is not None and line_num > end_line:
                                 break
                             try:
@@ -616,6 +625,10 @@ def processing_worker(
                             }
                             
                             for future in concurrent.futures.as_completed(futures):
+                                if stop_flag and stop_flag.is_set():
+                                    if q:
+                                        q.put(("stopped", "Generation stopped by user"))
+                                    break
                                 entry_idx = futures[future]
                                 try:
                                     new_entry, idx = future.result()

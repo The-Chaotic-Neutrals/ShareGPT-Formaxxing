@@ -46,6 +46,13 @@ if str(_parent_dir) not in sys.path:
 from App.SynthMaxxer.worker import worker
 from App.SynthMaxxer.processing_worker import processing_worker
 
+# Import tab modules
+from App.SynthMaxxer import synthmaxxer as synthmaxxer_module
+from App.SynthMaxxer import grokmaxxer as grokmaxxer_module
+from App.SynthMaxxer import captionmaxxer as captionmaxxer_module
+from App.SynthMaxxer import civitai as civitai_module
+from App.SynthMaxxer import huggingface as huggingface_module
+
 
 APP_TITLE = "SynthMaxxer"
 ICON_FILE = str(Path(__file__).parent.parent / "Assets" / "icon.ico")
@@ -53,12 +60,179 @@ CONFIG_FILE = str(Path(__file__).parent / "synthmaxxer_config.json")
 GLOBAL_HUMAN_CACHE_FILE = str(Path(__file__).parent / "global_human_cache.json")
 
 
+# ============================================================================
+# Reusable UI Components - Eliminate duplication between tabs
+# ============================================================================
+
+def create_api_config_group(
+    api_key_edit_name="api_key_edit",
+    endpoint_edit_name="endpoint_edit",
+    model_combo_name="model_combo",
+    api_type_combo_name="api_type_combo",
+    refresh_button_name="refresh_models_button",
+    show_key_check_name="show_key_check",
+    api_types=None,
+    default_endpoint_placeholder="https://api.example.com/v1/messages",
+    on_api_type_changed=None,
+    on_refresh_clicked=None,
+    on_toggle_visibility=None,
+    parent=None,
+    group_title="🔑 API Configuration"
+):
+    """
+    Create a reusable API Configuration group box to eliminate duplication.
+    
+    Returns a tuple: (group_box, widget_dict) where widget_dict contains all created widgets
+    """
+    if api_types is None:
+        api_types = [
+            "Anthropic Claude",
+            "OpenAI Official",
+            "OpenAI Chat Completions",
+            "OpenAI Text Completions",
+            "Grok (xAI)",
+            "Gemini (Google)",
+            "OpenRouter",
+            "DeepSeek"
+        ]
+    
+    api_group = QGroupBox(group_title)
+    api_layout = QFormLayout()
+    api_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)  # type: ignore
+    api_layout.setHorizontalSpacing(10)
+    api_layout.setVerticalSpacing(6)
+    api_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)  # type: ignore
+    api_group.setLayout(api_layout)
+    
+    widgets = {}
+    
+    # API Key row
+    api_row = QHBoxLayout()
+    api_key_edit = QLineEdit()
+    api_key_edit.setEchoMode(QLineEdit.Password)
+    api_key_edit.setPlaceholderText("Your API key")
+    widgets[api_key_edit_name] = api_key_edit
+    
+    show_key_check = QCheckBox("Show")
+    if on_toggle_visibility:
+        show_key_check.toggled.connect(on_toggle_visibility)
+    widgets[show_key_check_name] = show_key_check
+    
+    api_row.addWidget(api_key_edit)
+    api_row.addWidget(show_key_check)
+    api_layout.addRow(QLabel("API Key:"), _wrap_row_helper(api_row))
+    
+    # Endpoint
+    endpoint_edit = QLineEdit()
+    endpoint_edit.setPlaceholderText(default_endpoint_placeholder)
+    widgets[endpoint_edit_name] = endpoint_edit
+    api_layout.addRow(QLabel("API Endpoint:"), endpoint_edit)
+    
+    # Model row
+    model_row = QHBoxLayout()
+    model_combo = QComboBox()
+    model_combo.setEditable(True)
+    model_combo.setPlaceholderText("Select or enter model name")
+    model_combo.addItem("(Click Refresh to load models)")
+    widgets[model_combo_name] = model_combo
+    
+    refresh_models_button = QPushButton("Refresh")
+    refresh_models_button.setFixedWidth(80)
+    refresh_models_button.setToolTip("Refresh available models from API")
+    refresh_models_button.setEnabled(True)
+    if on_refresh_clicked:
+        refresh_models_button.clicked.connect(on_refresh_clicked)
+    widgets[refresh_button_name] = refresh_models_button
+    
+    model_row.addWidget(model_combo)
+    model_row.addWidget(refresh_models_button)
+    api_layout.addRow(QLabel("Model:"), _wrap_row_helper(model_row))
+    
+    # API Type
+    api_type_combo = QComboBox()
+    api_type_combo.addItems(api_types)
+    api_type_combo.setToolTip("Select the API format to use")
+    if on_api_type_changed:
+        api_type_combo.currentTextChanged.connect(on_api_type_changed)
+    widgets[api_type_combo_name] = api_type_combo
+    api_layout.addRow(QLabel("API Type:"), api_type_combo)
+    
+    return api_group, widgets
+
+
+def create_log_view(placeholder_text="Logs will appear here...", max_blocks=1000):
+    """
+    Create a reusable log view to eliminate duplication.
+    
+    Returns: (group_box, log_view)
+    """
+    progress_group = QGroupBox("Run Status")
+    progress_layout = QVBoxLayout()
+    progress_layout.setSpacing(6)
+    progress_group.setLayout(progress_layout)
+    
+    log_view = QPlainTextEdit()
+    log_view.setReadOnly(True)
+    log_view.setMaximumBlockCount(max_blocks)
+    log_view.setPlaceholderText(placeholder_text)
+    
+    progress_layout.addWidget(QLabel("Logs:"))
+    progress_layout.addWidget(log_view, stretch=1)
+    
+    return progress_group, log_view
+
+
+def create_file_browse_row(
+    line_edit_name,
+    placeholder_text="",
+    default_text="",
+    browse_button_text="Browse",
+    on_browse_clicked=None,
+    widgets_dict=None
+):
+    """
+    Create a reusable file/folder browse row to eliminate duplication.
+    
+    Returns: (row_layout, widgets_dict) where widgets_dict contains line_edit and browse_button
+    """
+    if widgets_dict is None:
+        widgets_dict = {}
+    
+    row = QHBoxLayout()
+    line_edit = QLineEdit()
+    if placeholder_text:
+        line_edit.setPlaceholderText(placeholder_text)
+    if default_text:
+        line_edit.setText(default_text)
+    widgets_dict[line_edit_name] = line_edit
+    
+    browse_btn = QPushButton(browse_button_text)
+    browse_btn.setFixedWidth(80)
+    if on_browse_clicked:
+        browse_btn.clicked.connect(on_browse_clicked)
+    widgets_dict[f"{line_edit_name}_browse"] = browse_btn
+    
+    row.addWidget(line_edit)
+    row.addWidget(browse_btn)
+    
+    return row, widgets_dict
+
+
+def _wrap_row_helper(layout):
+    """Helper to wrap a layout in a widget with proper size policy"""
+    container = QWidget()
+    container.setLayout(layout)
+    sp = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+    container.setSizePolicy(sp)
+    return container
+
+
 class ModelFetcher(QObject):
     """Helper class to emit signals from background thread"""
     models_ready = pyqtSignal(list)
 
 class MultimodalModelFetcher(QObject):
-    """Helper class to emit signals from background thread for multimodal tab"""
+    """Helper class to emit signals from background thread for CaptionMaxxer tab"""
     models_ready = pyqtSignal(list)
 
 class MainWindow(QMainWindow):
@@ -255,547 +429,119 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         root_layout.addWidget(self.tabs, stretch=1)
 
-        # Generation tab
-        generation_tab = QWidget()
-        generation_layout = QVBoxLayout()
-        generation_layout.setContentsMargins(0, 0, 0, 0)
-        generation_tab.setLayout(generation_layout)
+        # API Configuration tab (first tab - central API management)
+        self._build_api_config_tab()
         
-        gen_header = QHBoxLayout()
-        self.start_button = QPushButton("Start Generation")
-        self.start_button.clicked.connect(self.start_generation)
-        self.stop_button = QPushButton("Stop")
-        self.stop_button.clicked.connect(self.stop_generation)
-        self.stop_button.setEnabled(False)
-        gen_header.addStretch()
-        gen_header.addWidget(self.start_button)
-        gen_header.addWidget(self.stop_button)
-        generation_layout.addLayout(gen_header)
-
-        main_split = QHBoxLayout()
-        main_split.setSpacing(14)
-        generation_layout.addLayout(main_split, stretch=1)
-
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        left_scroll.setFrameShape(QFrame.NoFrame)
-
-        left_container = QWidget()
-        left_panel = QVBoxLayout()
-        left_panel.setSpacing(10)
-        left_container.setLayout(left_panel)
-        left_scroll.setWidget(left_container)
-
-        main_split.addWidget(left_scroll, stretch=3)
-
-        right_container = QWidget()
-        right_panel = QVBoxLayout()
-        right_panel.setSpacing(10)
-        right_container.setLayout(right_panel)
-
-        main_split.addWidget(right_container, stretch=4)
-
-        # 1. API Configuration
-        api_group = QGroupBox("🔑 API Configuration")
-        api_layout = QFormLayout()
-        api_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        api_layout.setHorizontalSpacing(10)
-        api_layout.setVerticalSpacing(6)
-        api_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        api_group.setLayout(api_layout)
-
-        api_row = QHBoxLayout()
-        self.api_key_edit = QLineEdit()
-        self.api_key_edit.setEchoMode(QLineEdit.Password)
-        self.api_key_edit.setPlaceholderText("Your API key")
-        self.show_key_check = QCheckBox("Show")
-        self.show_key_check.toggled.connect(self.toggle_api_visibility)
-        api_row.addWidget(self.api_key_edit)
-        api_row.addWidget(self.show_key_check)
-        api_layout.addRow(QLabel("API Key:"), self._wrap_row(api_row))
-
-        self.endpoint_edit = QLineEdit()
-        self.endpoint_edit.setPlaceholderText("https://api.example.com/v1/messages (or /v1/chat/completions or /v1/completions)")
-        api_layout.addRow(QLabel("API Endpoint:"), self.endpoint_edit)
-
-        model_row = QHBoxLayout()
-        self.model_combo = QComboBox()
-        self.model_combo.setEditable(True)  # Allow custom model names
-        self.model_combo.setPlaceholderText("Select or enter model name")
-        self.model_combo.addItem("(Click Refresh to load models)")
-        self.refresh_models_button = QPushButton("Refresh")
-        self.refresh_models_button.setFixedWidth(80)
-        self.refresh_models_button.setToolTip("Refresh available models from API")
-        self.refresh_models_button.setEnabled(True)  # Always enabled by default
-        self.refresh_models_button.clicked.connect(self._refresh_models)
-        print("DEBUG: Refresh button created and connected")
-        model_row.addWidget(self.model_combo)
-        model_row.addWidget(self.refresh_models_button)
-        api_layout.addRow(QLabel("Model:"), self._wrap_row(model_row))
-
-        self.api_type_combo = QComboBox()
-        self.api_type_combo.addItems([
-            "Anthropic Claude",
-            "OpenAI Official",
-            "OpenAI Chat Completions",
-            "OpenAI Text Completions",
-            "Grok (xAI)",
-            "Gemini (Google)",
-            "OpenRouter",
-            "DeepSeek"
-        ])
-        self.api_type_combo.setToolTip("Select the API format to use")
-        api_layout.addRow(QLabel("API Type:"), self.api_type_combo)
+        # Generation tab (SynthMaxxer)
+        generation_tab = synthmaxxer_module.build_synthmaxxer_tab(self)
+        self.tabs.addTab(generation_tab, "🔄 SynthMaxxer")
         
-        # Update endpoint placeholder and API key when API type changes (after combo is created)
+        # Processing tab (GrokMaxxer)
+        processing_tab = grokmaxxer_module.build_grokmaxxer_tab(self)
+        self.tabs.addTab(processing_tab, "⚙️ GrokMaxxer")
+        
+        # CaptionMaxxer tab
+        multimodal_tab = captionmaxxer_module.build_captionmaxxer_tab(self)
+        self.tabs.addTab(multimodal_tab, "🖼️ CaptionMaxxer")
+        
+        # HuggingFace Dataset Download tab
+        hf_tab = huggingface_module.build_huggingface_tab(self)
+        self.tabs.addTab(hf_tab, "🤗 HuggingFace")
+        
+        # CivitAI Downloader tab
+        civitai_tab = civitai_module.build_civitai_tab(self)
+        self.tabs.addTab(civitai_tab, "🎨 CivitAI")
+
+    def _build_api_config_tab(self):
+        """Build the centralized API Configuration tab"""
+        api_config_tab = QWidget()
+        api_config_layout = QVBoxLayout()
+        api_config_layout.setContentsMargins(16, 16, 16, 16)
+        api_config_layout.setSpacing(12)
+        api_config_tab.setLayout(api_config_layout)
+        
+        api_config_title = QLabel("🔑 API Configuration")
+        api_config_title_font = QFont()
+        api_config_title_font.setPointSize(16)
+        api_config_title_font.setBold(True)
+        api_config_title.setFont(api_config_title_font)
+        api_config_title.setStyleSheet("color: #F9FAFB; margin-bottom: 10px;")
+        api_config_layout.addWidget(api_config_title)
+        
+        api_config_subtitle = QLabel("Centralized API settings for all tabs - Configure once, use everywhere")
+        api_config_subtitle.setStyleSheet("color: #6B7280; font-size: 12pt; margin-bottom: 20px;")
+        api_config_layout.addWidget(api_config_subtitle)
+        
+        api_config_split = QHBoxLayout()
+        api_config_split.setSpacing(14)
+        api_config_layout.addLayout(api_config_split, stretch=1)
+        
+        api_config_left_scroll = QScrollArea()
+        api_config_left_scroll.setWidgetResizable(True)
+        api_config_left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # type: ignore
+        api_config_left_scroll.setFrameShape(QFrame.NoFrame)
+        
+        api_config_left_container = QWidget()
+        api_config_left_panel = QVBoxLayout()
+        api_config_left_panel.setSpacing(10)
+        api_config_left_container.setLayout(api_config_left_panel)
+        api_config_left_scroll.setWidget(api_config_left_container)
+        
+        api_config_split.addWidget(api_config_left_scroll, stretch=3)
+        
+        api_config_right_container = QWidget()
+        api_config_right_panel = QVBoxLayout()
+        api_config_right_panel.setSpacing(10)
+        api_config_right_container.setLayout(api_config_right_panel)
+        
+        api_config_split.addWidget(api_config_right_container, stretch=4)
+        
+        # Build API configuration UI
+        self._build_api_config_ui(api_config_left_panel, api_config_right_panel)
+        
+        # Add API Configuration tab as first tab
+        self.tabs.insertTab(0, api_config_tab, "🔑 API Config")
+
+    def _build_api_config_ui(self, left_panel, right_panel):
+        """Build the API configuration UI components"""
+        # SynthMaxxer API Configuration
+        gen_api_group, gen_api_widgets = create_api_config_group(
+            api_key_edit_name="api_key_edit",
+            endpoint_edit_name="endpoint_edit",
+            model_combo_name="model_combo",
+            api_type_combo_name="api_type_combo",
+            refresh_button_name="refresh_models_button",
+            show_key_check_name="show_key_check",
+            default_endpoint_placeholder="https://api.example.com/v1/messages (or /v1/chat/completions or /v1/completions)",
+            on_api_type_changed=None,
+            on_refresh_clicked=self._refresh_models,
+            on_toggle_visibility=self.toggle_api_visibility,
+            parent=self,
+            group_title="🔄 SynthMaxxer"
+        )
+        # Store widgets as instance attributes
+        self.api_key_edit = gen_api_widgets["api_key_edit"]
+        self.endpoint_edit = gen_api_widgets["endpoint_edit"]
+        self.model_combo = gen_api_widgets["model_combo"]
+        self.api_type_combo = gen_api_widgets["api_type_combo"]
+        self.refresh_models_button = gen_api_widgets["refresh_models_button"]
+        self.show_key_check = gen_api_widgets["show_key_check"]
+        
+        # Connect API type changes
         self.api_type_combo.currentTextChanged.connect(self._update_endpoint_placeholder)
         self.api_type_combo.currentTextChanged.connect(self._update_api_key_for_type)
-        # Don't auto-fetch models on API type change - let user click refresh
-
-        left_panel.addWidget(api_group)
-
-        # 2. Output Configuration
-        output_group = QGroupBox("📁 Output Configuration")
-        output_layout = QFormLayout()
-        output_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        output_layout.setHorizontalSpacing(10)
-        output_layout.setVerticalSpacing(6)
-        output_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        output_group.setLayout(output_layout)
-
-        output_dir_row = QHBoxLayout()
-        self.output_dir_edit = QLineEdit()
-        self.output_dir_edit.setPlaceholderText("outputs")
-        output_browse_btn = QPushButton("Browse")
-        output_browse_btn.setFixedWidth(80)
-        output_browse_btn.clicked.connect(self.browse_output_dir)
-        output_dir_row.addWidget(self.output_dir_edit)
-        output_dir_row.addWidget(output_browse_btn)
-        output_layout.addRow(QLabel("Output Directory:"), self._wrap_row(output_dir_row))
-
-        left_panel.addWidget(output_group)
-
-        # 3. Generation Settings
-        generation_group = QGroupBox("⚙️ Generation Settings")
-        generation_layout = QFormLayout()
-        generation_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        generation_layout.setHorizontalSpacing(10)
-        generation_layout.setVerticalSpacing(6)
-        generation_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        generation_group.setLayout(generation_layout)
-
-        delay_row = QHBoxLayout()
-        self.min_delay_spin = QDoubleSpinBox()
-        self.min_delay_spin.setRange(0.0, 10.0)
-        self.min_delay_spin.setValue(0.1)
-        self.min_delay_spin.setSingleStep(0.1)
-        self.min_delay_spin.setDecimals(2)
-        self.min_delay_spin.setMaximumWidth(80)
-        self.max_delay_spin = QDoubleSpinBox()
-        self.max_delay_spin.setRange(0.0, 10.0)
-        self.max_delay_spin.setValue(0.5)
-        self.max_delay_spin.setSingleStep(0.1)
-        self.max_delay_spin.setDecimals(2)
-        self.max_delay_spin.setMaximumWidth(80)
-        delay_row.addWidget(QLabel("Min:"))
-        delay_row.addWidget(self.min_delay_spin)
-        delay_row.addSpacing(8)
-        delay_row.addWidget(QLabel("Max:"))
-        delay_row.addWidget(self.max_delay_spin)
-        delay_row.addStretch()
-        generation_layout.addRow(QLabel("Delay (seconds):"), self._wrap_row(delay_row))
-
-        self.stop_percentage_spin = QDoubleSpinBox()
-        self.stop_percentage_spin.setRange(0.0, 1.0)
-        self.stop_percentage_spin.setValue(0.05)
-        self.stop_percentage_spin.setSingleStep(0.01)
-        self.stop_percentage_spin.setDecimals(2)
-        self.stop_percentage_spin.setMaximumWidth(80)
-        self.stop_percentage_spin.setToolTip("Probability of stopping after minimum turns")
-        stop_row = QHBoxLayout()
-        stop_row.addWidget(self.stop_percentage_spin)
-        stop_row.addStretch()
-        generation_layout.addRow(QLabel("Stop Probability:"), self._wrap_row(stop_row))
-
-        self.min_turns_spin = QSpinBox()
-        self.min_turns_spin.setRange(0, 100)
-        self.min_turns_spin.setValue(1)
-        self.min_turns_spin.setMaximumWidth(80)
-        self.min_turns_spin.setToolTip("Minimum number of assistant turns before stopping")
-        min_turns_row = QHBoxLayout()
-        min_turns_row.addWidget(self.min_turns_spin)
-        min_turns_row.addStretch()
-        generation_layout.addRow(QLabel("Min Turns:"), self._wrap_row(min_turns_row))
-
-        left_panel.addWidget(generation_group)
-
-        # 4. Conversation Configuration
-        conversation_group = QGroupBox("💬 Conversation Configuration")
-        conversation_layout = QFormLayout()
-        conversation_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        conversation_layout.setHorizontalSpacing(10)
-        conversation_layout.setVerticalSpacing(6)
-        conversation_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        conversation_group.setLayout(conversation_layout)
-
-        self.system_message_edit = QPlainTextEdit()
-        self.system_message_edit.setPlaceholderText("System message for the conversation")
-        self.system_message_edit.setFixedHeight(60)
-        conversation_layout.addRow(QLabel("System Message:"), self.system_message_edit)
-
-        self.user_first_message_edit = QPlainTextEdit()
-        self.user_first_message_edit.setPlaceholderText("First user message")
-        self.user_first_message_edit.setFixedHeight(60)
-        conversation_layout.addRow(QLabel("User First Message:"), self.user_first_message_edit)
-
-        self.assistant_first_message_edit = QPlainTextEdit()
-        self.assistant_first_message_edit.setPlaceholderText("First assistant message")
-        self.assistant_first_message_edit.setFixedHeight(60)
-        conversation_layout.addRow(QLabel("Assistant First Message:"), self.assistant_first_message_edit)
-
-        # Tags
-        tags_row1 = QHBoxLayout()
-        self.user_start_tag_edit = QLineEdit()
-        self.user_start_tag_edit.setPlaceholderText("<human_turn>")
-        self.user_start_tag_edit.setMaximumWidth(120)
-        self.user_end_tag_edit = QLineEdit()
-        self.user_end_tag_edit.setPlaceholderText("</human_turn>")
-        self.user_end_tag_edit.setMaximumWidth(120)
-        tags_row1.addWidget(QLabel("User Start:"))
-        tags_row1.addWidget(self.user_start_tag_edit)
-        tags_row1.addSpacing(8)
-        tags_row1.addWidget(QLabel("User End:"))
-        tags_row1.addWidget(self.user_end_tag_edit)
-        tags_row1.addStretch()
-        conversation_layout.addRow(QLabel("User Tags:"), self._wrap_row(tags_row1))
-
-        tags_row2 = QHBoxLayout()
-        self.assistant_start_tag_edit = QLineEdit()
-        self.assistant_start_tag_edit.setPlaceholderText("<claude_turn>")
-        self.assistant_start_tag_edit.setMaximumWidth(120)
-        self.assistant_end_tag_edit = QLineEdit()
-        self.assistant_end_tag_edit.setPlaceholderText("</claude_turn>")
-        self.assistant_end_tag_edit.setMaximumWidth(120)
-        tags_row2.addWidget(QLabel("Assistant Start:"))
-        tags_row2.addWidget(self.assistant_start_tag_edit)
-        tags_row2.addSpacing(8)
-        tags_row2.addWidget(QLabel("Assistant End:"))
-        tags_row2.addWidget(self.assistant_end_tag_edit)
-        tags_row2.addStretch()
-        conversation_layout.addRow(QLabel("Assistant Tags:"), self._wrap_row(tags_row2))
-
-        self.is_instruct_check = QCheckBox("Instruct Mode (min_turns=0, start_index=0, stopPercentage=0.25)")
-        self.is_instruct_check.setChecked(False)
-        conversation_layout.addRow("", self.is_instruct_check)
-
-        left_panel.addWidget(conversation_group)
-
-        # 5. Filter Settings
-        filter_group = QGroupBox("🚫 Filter Settings")
-        filter_layout = QFormLayout()
-        filter_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        filter_layout.setHorizontalSpacing(10)
-        filter_layout.setVerticalSpacing(6)
-        filter_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        filter_group.setLayout(filter_layout)
-
-        self.refusal_phrases_edit = QPlainTextEdit()
-        self.refusal_phrases_edit.setPlaceholderText("One phrase per line\nExample:\nUpon further reflection\nI can't engage")
-        self.refusal_phrases_edit.setFixedHeight(60)
-        filter_layout.addRow(QLabel("Refusal Phrases:"), self.refusal_phrases_edit)
-
-        self.force_retry_phrases_edit = QPlainTextEdit()
-        self.force_retry_phrases_edit.setPlaceholderText("One phrase per line\nExample:\nshivers down")
-        self.force_retry_phrases_edit.setFixedHeight(60)
-        filter_layout.addRow(QLabel("Force Retry Phrases:"), self.force_retry_phrases_edit)
-
-        left_panel.addWidget(filter_group)
-        left_panel.addStretch(1)
-
-        # Right panel - Logs
-        progress_group = QGroupBox("Run Status")
-        progress_layout = QVBoxLayout()
-        progress_layout.setSpacing(6)
-        progress_group.setLayout(progress_layout)
-
-        self.log_view = QPlainTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(1000)
-        self.log_view.setPlaceholderText("Logs will appear here...")
-        progress_layout.addWidget(QLabel("Logs:"))
-        progress_layout.addWidget(self.log_view, stretch=1)
-
-        right_panel.addWidget(progress_group, stretch=1)
         
-        # Add generation tab to tabs widget
-        self.tabs.addTab(generation_tab, "🔄 Generation")
+        left_panel.addWidget(gen_api_group)
         
-        # Processing tab
-        processing_tab = QWidget()
-        processing_layout = QVBoxLayout()
-        processing_layout.setContentsMargins(0, 0, 0, 0)
-        processing_tab.setLayout(processing_layout)
-        
-        proc_header = QHBoxLayout()
-        self.process_button = QPushButton("Process")
-        self.process_button.clicked.connect(self.process_files)
-        proc_header.addStretch()
-        proc_header.addWidget(self.process_button)
-        processing_layout.addLayout(proc_header)
-        
-        proc_split = QHBoxLayout()
-        proc_split.setSpacing(14)
-        processing_layout.addLayout(proc_split, stretch=1)
-        
-        proc_left_scroll = QScrollArea()
-        proc_left_scroll.setWidgetResizable(True)
-        proc_left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        proc_left_scroll.setFrameShape(QFrame.NoFrame)
-        
-        proc_left_container = QWidget()
-        proc_left_panel = QVBoxLayout()
-        proc_left_panel.setSpacing(10)
-        proc_left_container.setLayout(proc_left_panel)
-        proc_left_scroll.setWidget(proc_left_container)
-        
-        proc_split.addWidget(proc_left_scroll, stretch=3)
-        
-        proc_right_container = QWidget()
-        proc_right_panel = QVBoxLayout()
-        proc_right_panel.setSpacing(10)
-        proc_right_container.setLayout(proc_right_panel)
-        
-        proc_split.addWidget(proc_right_container, stretch=4)
-        
-        # Processing UI elements (based on GrokMaxxer)
-        self._build_processing_ui(proc_left_panel, proc_right_panel)
-        
-        # Add processing tab to tabs widget
-        self.tabs.addTab(processing_tab, "⚙️ Processing")
-        
-        # Multimodal tab
-        multimodal_tab = QWidget()
-        multimodal_layout = QVBoxLayout()
-        multimodal_layout.setContentsMargins(0, 0, 0, 0)
-        multimodal_tab.setLayout(multimodal_layout)
-        
-        mm_header = QHBoxLayout()
-        self.mm_start_button = QPushButton("Start Captioning")
-        self.mm_start_button.clicked.connect(self.start_image_captioning)
-        self.mm_stop_button = QPushButton("Stop")
-        self.mm_stop_button.clicked.connect(self.stop_image_captioning)
-        self.mm_stop_button.setEnabled(False)
-        self.civitai_start_button = QPushButton("Start Civitai Download")
-        self.civitai_start_button.clicked.connect(self.start_civitai_download)
-        self.civitai_stop_button = QPushButton("Stop Civitai")
-        self.civitai_stop_button.clicked.connect(self.stop_civitai_download)
-        self.civitai_stop_button.setEnabled(False)
-        mm_header.addStretch()
-        mm_header.addWidget(self.mm_start_button)
-        mm_header.addWidget(self.mm_stop_button)
-        mm_header.addWidget(self.civitai_start_button)
-        mm_header.addWidget(self.civitai_stop_button)
-        multimodal_layout.addLayout(mm_header)
-        
-        mm_split = QHBoxLayout()
-        mm_split.setSpacing(14)
-        multimodal_layout.addLayout(mm_split, stretch=1)
-        
-        mm_left_scroll = QScrollArea()
-        mm_left_scroll.setWidgetResizable(True)
-        mm_left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        mm_left_scroll.setFrameShape(QFrame.NoFrame)
-        
-        mm_left_container = QWidget()
-        mm_left_panel = QVBoxLayout()
-        mm_left_panel.setSpacing(10)
-        mm_left_container.setLayout(mm_left_panel)
-        mm_left_scroll.setWidget(mm_left_container)
-        
-        mm_split.addWidget(mm_left_scroll, stretch=3)
-        
-        mm_right_container = QWidget()
-        mm_right_panel = QVBoxLayout()
-        mm_right_panel.setSpacing(10)
-        mm_right_container.setLayout(mm_right_panel)
-        
-        mm_split.addWidget(mm_right_container, stretch=4)
-        
-        # Build multimodal UI
-        self._build_multimodal_ui(mm_left_panel, mm_right_panel)
-        
-        # Add multimodal tab to tabs widget
-        self.tabs.addTab(multimodal_tab, "🖼️ Multimodal")
-        
-        # Processing log view is created in _build_processing_ui
-
-    def _build_processing_ui(self, left_panel, right_panel):
-        """Build the processing UI (from GrokMaxxer)"""
-        # Files group
-        files_group = QGroupBox("📁 Files")
-        files_layout = QFormLayout()
-        files_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        files_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
-        files_layout.setHorizontalSpacing(10)
-        files_layout.setVerticalSpacing(6)
-        files_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        files_group.setLayout(files_layout)
-
-        input_row = QHBoxLayout()
-        self.proc_input_edit = QLineEdit()
-        self.proc_input_edit.setPlaceholderText("Path to input JSONL (optional for generation-only)")
-        input_browse_btn = QPushButton("Browse")
-        input_browse_btn.setFixedWidth(80)
-        input_browse_btn.clicked.connect(self.browse_proc_input)
-        input_row.addWidget(self.proc_input_edit)
-        input_row.addWidget(input_browse_btn)
-        files_layout.addRow(QLabel("Input JSONL:"), self._wrap_row(input_row))
-
-        output_row = QHBoxLayout()
-        self.proc_output_edit = QLineEdit()
-        # Set default to outputs folder
-        repo_root = os.path.dirname(os.path.dirname(__file__))
-        outputs_dir = os.path.join(repo_root, "outputs")
-        default_output = os.path.join(outputs_dir, "processed_output.jsonl")
-        self.proc_output_edit.setPlaceholderText(f"Leave empty to auto-generate in outputs folder")
-        self.proc_output_edit.setText(default_output)
-        output_browse_btn = QPushButton("Browse")
-        output_browse_btn.setFixedWidth(80)
-        output_browse_btn.clicked.connect(self.browse_proc_output)
-        output_row.addWidget(self.proc_output_edit)
-        output_row.addWidget(output_browse_btn)
-        files_layout.addRow(QLabel("Output JSONL:"), self._wrap_row(output_row))
-        left_panel.addWidget(files_group)
-
-        # Processing mode group
-        processing_group = QGroupBox("⚙️ Processing Mode")
-        processing_layout = QFormLayout()
-        processing_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        processing_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
-        processing_layout.setHorizontalSpacing(10)
-        processing_layout.setVerticalSpacing(6)
-        processing_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        processing_group.setLayout(processing_layout)
-
-        range_row = QHBoxLayout()
-        self.proc_start_line_edit = QLineEdit()
-        self.proc_start_line_edit.setPlaceholderText("from")
-        self.proc_start_line_edit.setMaximumWidth(80)
-        self.proc_end_line_edit = QLineEdit()
-        self.proc_end_line_edit.setPlaceholderText("to")
-        self.proc_end_line_edit.setMaximumWidth(80)
-        range_row.addWidget(QLabel("from"))
-        range_row.addWidget(self.proc_start_line_edit)
-        range_row.addSpacing(8)
-        range_row.addWidget(QLabel("to"))
-        range_row.addWidget(self.proc_end_line_edit)
-        range_row.addStretch()
-        processing_layout.addRow(QLabel("Process lines (1-based):"), self._wrap_row(range_row))
-
-        self.proc_rewrite_check = QCheckBox("Rewrite existing entries in range")
-        self.proc_rewrite_check.setChecked(True)
-        processing_layout.addRow("", self.proc_rewrite_check)
-
-        extra_row = QHBoxLayout()
-        self.proc_extra_pairs_spin = QSpinBox()
-        self.proc_extra_pairs_spin.setRange(0, 100)
-        self.proc_extra_pairs_spin.setValue(0)
-        self.proc_extra_pairs_spin.setMaximumWidth(80)
-        extra_row.addWidget(self.proc_extra_pairs_spin)
-        extra_row.addStretch()
-        processing_layout.addRow(QLabel("Extra pairs per entry:"), self._wrap_row(extra_row))
-
-        new_row = QHBoxLayout()
-        self.proc_num_new_edit = QLineEdit()
-        self.proc_num_new_edit.setPlaceholderText("0")
-        self.proc_num_new_edit.setMaximumWidth(80)
-        new_row.addWidget(self.proc_num_new_edit)
-        new_row.addStretch()
-        processing_layout.addRow(QLabel("Generate new entries:"), self._wrap_row(new_row))
-
-        left_panel.addWidget(processing_group)
-
-        # Cache group
-        cache_group = QGroupBox("🧠 Human Cache Management")
-        cache_layout = QFormLayout()
-        cache_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        cache_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
-        cache_layout.setHorizontalSpacing(10)
-        cache_layout.setVerticalSpacing(6)
-        cache_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        cache_group.setLayout(cache_layout)
-
-        controls_row = QHBoxLayout()
-        self.generate_cache_button = QPushButton("Generate Human Cache")
-        self.generate_cache_button.clicked.connect(self.generate_human_cache)
-        self.generate_cache_button.setToolTip("Generate new human turns for the cache")
-        
-        self.improve_cache_button = QPushButton("Improve Human Cache")
-        self.improve_cache_button.clicked.connect(self.improve_human_cache)
-        self.improve_cache_button.setToolTip("Rewrite existing human turns for better quality")
-        
-        self.proc_concurrency_spin = QSpinBox()
-        self.proc_concurrency_spin.setRange(1, 20)
-        self.proc_concurrency_spin.setValue(20)
-        self.proc_concurrency_spin.setMaximumWidth(60)
-        self.proc_concurrency_spin.setToolTip("Concurrent batches (safe: 1-20)")
-        
-        self.proc_batch_size_spin = QSpinBox()
-        self.proc_batch_size_spin.setRange(16, 64)
-        self.proc_batch_size_spin.setValue(16)
-        self.proc_batch_size_spin.setMaximumWidth(60)
-        self.proc_batch_size_spin.setToolTip("Batch size per API call (16 optimal for cache improvement)")
-        
-        controls_row.addWidget(self.generate_cache_button)
-        controls_row.addSpacing(10)
-        controls_row.addWidget(self.improve_cache_button)
-        controls_row.addSpacing(10)
-        controls_row.addWidget(QLabel("Concurrency:"))
-        controls_row.addWidget(self.proc_concurrency_spin)
-        controls_row.addSpacing(20)
-        controls_row.addWidget(QLabel("Batch:"))
-        controls_row.addWidget(self.proc_batch_size_spin)
-        controls_row.addStretch()
-        
-        cache_layout.addRow("", self._wrap_row(controls_row))
-        left_panel.addWidget(cache_group)
-
-        # Prompt group
-        prompt_group = QGroupBox("System / Character Prompt")
-        prompt_layout = QFormLayout()
-        prompt_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        prompt_layout.setHorizontalSpacing(10)
-        prompt_layout.setVerticalSpacing(6)
-        prompt_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        prompt_group.setLayout(prompt_layout)
-
-        self.proc_system_prompt_edit = QPlainTextEdit()
-        self.proc_system_prompt_edit.setPlaceholderText("Character sheet or global system prompt (optional)")
-        self.proc_system_prompt_edit.setFixedHeight(100)
-        prompt_layout.addRow(QLabel("System prompt:"), self.proc_system_prompt_edit)
-
-        self.proc_reply_in_character_check = QCheckBox(
-            "Reply in character & inject prompt as the first system message"
-        )
-        self.proc_reply_in_character_check.setChecked(False)
-        prompt_layout.addRow(QLabel("Character mode:"), self.proc_reply_in_character_check)
-
-        self.proc_dynamic_names_check = QCheckBox("Dynamic Names Mode (auto-generate & cache names)")
-        self.proc_dynamic_names_check.setChecked(False)
-        prompt_layout.addRow(QLabel("Dynamic names:"), self.proc_dynamic_names_check)
-
-        left_panel.addWidget(prompt_group)
-
-        # API group for processing
-        proc_api_group = QGroupBox("API & Model")
+        # GrokMaxxer API Configuration
+        proc_api_group = QGroupBox("⚙️ GrokMaxxer")
         proc_api_layout = QFormLayout()
-        proc_api_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        proc_api_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)  # type: ignore
         proc_api_layout.setHorizontalSpacing(10)
         proc_api_layout.setVerticalSpacing(6)
-        proc_api_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        proc_api_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)  # type: ignore
         proc_api_group.setLayout(proc_api_layout)
-
+        
         proc_api_row = QHBoxLayout()
         self.proc_api_key_edit = QLineEdit()
         self.proc_api_key_edit.setEchoMode(QLineEdit.Password)
@@ -804,217 +550,53 @@ class MainWindow(QMainWindow):
         self.proc_show_key_check.toggled.connect(self.toggle_proc_api_visibility)
         proc_api_row.addWidget(self.proc_api_key_edit)
         proc_api_row.addWidget(self.proc_show_key_check)
-        proc_api_layout.addRow(QLabel("Grok API key:"), self._wrap_row(proc_api_row))
-
+        proc_api_layout.addRow(QLabel("API Key:"), self._wrap_row(proc_api_row))
+        
         self.proc_model_edit = QLineEdit()
         self.proc_model_edit.setPlaceholderText("Enter model name (e.g., grok-beta)")
         self.proc_model_edit.setText("grok-4.1-fast-non-reasoning")
-
         proc_api_layout.addRow(QLabel("Model:"), self.proc_model_edit)
-
+        
         left_panel.addWidget(proc_api_group)
-        left_panel.addStretch(1)
-
-        # Right panel - Logs for processing
-        proc_progress_group = QGroupBox("Run Status")
-        proc_progress_layout = QVBoxLayout()
-        proc_progress_layout.setSpacing(6)
-        proc_progress_group.setLayout(proc_progress_layout)
-
-        self.proc_log_view = QPlainTextEdit()
-        self.proc_log_view.setReadOnly(True)
-        self.proc_log_view.setMaximumBlockCount(1000)
-        self.proc_log_view.setPlaceholderText("Logs will appear here...")
-        proc_progress_layout.addWidget(QLabel("Logs:"))
-        proc_progress_layout.addWidget(self.proc_log_view, stretch=1)
-
-        right_panel.addWidget(proc_progress_group, stretch=1)
-
-    def _build_multimodal_ui(self, left_panel, right_panel):
-        """Build the multimodal image captioning UI"""
-        # Files group
-        mm_files_group = QGroupBox("📁 Image Input")
-        mm_files_layout = QFormLayout()
-        mm_files_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        mm_files_layout.setHorizontalSpacing(10)
-        mm_files_layout.setVerticalSpacing(6)
-        mm_files_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        mm_files_group.setLayout(mm_files_layout)
-
-        image_dir_row = QHBoxLayout()
-        self.mm_image_dir_edit = QLineEdit()
-        self.mm_image_dir_edit.setPlaceholderText("Path to folder containing images")
-        image_dir_browse_btn = QPushButton("Browse")
-        image_dir_browse_btn.setFixedWidth(80)
-        image_dir_browse_btn.clicked.connect(self.browse_mm_image_dir)
-        image_dir_row.addWidget(self.mm_image_dir_edit)
-        image_dir_row.addWidget(image_dir_browse_btn)
-        mm_files_layout.addRow(QLabel("Image Folder:"), self._wrap_row(image_dir_row))
-
-        output_row = QHBoxLayout()
-        self.mm_output_edit = QLineEdit()
-        # Get repo root (go up from App/SynthMaxxer to repo root)
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        outputs_dir = os.path.join(repo_root, "outputs")
-        default_output = os.path.join(outputs_dir, "image_captions.parquet")
-        self.mm_output_edit.setPlaceholderText(f"Leave empty to auto-generate in outputs folder (will be .parquet)")
-        self.mm_output_edit.setText(default_output)
-        output_browse_btn = QPushButton("Browse")
-        output_browse_btn.setFixedWidth(80)
-        output_browse_btn.clicked.connect(self.browse_mm_output)
-        output_row.addWidget(self.mm_output_edit)
-        output_row.addWidget(output_browse_btn)
-        mm_files_layout.addRow(QLabel("Output JSONL:"), self._wrap_row(output_row))
-        left_panel.addWidget(mm_files_group)
-
-        # API Configuration
-        mm_api_group = QGroupBox("🔑 API Configuration")
-        mm_api_layout = QFormLayout()
-        mm_api_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        mm_api_layout.setHorizontalSpacing(10)
-        mm_api_layout.setVerticalSpacing(6)
-        mm_api_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        mm_api_group.setLayout(mm_api_layout)
-
-        mm_api_row = QHBoxLayout()
-        self.mm_api_key_edit = QLineEdit()
-        self.mm_api_key_edit.setEchoMode(QLineEdit.Password)
-        self.mm_api_key_edit.setPlaceholderText("Your API key")
-        self.mm_show_key_check = QCheckBox("Show")
-        self.mm_show_key_check.toggled.connect(self.toggle_mm_api_visibility)
-        mm_api_row.addWidget(self.mm_api_key_edit)
-        mm_api_row.addWidget(self.mm_show_key_check)
-        mm_api_layout.addRow(QLabel("API Key:"), self._wrap_row(mm_api_row))
-
-        self.mm_endpoint_edit = QLineEdit()
-        self.mm_endpoint_edit.setPlaceholderText("https://api.openai.com/v1/chat/completions")
-        mm_api_layout.addRow(QLabel("API Endpoint:"), self.mm_endpoint_edit)
-
-        mm_model_row = QHBoxLayout()
-        self.mm_model_combo = QComboBox()
-        self.mm_model_combo.setEditable(True)
-        self.mm_model_combo.setPlaceholderText("Select or enter model name")
-        self.mm_model_combo.addItem("(Click Refresh to load models)")
-        self.mm_refresh_models_button = QPushButton("Refresh")
-        self.mm_refresh_models_button.setFixedWidth(80)
-        self.mm_refresh_models_button.setToolTip("Refresh available models from API")
-        self.mm_refresh_models_button.setEnabled(True)
-        self.mm_refresh_models_button.clicked.connect(self._refresh_mm_models)
-        mm_model_row.addWidget(self.mm_model_combo)
-        mm_model_row.addWidget(self.mm_refresh_models_button)
-        mm_api_layout.addRow(QLabel("Model:"), self._wrap_row(mm_model_row))
-
-        self.mm_api_type_combo = QComboBox()
-        self.mm_api_type_combo.addItems([
-            "OpenAI Vision",
-            "Anthropic Claude",
-            "Grok (xAI)",
-            "OpenRouter"
-        ])
-        self.mm_api_type_combo.setToolTip("Select the API format to use")
+        
+        # CaptionMaxxer API Configuration
+        mm_api_group, mm_api_widgets = create_api_config_group(
+            api_key_edit_name="mm_api_key_edit",
+            endpoint_edit_name="mm_endpoint_edit",
+            model_combo_name="mm_model_combo",
+            api_type_combo_name="mm_api_type_combo",
+            refresh_button_name="mm_refresh_models_button",
+            show_key_check_name="mm_show_key_check",
+            api_types=["OpenAI Vision", "Anthropic Claude", "Grok (xAI)", "OpenRouter"],
+            default_endpoint_placeholder="https://api.openai.com/v1/chat/completions",
+            on_api_type_changed=None,
+            on_refresh_clicked=self._refresh_mm_models,
+            on_toggle_visibility=self.toggle_mm_api_visibility,
+            parent=self,
+            group_title="🖼️ CaptionMaxxer"
+        )
+        # Store widgets as instance attributes
+        self.mm_api_key_edit = mm_api_widgets["mm_api_key_edit"]
+        self.mm_endpoint_edit = mm_api_widgets["mm_endpoint_edit"]
+        self.mm_model_combo = mm_api_widgets["mm_model_combo"]
+        self.mm_api_type_combo = mm_api_widgets["mm_api_type_combo"]
+        self.mm_refresh_models_button = mm_api_widgets["mm_refresh_models_button"]
+        self.mm_show_key_check = mm_api_widgets["mm_show_key_check"]
+        
+        # Connect API type changes
         self.mm_api_type_combo.currentTextChanged.connect(self._update_mm_endpoint_placeholder)
         self.mm_api_type_combo.currentTextChanged.connect(self._update_mm_api_key_for_type)
-        mm_api_layout.addRow(QLabel("API Type:"), self.mm_api_type_combo)
-        left_panel.addWidget(mm_api_group)
-
-        # HuggingFace Dataset Input
-        hf_dataset_group = QGroupBox("🤗 HuggingFace Dataset (Optional)")
-        hf_dataset_layout = QFormLayout()
-        hf_dataset_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        hf_dataset_layout.setHorizontalSpacing(10)
-        hf_dataset_layout.setVerticalSpacing(6)
-        hf_dataset_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        hf_dataset_group.setLayout(hf_dataset_layout)
-
-        self.mm_hf_dataset_edit = QLineEdit()
-        self.mm_hf_dataset_edit.setPlaceholderText("e.g., dataset_name or org/dataset_name (leave empty to use image folder)")
-        hf_dataset_layout.addRow(QLabel("HF Dataset:"), self.mm_hf_dataset_edit)
-
-        hf_token_row = QHBoxLayout()
-        self.mm_hf_token_edit = QLineEdit()
-        self.mm_hf_token_edit.setEchoMode(QLineEdit.Password)
-        self.mm_hf_token_edit.setPlaceholderText("hf_... (optional, for private/gated datasets)")
-        self.mm_hf_show_token_check = QCheckBox("Show")
-        self.mm_hf_show_token_check.toggled.connect(self.toggle_mm_hf_token_visibility)
-        hf_token_row.addWidget(self.mm_hf_token_edit)
-        hf_token_row.addWidget(self.mm_hf_show_token_check)
-        hf_dataset_layout.addRow(QLabel("HF Token:"), self._wrap_row(hf_token_row))
-
-        self.mm_use_hf_dataset_check = QCheckBox("Use HuggingFace dataset instead of image folder")
-        self.mm_use_hf_dataset_check.setChecked(False)
-        self.mm_use_hf_dataset_check.toggled.connect(self._toggle_hf_dataset_mode)
-        # Initialize state
-        self.mm_hf_dataset_edit.setEnabled(False)
-        self.mm_hf_token_edit.setEnabled(False)
-        hf_dataset_layout.addRow("", self.mm_use_hf_dataset_check)
-        left_panel.addWidget(hf_dataset_group)
-
-        # Caption Settings
-        mm_caption_group = QGroupBox("📝 Caption Settings")
-        mm_caption_layout = QFormLayout()
-        mm_caption_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        mm_caption_layout.setHorizontalSpacing(10)
-        mm_caption_layout.setVerticalSpacing(6)
-        mm_caption_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        mm_caption_group.setLayout(mm_caption_layout)
-
-        self.mm_caption_prompt_edit = QPlainTextEdit()
-        self.mm_caption_prompt_edit.setPlaceholderText("Describe what you see in this image in detail. Include all important elements, objects, people, text, colors, composition, and context.")
-        self.mm_caption_prompt_edit.setFixedHeight(80)
-        mm_caption_layout.addRow(QLabel("Caption Prompt:"), self.mm_caption_prompt_edit)
-
-        self.mm_max_tokens_spin = QSpinBox()
-        self.mm_max_tokens_spin.setRange(50, 4000)
-        self.mm_max_tokens_spin.setValue(500)
-        self.mm_max_tokens_spin.setMaximumWidth(100)
-        self.mm_max_tokens_spin.setToolTip("Maximum tokens for caption generation")
-        max_tokens_row = QHBoxLayout()
-        max_tokens_row.addWidget(self.mm_max_tokens_spin)
-        max_tokens_row.addStretch()
-        mm_caption_layout.addRow(QLabel("Max Tokens:"), self._wrap_row(max_tokens_row))
-
-        self.mm_temperature_spin = QDoubleSpinBox()
-        self.mm_temperature_spin.setRange(0.0, 2.0)
-        self.mm_temperature_spin.setValue(0.7)
-        self.mm_temperature_spin.setSingleStep(0.1)
-        self.mm_temperature_spin.setDecimals(1)
-        self.mm_temperature_spin.setMaximumWidth(100)
-        self.mm_temperature_spin.setToolTip("Temperature for caption generation")
-        temp_row = QHBoxLayout()
-        temp_row.addWidget(self.mm_temperature_spin)
-        temp_row.addStretch()
-        mm_caption_layout.addRow(QLabel("Temperature:"), self._wrap_row(temp_row))
-
-        self.mm_batch_size_spin = QSpinBox()
-        self.mm_batch_size_spin.setRange(1, 20)
-        self.mm_batch_size_spin.setValue(1)
-        self.mm_batch_size_spin.setMaximumWidth(100)
-        self.mm_batch_size_spin.setToolTip("Number of images to process in parallel (1 recommended for most APIs)")
-        batch_row = QHBoxLayout()
-        batch_row.addWidget(self.mm_batch_size_spin)
-        batch_row.addStretch()
-        mm_caption_layout.addRow(QLabel("Batch Size:"), self._wrap_row(batch_row))
-
-        self.mm_max_captions_spin = QSpinBox()
-        self.mm_max_captions_spin.setRange(0, 100000)
-        self.mm_max_captions_spin.setValue(0)
-        self.mm_max_captions_spin.setSpecialValueText("Unlimited")
-        self.mm_max_captions_spin.setMaximumWidth(100)
-        self.mm_max_captions_spin.setToolTip("Maximum number of captions to generate (0 = unlimited, processes all images)")
-        max_captions_row = QHBoxLayout()
-        max_captions_row.addWidget(self.mm_max_captions_spin)
-        max_captions_row.addStretch()
-        mm_caption_layout.addRow(QLabel("Max Captions:"), self._wrap_row(max_captions_row))
-        left_panel.addWidget(mm_caption_group)
         
-        # Civitai Image Downloader
-        civitai_group = QGroupBox("🎨 Civitai Image Downloader")
-        civitai_layout = QFormLayout()
-        civitai_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        civitai_layout.setHorizontalSpacing(10)
-        civitai_layout.setVerticalSpacing(6)
-        civitai_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        civitai_group.setLayout(civitai_layout)
+        left_panel.addWidget(mm_api_group)
+        
+        # Civitai API Configuration
+        civitai_api_group = QGroupBox("🎨 Civitai API")
+        civitai_api_layout = QFormLayout()
+        civitai_api_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)  # type: ignore
+        civitai_api_layout.setHorizontalSpacing(10)
+        civitai_api_layout.setVerticalSpacing(6)
+        civitai_api_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)  # type: ignore
+        civitai_api_group.setLayout(civitai_api_layout)
         
         civitai_api_row = QHBoxLayout()
         self.civitai_api_key_edit = QLineEdit()
@@ -1024,128 +606,56 @@ class MainWindow(QMainWindow):
         self.civitai_show_key_check.toggled.connect(self.toggle_civitai_api_visibility)
         civitai_api_row.addWidget(self.civitai_api_key_edit)
         civitai_api_row.addWidget(self.civitai_show_key_check)
-        civitai_layout.addRow(QLabel("API Key:"), self._wrap_row(civitai_api_row))
+        civitai_api_layout.addRow(QLabel("API Key:"), self._wrap_row(civitai_api_row))
         
-        # Get repo root for default output directory
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        default_civitai_output = os.path.join(repo_root, "Outputs", "images")
+        left_panel.addWidget(civitai_api_group)
         
-        civitai_output_row = QHBoxLayout()
-        self.civitai_output_edit = QLineEdit()
-        self.civitai_output_edit.setPlaceholderText("Output folder for downloaded images")
-        self.civitai_output_edit.setText(default_civitai_output)
-        civitai_output_browse_btn = QPushButton("Browse")
-        civitai_output_browse_btn.setFixedWidth(80)
-        civitai_output_browse_btn.clicked.connect(self.browse_civitai_output)
-        civitai_output_row.addWidget(self.civitai_output_edit)
-        civitai_output_row.addWidget(civitai_output_browse_btn)
-        civitai_layout.addRow(QLabel("Output Folder:"), self._wrap_row(civitai_output_row))
+        # HuggingFace API Configuration
+        hf_api_group = QGroupBox("🤗 HuggingFace API")
+        hf_api_layout = QFormLayout()
+        hf_api_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)  # type: ignore
+        hf_api_layout.setHorizontalSpacing(10)
+        hf_api_layout.setVerticalSpacing(6)
+        hf_api_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)  # type: ignore
+        hf_api_group.setLayout(hf_api_layout)
         
-        self.civitai_max_images_spin = QSpinBox()
-        self.civitai_max_images_spin.setRange(1, 100000)
-        self.civitai_max_images_spin.setValue(100)
-        self.civitai_max_images_spin.setMaximumWidth(100)
-        self.civitai_max_images_spin.setToolTip("Maximum number of images to download")
-        max_images_row = QHBoxLayout()
-        max_images_row.addWidget(self.civitai_max_images_spin)
-        max_images_row.addStretch()
-        civitai_layout.addRow(QLabel("Max Images:"), self._wrap_row(max_images_row))
+        hf_token_row = QHBoxLayout()
+        self.hf_token_edit = QLineEdit()
+        self.hf_token_edit.setEchoMode(QLineEdit.Password)
+        self.hf_token_edit.setPlaceholderText("hf_... (optional, for private/gated datasets)")
+        self.hf_show_token_check = QCheckBox("Show")
+        self.hf_show_token_check.toggled.connect(self.toggle_hf_token_visibility)
+        hf_token_row.addWidget(self.hf_token_edit)
+        hf_token_row.addWidget(self.hf_show_token_check)
+        hf_api_layout.addRow(QLabel("HF Token:"), self._wrap_row(hf_token_row))
         
-        self.civitai_min_width_spin = QSpinBox()
-        self.civitai_min_width_spin.setRange(0, 10000)
-        self.civitai_min_width_spin.setValue(0)
-        self.civitai_min_width_spin.setMaximumWidth(100)
-        self.civitai_min_width_spin.setToolTip("Minimum image width (0 = no filter)")
-        min_width_row = QHBoxLayout()
-        min_width_row.addWidget(self.civitai_min_width_spin)
-        min_width_row.addStretch()
-        civitai_layout.addRow(QLabel("Min Width:"), self._wrap_row(min_width_row))
-        
-        self.civitai_min_height_spin = QSpinBox()
-        self.civitai_min_height_spin.setRange(0, 10000)
-        self.civitai_min_height_spin.setValue(0)
-        self.civitai_min_height_spin.setMaximumWidth(100)
-        self.civitai_min_height_spin.setToolTip("Minimum image height (0 = no filter)")
-        min_height_row = QHBoxLayout()
-        min_height_row.addWidget(self.civitai_min_height_spin)
-        min_height_row.addStretch()
-        civitai_layout.addRow(QLabel("Min Height:"), self._wrap_row(min_height_row))
-        
-        self.civitai_nsfw_combo = QComboBox()
-        self.civitai_nsfw_combo.addItems(["Any (no filter)", "None (SFW only)", "Soft", "Mature", "X (explicit)"])
-        self.civitai_nsfw_combo.setToolTip("NSFW filter level")
-        civitai_layout.addRow(QLabel("NSFW Level:"), self.civitai_nsfw_combo)
-        
-        self.civitai_sort_combo = QComboBox()
-        self.civitai_sort_combo.addItems(["Newest", "Most Reactions", "Most Comments"])
-        self.civitai_sort_combo.setToolTip("Sort mode for image selection")
-        civitai_layout.addRow(QLabel("Sort Mode:"), self.civitai_sort_combo)
-        
-        self.civitai_include_edit = QLineEdit()
-        self.civitai_include_edit.setPlaceholderText("Comma-separated terms (ANY match passes)")
-        self.civitai_include_edit.setToolTip("Include terms: comma-separated list. At least one term must match (OR logic)")
-        civitai_layout.addRow(QLabel("Include Terms:"), self.civitai_include_edit)
-        
-        self.civitai_exclude_edit = QLineEdit()
-        self.civitai_exclude_edit.setPlaceholderText("Comma-separated terms (ANY match blocks)")
-        self.civitai_exclude_edit.setToolTip("Exclude terms: comma-separated list. Any matching term will block the image (OR logic)")
-        civitai_layout.addRow(QLabel("Exclude Terms:"), self.civitai_exclude_edit)
-        
-        self.civitai_save_meta_check = QCheckBox("Save metadata JSONL")
-        self.civitai_save_meta_check.setChecked(True)
-        self.civitai_save_meta_check.setToolTip("Save metadata JSONL file with image information")
-        civitai_layout.addRow("", self.civitai_save_meta_check)
-        
-        self.civitai_batch_size_spin = QSpinBox()
-        self.civitai_batch_size_spin.setRange(1, 500)
-        self.civitai_batch_size_spin.setValue(200)
-        self.civitai_batch_size_spin.setMaximumWidth(100)
-        self.civitai_batch_size_spin.setToolTip("Number of images per API request (batch size)")
-        batch_size_row = QHBoxLayout()
-        batch_size_row.addWidget(self.civitai_batch_size_spin)
-        batch_size_row.addStretch()
-        civitai_layout.addRow(QLabel("Batch Size:"), self._wrap_row(batch_size_row))
-        
-        self.civitai_max_empty_batches_spin = QSpinBox()
-        self.civitai_max_empty_batches_spin.setRange(1, 1000)
-        self.civitai_max_empty_batches_spin.setValue(40)
-        self.civitai_max_empty_batches_spin.setMaximumWidth(100)
-        self.civitai_max_empty_batches_spin.setToolTip("Maximum number of empty batches before stopping (prevents infinite loops)")
-        max_empty_batches_row = QHBoxLayout()
-        max_empty_batches_row.addWidget(self.civitai_max_empty_batches_spin)
-        max_empty_batches_row.addStretch()
-        civitai_layout.addRow(QLabel("Max Empty Batches:"), self._wrap_row(max_empty_batches_row))
-        
-        self.civitai_wait_time_spin = QDoubleSpinBox()
-        self.civitai_wait_time_spin.setRange(0.0, 300.0)
-        self.civitai_wait_time_spin.setValue(0.0)
-        self.civitai_wait_time_spin.setSingleStep(0.5)
-        self.civitai_wait_time_spin.setDecimals(1)
-        self.civitai_wait_time_spin.setMaximumWidth(100)
-        self.civitai_wait_time_spin.setSuffix(" s")
-        self.civitai_wait_time_spin.setToolTip("Wait time in seconds between page requests (0 = no wait)")
-        wait_time_row = QHBoxLayout()
-        wait_time_row.addWidget(self.civitai_wait_time_spin)
-        wait_time_row.addStretch()
-        civitai_layout.addRow(QLabel("Wait Between Pages:"), self._wrap_row(wait_time_row))
-        
-        left_panel.addWidget(civitai_group)
+        left_panel.addWidget(hf_api_group)
         left_panel.addStretch(1)
+        
+        # Right panel - Info/Status
+        info_group = QGroupBox("ℹ️ Information")
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(6)
+        info_group.setLayout(info_layout)
+        
+        info_text = QPlainTextEdit()
+        info_text.setReadOnly(True)
+        info_text.setPlainText(
+            "API Configuration\n\n"
+            "This tab centralizes all API settings used across SynthMaxxer:\n\n"
+            "• SynthMaxxer: Used for conversation generation\n"
+            "• GrokMaxxer: Used for entry enhancement and cache generation\n"
+            "• CaptionMaxxer: Used for image captioning\n"
+            "• Civitai: Used for downloading images from Civitai\n"
+            "• HuggingFace: Used for accessing HuggingFace datasets\n\n"
+            "Configure your API keys, endpoints, and models here. "
+            "These settings are automatically saved and shared across all tabs."
+        )
+        info_text.setStyleSheet("background-color: #020202; color: #D1D5DB; border: 1px solid #1F2937; border-radius: 8px; padding: 10px;")
+        info_layout.addWidget(info_text)
+        
+        right_panel.addWidget(info_group, stretch=1)
 
-        # Right panel - Logs
-        mm_progress_group = QGroupBox("Run Status")
-        mm_progress_layout = QVBoxLayout()
-        mm_progress_layout.setSpacing(6)
-        mm_progress_group.setLayout(mm_progress_layout)
-
-        self.mm_log_view = QPlainTextEdit()
-        self.mm_log_view.setReadOnly(True)
-        self.mm_log_view.setMaximumBlockCount(1000)
-        self.mm_log_view.setPlaceholderText("Logs will appear here...")
-        mm_progress_layout.addWidget(QLabel("Logs:"))
-        mm_progress_layout.addWidget(self.mm_log_view, stretch=1)
-
-        right_panel.addWidget(mm_progress_group, stretch=1)
 
     def _wrap_row(self, layout):
         container = QWidget()
@@ -1193,7 +703,7 @@ class MainWindow(QMainWindow):
                 
                 self.endpoint_edit.setText(cfg.get("endpoint", ""))
                 output_dir = cfg.get("output_dir", "outputs")
-                self.output_dir_edit.setText(output_dir)
+                self.output_dir_edit.setText(output_dir)  # type: ignore
                 model_name = cfg.get("model", "")
                 if model_name:
                     # Try to set the model, add it if not in list (since combo is editable)
@@ -1202,7 +712,7 @@ class MainWindow(QMainWindow):
                         self.model_combo.setCurrentIndex(index)
                     else:
                         self.model_combo.setCurrentText(model_name)
-                self.output_dir_edit.setText(cfg.get("output_dir", ""))
+                self.output_dir_edit.setText(cfg.get("output_dir", ""))  # type: ignore
                 self.system_message_edit.setPlainText(cfg.get("system_message", ""))
                 self.user_first_message_edit.setPlainText(cfg.get("user_first_message", ""))
                 self.assistant_first_message_edit.setPlainText(cfg.get("assistant_first_message", ""))
@@ -1225,7 +735,7 @@ class MainWindow(QMainWindow):
                 self._append_log(f"Error loading config: {e}")
         else:
             # Set defaults
-            self.output_dir_edit.setText("outputs")
+            self.output_dir_edit.setText("outputs")  # type: ignore
             self.user_start_tag_edit.setText("<human_turn>")
             self.user_end_tag_edit.setText("</human_turn>")
             self.assistant_start_tag_edit.setText("<claude_turn>")
@@ -1294,18 +804,18 @@ class MainWindow(QMainWindow):
             if proc_cfg.get("api_key"):
                 self.proc_api_key_edit.setText(proc_cfg.get("api_key", ""))
             if proc_cfg.get("last_input"):
-                self.proc_input_edit.setText(proc_cfg.get("last_input", ""))
+                self.proc_input_edit.setText(proc_cfg.get("last_input", ""))  # type: ignore
             if proc_cfg.get("last_output"):
                 # Default to outputs folder if no saved output
                 saved_output = proc_cfg.get("last_output", "")
                 if saved_output:
-                    self.proc_output_edit.setText(saved_output)
+                    self.proc_output_edit.setText(saved_output)  # type: ignore
                 else:
                     # Set default to outputs folder
                     repo_root = os.path.dirname(os.path.dirname(__file__))
                     outputs_dir = os.path.join(repo_root, "outputs")
                     default_output = os.path.join(outputs_dir, "processed_output.jsonl")
-                    self.proc_output_edit.setText(default_output)
+                    self.proc_output_edit.setText(default_output)  # type: ignore
             if proc_cfg.get("system_prompt"):
                 self.proc_system_prompt_edit.setPlainText(proc_cfg.get("system_prompt", ""))
             if proc_cfg.get("model"):
@@ -1336,7 +846,7 @@ class MainWindow(QMainWindow):
         # Load multimodal config
         if hasattr(self, 'mm_image_dir_edit'):
             if cfg.get("mm_image_dir"):
-                self.mm_image_dir_edit.setText(cfg.get("mm_image_dir", ""))
+                self.mm_image_dir_edit.setText(cfg.get("mm_image_dir", ""))  # type: ignore
             if cfg.get("mm_output"):
                 saved_output = cfg.get("mm_output", "")
                 # Fix old paths that point to App\outputs
@@ -1346,7 +856,7 @@ class MainWindow(QMainWindow):
                     outputs_dir = os.path.join(repo_root, "outputs")
                     filename = os.path.basename(saved_output)
                     saved_output = os.path.join(outputs_dir, filename)
-                self.mm_output_edit.setText(saved_output)
+                self.mm_output_edit.setText(saved_output)  # type: ignore
             if cfg.get("mm_api_key"):
                 self.mm_api_key_edit.setText(cfg.get("mm_api_key", ""))
             elif cfg.get("api_keys"):
@@ -1390,8 +900,8 @@ class MainWindow(QMainWindow):
                 use_hf = bool(cfg.get("mm_use_hf_dataset", False))
                 self.mm_use_hf_dataset_check.setChecked(use_hf)
                 self._toggle_hf_dataset_mode(use_hf)
-            if cfg.get("mm_hf_token"):
-                self.mm_hf_token_edit.setText(cfg.get("mm_hf_token", ""))
+            if cfg.get("hf_token"):
+                self.hf_token_edit.setText(cfg.get("hf_token", ""))
         
         # Load Civitai config
         if hasattr(self, 'civitai_api_key_edit'):
@@ -1471,7 +981,7 @@ class MainWindow(QMainWindow):
             "api_keys": api_keys,  # Per-provider API keys
             "endpoint": self.endpoint_edit.text().strip(),
             "model": self.model_combo.currentText().strip(),
-            "output_dir": self.output_dir_edit.text().strip(),
+            "output_dir": self.output_dir_edit.text().strip(),  # type: ignore
             "system_message": self.system_message_edit.toPlainText().strip(),
             "user_first_message": self.user_first_message_edit.toPlainText().strip(),
             "assistant_first_message": self.assistant_first_message_edit.toPlainText().strip(),
@@ -1488,8 +998,8 @@ class MainWindow(QMainWindow):
             "force_retry_phrases": [p.strip() for p in self.force_retry_phrases_edit.toPlainText().split('\n') if p.strip()],
             "api_type": self.api_type_combo.currentText(),
             # Processing tab config
-            "proc_last_input": self.proc_input_edit.text().strip(),
-            "proc_last_output": self.proc_output_edit.text().strip(),
+            "proc_last_input": self.proc_input_edit.text().strip(),  # type: ignore
+            "proc_last_output": self.proc_output_edit.text().strip(),  # type: ignore
             "proc_system_prompt": self.proc_system_prompt_edit.toPlainText().strip(),
             "proc_model": self.proc_model_edit.text().strip(),
             "proc_start_line": self.proc_start_line_edit.text().strip(),
@@ -1501,9 +1011,9 @@ class MainWindow(QMainWindow):
             "proc_dynamic_names_mode": self.proc_dynamic_names_check.isChecked(),
             "proc_concurrency": self.proc_concurrency_spin.value(),
             "proc_batch_size": self.proc_batch_size_spin.value(),
-            # Multimodal tab config
-            "mm_image_dir": self.mm_image_dir_edit.text().strip() if hasattr(self, 'mm_image_dir_edit') else "",
-            "mm_output": self.mm_output_edit.text().strip() if hasattr(self, 'mm_output_edit') else "",
+            # CaptionMaxxer tab config
+            "mm_image_dir": self.mm_image_dir_edit.text().strip() if hasattr(self, 'mm_image_dir_edit') else "",  # type: ignore
+            "mm_output": self.mm_output_edit.text().strip() if hasattr(self, 'mm_output_edit') else "",  # type: ignore
             "mm_api_key": self.mm_api_key_edit.text().strip() if hasattr(self, 'mm_api_key_edit') else "",
             "mm_endpoint": self.mm_endpoint_edit.text().strip() if hasattr(self, 'mm_endpoint_edit') else "",
             "mm_model": self.mm_model_combo.currentText().strip() if hasattr(self, 'mm_model_combo') else "",
@@ -1515,7 +1025,7 @@ class MainWindow(QMainWindow):
             "mm_max_captions": self.mm_max_captions_spin.value() if hasattr(self, 'mm_max_captions_spin') else 0,
             "mm_hf_dataset": self.mm_hf_dataset_edit.text().strip() if hasattr(self, 'mm_hf_dataset_edit') else "",
             "mm_use_hf_dataset": self.mm_use_hf_dataset_check.isChecked() if hasattr(self, 'mm_use_hf_dataset_check') else False,
-            "mm_hf_token": self.mm_hf_token_edit.text().strip() if hasattr(self, 'mm_hf_token_edit') else "",
+            "hf_token": self.hf_token_edit.text().strip() if hasattr(self, 'hf_token_edit') else "",
         }
         
         # Save processing API key if it exists
@@ -1859,15 +1369,6 @@ class MainWindow(QMainWindow):
             self.assistant_start_tag_edit.setText(assistant_start)
             self.assistant_end_tag_edit.setText(assistant_end)
 
-    def browse_output_dir(self):
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "Select output directory",
-            "",
-        )
-        if directory:
-            self.output_dir_edit.setText(directory)
-
     def _show_error(self, msg):
         QMessageBox.critical(self, "Error", msg)
 
@@ -1894,91 +1395,6 @@ class MainWindow(QMainWindow):
                 cursor.insertText('\n')
         self.log_view.ensureCursorVisible()
 
-    def start_generation(self):
-        # Validate inputs
-        api_key = self.api_key_edit.text().strip()
-        endpoint = self.endpoint_edit.text().strip()
-        model = self.model_combo.currentText().strip()
-        output_dir = self.output_dir_edit.text().strip()
-
-        if not api_key:
-            self._show_error("Please enter your API key.")
-            return
-        if not endpoint:
-            self._show_error("Please enter the API endpoint.")
-            return
-        if not model:
-            self._show_error("Please enter the model name.")
-            return
-        if not output_dir:
-            self._show_error("Please enter the output directory.")
-            return
-
-        # Save config
-        self._save_config()
-
-        # Reset UI state
-        self.log_view.clear()
-        self._append_log("=== Generation started ===")
-        self.setWindowTitle(f"{APP_TITLE} - Generating...")
-        self.start_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
-        self.stop_flag.clear()
-
-        self.queue = queue.Queue()
-
-        # Collect all configuration values
-        system_message = self.system_message_edit.toPlainText().strip()
-        user_first_message = self.user_first_message_edit.toPlainText().strip()
-        assistant_first_message = self.assistant_first_message_edit.toPlainText().strip()
-        user_start_tag = self.user_start_tag_edit.text().strip()
-        user_end_tag = self.user_end_tag_edit.text().strip()
-        assistant_start_tag = self.assistant_start_tag_edit.text().strip()
-        assistant_end_tag = self.assistant_end_tag_edit.text().strip()
-        is_instruct = self.is_instruct_check.isChecked()
-        min_delay = self.min_delay_spin.value()
-        max_delay = self.max_delay_spin.value()
-        stop_percentage = self.stop_percentage_spin.value()
-        min_turns = self.min_turns_spin.value()
-        refusal_phrases = [p.strip() for p in self.refusal_phrases_edit.toPlainText().split('\n') if p.strip()]
-        force_retry_phrases = [p.strip() for p in self.force_retry_phrases_edit.toPlainText().split('\n') if p.strip()]
-        api_type = self.api_type_combo.currentText()
-
-        # Start worker thread using SynthMaxxer.worker
-        self.worker_thread = threading.Thread(
-            target=worker,
-            args=(
-                api_key,
-                endpoint,
-                model,
-                output_dir,
-                system_message,
-                user_first_message,
-                assistant_first_message,
-                user_start_tag,
-                user_end_tag,
-                assistant_start_tag,
-                assistant_end_tag,
-                is_instruct,
-                min_delay,
-                max_delay,
-                stop_percentage,
-                min_turns,
-                refusal_phrases,
-                force_retry_phrases,
-                api_type,
-                self.stop_flag,
-                self.queue,
-            ),
-            daemon=True,
-        )
-        self.worker_thread.start()
-        self.timer.start()
-
-    def stop_generation(self):
-        self.stop_flag.set()
-        self._append_log("Stopping generation...")
-        self.stop_button.setEnabled(False)
 
     def check_queue(self):
         # Check multimodal queue
@@ -2021,20 +1437,20 @@ class MainWindow(QMainWindow):
                 while True:
                     msg_type, msg = self.civitai_queue.get_nowait()
                     if msg_type == "log":
-                        self._append_mm_log(str(msg))
+                        self._append_civitai_log(str(msg))
                     elif msg_type == "success":
                         self.setWindowTitle(f"{APP_TITLE} - Done")
                         self.civitai_start_button.setEnabled(True)
                         self.civitai_stop_button.setEnabled(False)
                         self.timer.stop()
-                        self._append_mm_log(str(msg))
+                        self._append_civitai_log(str(msg))
                         self._show_info(str(msg))
                     elif msg_type == "error":
                         self.setWindowTitle(f"{APP_TITLE} - Error")
                         self.civitai_start_button.setEnabled(True)
                         self.civitai_stop_button.setEnabled(False)
                         self.timer.stop()
-                        self._append_mm_log(str(msg))
+                        self._append_civitai_log(str(msg))
                         self._show_error(str(msg))
                     elif msg_type == "stopped":
                         self.civitai_start_button.setEnabled(True)
@@ -2042,7 +1458,7 @@ class MainWindow(QMainWindow):
                         self.setWindowTitle(APP_TITLE)
                         self.timer.stop()
                         if msg:  # Only log if there's a message
-                            self._append_mm_log(str(msg))
+                            self._append_civitai_log(str(msg))
             except queue.Empty:
                 pass
         
@@ -2061,6 +1477,8 @@ class MainWindow(QMainWindow):
                         self.process_button.setEnabled(True)
                         self.generate_cache_button.setEnabled(True)
                         self.improve_cache_button.setEnabled(True)
+                        if hasattr(self, 'proc_stop_button'):
+                            self.proc_stop_button.setEnabled(False)
                         self.timer.stop()
                         self._append_proc_log(str(msg))
                         self._show_info(str(msg))
@@ -2069,6 +1487,8 @@ class MainWindow(QMainWindow):
                         self.process_button.setEnabled(True)
                         self.generate_cache_button.setEnabled(True)
                         self.improve_cache_button.setEnabled(True)
+                        if hasattr(self, 'proc_stop_button'):
+                            self.proc_stop_button.setEnabled(False)
                         self.timer.stop()
                         self._append_proc_log(str(msg))
                         self._show_error(str(msg))
@@ -2076,18 +1496,23 @@ class MainWindow(QMainWindow):
                         self.process_button.setEnabled(True)
                         self.generate_cache_button.setEnabled(True)
                         self.improve_cache_button.setEnabled(True)
+                        if hasattr(self, 'proc_stop_button'):
+                            self.proc_stop_button.setEnabled(False)
                         self.setWindowTitle(APP_TITLE)
                         self.timer.stop()
+                        if msg:  # Only log if there's a message
+                            self._append_proc_log(str(msg))
             except queue.Empty:
                 pass
         
         # Now check main queue for generation tab
-        if not self.queue:
+        queue_obj = self.queue
+        if not isinstance(queue_obj, queue.Queue):
             return
-
+        
         try:
             while True:
-                msg_type, msg = self.queue.get_nowait()
+                msg_type, msg = queue_obj.get_nowait()  # type: ignore[misc]
                 if msg_type == "log":
                     print(str(msg))
                     self._append_log(msg)
@@ -2113,74 +1538,11 @@ class MainWindow(QMainWindow):
         except queue.Empty:
             pass
 
-    def browse_proc_input(self):
-        filename, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select input JSONL file",
-            "",
-            "JSONL files (*.jsonl);;All files (*.*)",
-        )
-        if filename:
-            self.proc_input_edit.setText(filename)
-
-    def browse_proc_output(self):
-        # Default to outputs folder in repo root
-        default_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs")
-        if not os.path.exists(default_path):
-            os.makedirs(default_path, exist_ok=True)
-        
-        # Get current value or use default
-        current_path = self.proc_output_edit.text().strip()
-        if current_path and os.path.dirname(current_path):
-            start_dir = os.path.dirname(current_path)
-        else:
-            start_dir = default_path
-        
-        filename, _ = QFileDialog.getSaveFileName(
-            self,
-            "Select output JSONL file",
-            os.path.join(start_dir, "processed_output.jsonl"),
-            "JSONL files (*.jsonl);;All files (*.*)",
-        )
-        if filename:
-            self.proc_output_edit.setText(filename)
-
     def toggle_proc_api_visibility(self, checked):
         if checked:
             self.proc_api_key_edit.setEchoMode(QLineEdit.Normal)
         else:
             self.proc_api_key_edit.setEchoMode(QLineEdit.Password)
-
-    def browse_mm_image_dir(self):
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "Select image folder",
-            "",
-        )
-        if directory:
-            self.mm_image_dir_edit.setText(directory)
-
-    def browse_mm_output(self):
-        # Get repo root (go up from App/SynthMaxxer to repo root)
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        default_path = os.path.join(repo_root, "outputs")
-        if not os.path.exists(default_path):
-            os.makedirs(default_path, exist_ok=True)
-        
-        current_path = self.mm_output_edit.text().strip()
-        if current_path and os.path.dirname(current_path):
-            start_dir = os.path.dirname(current_path)
-        else:
-            start_dir = default_path
-        
-        filename, _ = QFileDialog.getSaveFileName(
-            self,
-            "Select output Parquet file",
-            os.path.join(start_dir, "image_captions.parquet"),
-            "Parquet files (*.parquet);;All files (*.*)",
-        )
-        if filename:
-            self.mm_output_edit.setText(filename)
 
     def toggle_mm_api_visibility(self, checked):
         if checked:
@@ -2194,26 +1556,34 @@ class MainWindow(QMainWindow):
         else:
             self.civitai_api_key_edit.setEchoMode(QLineEdit.Password)
     
-    def browse_civitai_output(self):
-        """Browse for Civitai output directory"""
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        default_path = os.path.join(repo_root, "Outputs", "images")
-        if not os.path.exists(default_path):
-            os.makedirs(default_path, exist_ok=True)
-        
-        current_path = self.civitai_output_edit.text().strip()
-        if current_path and os.path.exists(current_path):
-            start_dir = current_path
+    def toggle_hf_token_visibility(self, checked):
+        if checked:
+            self.hf_token_edit.setEchoMode(QLineEdit.Normal)
         else:
-            start_dir = default_path
-        
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "Select output folder for Civitai images",
-            start_dir,
-        )
-        if directory:
-            self.civitai_output_edit.setText(directory)
+            self.hf_token_edit.setEchoMode(QLineEdit.Password)
+    
+    def _append_hf_log(self, message):
+        """Append message to HuggingFace log view"""
+        if hasattr(self, 'hf_log_view'):
+            self.hf_log_view.appendPlainText(message)
+    
+    def _append_civitai_log(self, text):
+        """Append message to CivitAI log view"""
+        if not text:
+            return
+        if hasattr(self, 'civitai_log_view'):
+            cursor = self.civitai_log_view.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            self.civitai_log_view.setTextCursor(cursor)
+            ansi_stripped = self.strip_ansi(text)
+            lines = ansi_stripped.split('\n')
+            for line in lines:
+                if line.strip():
+                    fmt = self._get_log_format(line)
+                    cursor.insertText(line + '\n', fmt)
+                else:
+                    cursor.insertText('\n')
+            self.civitai_log_view.ensureCursorVisible()
 
     def _update_mm_endpoint_placeholder(self, api_type):
         """Update endpoint placeholder based on selected API type"""
@@ -2255,7 +1625,7 @@ class MainWindow(QMainWindow):
         self._update_mm_models(api_type, api_key)
 
     def _update_mm_models(self, api_type, api_key):
-        """Fetch and update model dropdown based on selected API type for multimodal tab"""
+        """Fetch and update model dropdown based on selected API type for CaptionMaxxer tab"""
         if not api_key:
             self.mm_model_combo.clear()
             self.mm_model_combo.addItem("(Enter API key and click Refresh)")
@@ -2277,7 +1647,7 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _fetch_mm_models(self, api_type, api_key):
-        """Fetch available models from the API for multimodal tab"""
+        """Fetch available models from the API for CaptionMaxxer tab"""
         models = []
         error_msg = None
 
@@ -2370,7 +1740,7 @@ class MainWindow(QMainWindow):
         self.mm_model_fetcher.models_ready.emit(models)
 
     def _on_mm_models_ready(self, models):
-        """Handle models ready signal on main thread for multimodal tab"""
+        """Handle models ready signal on main thread for CaptionMaxxer tab"""
         try:
             self.mm_model_combo.clear()
             self.mm_model_combo.addItems(models)
@@ -2390,19 +1760,11 @@ class MainWindow(QMainWindow):
     def _toggle_hf_dataset_mode(self, checked):
         """Enable/disable image folder input based on HF dataset mode"""
         if checked:
-            self.mm_image_dir_edit.setEnabled(False)
-            self.mm_hf_dataset_edit.setEnabled(True)
-            self.mm_hf_token_edit.setEnabled(True)
+            self.mm_image_dir_edit.setEnabled(False)  # type: ignore
+            self.mm_hf_dataset_edit.setEnabled(True)  # type: ignore
         else:
-            self.mm_image_dir_edit.setEnabled(True)
-            self.mm_hf_dataset_edit.setEnabled(False)
-            self.mm_hf_token_edit.setEnabled(False)
-
-    def toggle_mm_hf_token_visibility(self, checked):
-        if checked:
-            self.mm_hf_token_edit.setEchoMode(QLineEdit.Normal)
-        else:
-            self.mm_hf_token_edit.setEchoMode(QLineEdit.Password)
+            self.mm_image_dir_edit.setEnabled(True)  # type: ignore
+            self.mm_hf_dataset_edit.setEnabled(False)  # type: ignore
 
     def _append_mm_log(self, text):
         if not text:
@@ -2454,9 +1816,9 @@ class MainWindow(QMainWindow):
             layout.setContentsMargins(10, 10, 10, 10)
             
             image_label = QLabel()
-            image_label.setAlignment(Qt.AlignCenter)
+            image_label.setAlignment(Qt.AlignCenter)  # type: ignore
             # Scale image to fit window while maintaining aspect ratio
-            scaled_pix = pix.scaled(780, 580, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled_pix = pix.scaled(780, 580, Qt.KeepAspectRatio, Qt.SmoothTransformation)  # type: ignore
             image_label.setPixmap(scaled_pix)
             
             layout.addWidget(image_label)
@@ -2485,706 +1847,6 @@ class MainWindow(QMainWindow):
             else:
                 cursor.insertText('\n')
         self.proc_log_view.ensureCursorVisible()
-
-    def process_files(self):
-        input_file = self.proc_input_edit.text().strip()
-        output_file = self.proc_output_edit.text().strip()
-        api_key = self.proc_api_key_edit.text().strip()
-        system_prompt = self.proc_system_prompt_edit.toPlainText().strip()
-        start_line_str = self.proc_start_line_edit.text().strip()
-        end_line_str = self.proc_end_line_edit.text().strip()
-        do_rewrite = self.proc_rewrite_check.isChecked()
-        reply_in_character = self.proc_reply_in_character_check.isChecked()
-        dynamic_names_mode = self.proc_dynamic_names_check.isChecked()
-        num_new_str = self.proc_num_new_edit.text().strip()
-        num_new = 0
-        if num_new_str:
-            try:
-                num_new = int(num_new_str)
-                if num_new < 0:
-                    raise ValueError("Negative value")
-            except ValueError:
-                self._show_error("Number of new entries must be a non-negative integer.")
-                return
-        extra_pairs = int(self.proc_extra_pairs_spin.value())
-
-        # Auto-generate output filename if not provided
-        if not output_file:
-            # Default to outputs folder in repo root
-            repo_root = os.path.dirname(os.path.dirname(__file__))
-            outputs_dir = os.path.join(repo_root, "outputs")
-            os.makedirs(outputs_dir, exist_ok=True)
-            
-            # Generate filename based on input file or timestamp
-            if input_file:
-                base_name = os.path.splitext(os.path.basename(input_file))[0]
-                output_file = os.path.join(outputs_dir, f"{base_name}_processed.jsonl")
-            else:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_file = os.path.join(outputs_dir, f"processed_{timestamp}.jsonl")
-            
-            self.proc_output_edit.setText(output_file)
-            self._append_proc_log(f"Auto-generated output file: {output_file}")
-
-        if not api_key:
-            self._show_error("Please enter your Grok API key.")
-            return
-
-        start_line = None
-        if start_line_str:
-            try:
-                start_line = int(start_line_str)
-                if start_line < 1:
-                    raise ValueError
-            except ValueError:
-                self._show_error("Start line must be a positive integer.")
-                return
-
-        end_line = None
-        if end_line_str:
-            try:
-                end_line = int(end_line_str)
-                if end_line < 1:
-                    raise ValueError
-            except ValueError:
-                self._show_error("End line must be a positive integer.")
-                return
-
-        if start_line is not None and end_line is not None and end_line < start_line:
-            self._show_error("End line cannot be less than start line.")
-            return
-
-        model_name = self.proc_model_edit.text().strip()
-        if not model_name:
-            model_name = "grok-4.1-fast-non-reasoning"
-
-        # Reset UI state for new run
-        self.proc_log_view.clear()
-        self._append_proc_log("=== New run started ===")
-        self.setWindowTitle(f"{APP_TITLE} - Processing...")
-        self.process_button.setEnabled(False)
-        
-        # Save config before processing
-        self._save_config()
-
-        self.proc_queue = queue.Queue()
-        
-        # Immediately log that we're starting
-        self._append_proc_log("Creating worker thread...")
-        self._append_proc_log(f"Input: {input_file or 'None'}")
-        self._append_proc_log(f"Output: {output_file}")
-        self._append_proc_log(f"API Key: {'***' + api_key[-4:] if len(api_key) > 4 else 'None'}")
-        self._append_proc_log(f"Model: {model_name}")
-        self._append_proc_log(f"Settings: rewrite={do_rewrite}, extra_pairs={extra_pairs}, num_new={num_new}")
-
-        def worker_wrapper(*args, **kwargs):
-            """Wrapper to catch any exceptions during thread startup"""
-            try:
-                self.proc_queue.put(("log", "Worker thread function called"))
-                processing_worker(*args, **kwargs)
-            except Exception as e:
-                import traceback
-                tb = traceback.format_exc()
-                error_msg = f"CRITICAL: Worker thread crashed: {e}"
-                self.proc_queue.put(("error", error_msg))
-                self.proc_queue.put(("log", f"Traceback:\n{tb}"))
-                print(f"WORKER CRASH: {error_msg}")
-                print(f"Traceback:\n{tb}")
-
-        t = threading.Thread(
-            target=worker_wrapper,
-            args=(
-                input_file,
-                output_file,
-                num_new,
-                api_key,
-                model_name,
-                system_prompt,
-                start_line,
-                end_line,
-                do_rewrite,
-                extra_pairs,
-                reply_in_character,
-                dynamic_names_mode,
-                False,  # rewrite_cache=False for process mode
-                self.proc_queue,
-            ),
-            daemon=True,
-        )
-        self._append_proc_log("Starting worker thread...")
-        t.start()
-        self._append_proc_log("Worker thread started, timer starting...")
-        self.timer.start()
-        self._append_proc_log("Timer started - queue should be checked every 100ms")
-
-    def generate_human_cache(self):
-        api_key = self.proc_api_key_edit.text().strip()
-        system_prompt = self.proc_system_prompt_edit.toPlainText().strip()
-        model_name = self.proc_model_edit.text().strip() or "grok-4.1-fast-non-reasoning"
-
-        if not api_key:
-            self._show_error("Please enter your Grok API key.")
-            return
-
-        cache_file = GLOBAL_HUMAN_CACHE_FILE
-        
-        # Ask user how many to generate
-        from PyQt5.QtWidgets import QInputDialog
-        num_turns, ok = QInputDialog.getInt(
-            self,
-            "Generate Human Cache",
-            "How many human turns to generate?",
-            value=100,
-            min=1,
-            max=1000,
-            step=10
-        )
-        if not ok:
-            return
-
-        # Reset UI state
-        self.proc_log_view.clear()
-        self._append_proc_log("=== Generating Human Cache ===")
-        self.setWindowTitle(f"{APP_TITLE} - Generating cache...")
-        self.generate_cache_button.setEnabled(False)
-        self.improve_cache_button.setEnabled(False)
-
-        self.proc_queue = queue.Queue()
-
-        def worker_thread():
-            try:
-                from App.SynthMaxxer.llm_helpers import generate_human_turns
-                from xai_sdk import Client
-                import json
-                import os
-
-                client = Client(api_key=api_key, timeout=300)
-                self.proc_queue.put(("log", f"Generating {num_turns} human turns..."))
-                
-                new_turns = generate_human_turns(
-                    client,
-                    model_name,
-                    system_prompt,
-                    num_turns=num_turns,
-                    temperature=1.0
-                )
-                
-                # Load existing cache if it exists
-                existing_turns = []
-                if os.path.exists(cache_file):
-                    try:
-                        with open(cache_file, 'r', encoding='utf-8') as f:
-                            existing_turns = json.load(f)
-                        self.proc_queue.put(("log", f"Loaded {len(existing_turns)} existing turns from cache"))
-                    except Exception as e:
-                        self.proc_queue.put(("log", f"Could not load existing cache: {e}"))
-                
-                # Combine and save
-                all_turns = existing_turns + new_turns
-                with open(cache_file, 'w', encoding='utf-8') as f:
-                    json.dump(all_turns, f, indent=2, ensure_ascii=False)
-                
-                self.proc_queue.put(("log", f"✅ Generated {len(new_turns)} new human turns"))
-                self.proc_queue.put(("log", f"✅ Cache now contains {len(all_turns)} total human turns"))
-                self.proc_queue.put(("success", f"Successfully generated {len(new_turns)} human turns"))
-                
-            except Exception as e:
-                self.proc_queue.put(("error", f"Failed to generate human cache: {str(e)}"))
-            finally:
-                self.proc_queue.put(("stopped", None))
-
-        t = threading.Thread(target=worker_thread, daemon=True)
-        t.start()
-        self.timer.start()
-
-    def improve_human_cache(self):
-        api_key = self.proc_api_key_edit.text().strip()
-        system_prompt = self.proc_system_prompt_edit.toPlainText().strip()
-        model_name = self.proc_model_edit.text().strip() or "grok-4.1-fast-non-reasoning"
-
-        if not api_key:
-            self._show_error("Please enter your Grok API key.")
-            return
-
-        cache_file = GLOBAL_HUMAN_CACHE_FILE
-        try:
-            import json
-            import os
-            from xai_sdk import Client
-            from xai_sdk.chat import system
-            from json_repair import repair_json
-
-            if os.path.exists(cache_file):
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    human_turns = json.load(f)
-                self._append_proc_log(f"Loaded {len(human_turns)} human turns from {cache_file}")
-            else:
-                human_turns = []
-                self._append_proc_log(f"No cache file found at {cache_file}, starting empty")
-
-            if not human_turns:
-                # Don't block - just inform user, but allow them to proceed if they want
-                reply = QMessageBox.question(
-                    self,
-                    "Empty Cache",
-                    "Human cache is empty. Would you like to generate some human turns first, or proceed with improvement?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes
-                )
-                if reply == QMessageBox.Yes:
-                    # Generate some human turns first
-                    self.proc_log_view.clear()
-                    self._append_proc_log("Generating initial human turns for cache...")
-                    try:
-                        from App.SynthMaxxer.llm_helpers import generate_human_turns
-                        from xai_sdk import Client
-                        client = Client(api_key=api_key, timeout=300)
-                        new_turns = generate_human_turns(
-                            client,
-                            model_name,
-                            system_prompt,
-                            num_turns=50,
-                            temperature=1.0
-                        )
-                        human_turns = new_turns
-                        with open(cache_file, 'w', encoding='utf-8') as f:
-                            json.dump(human_turns, f, indent=2, ensure_ascii=False)
-                        self._append_proc_log(f"Generated and saved {len(human_turns)} human turns to cache")
-                        self._show_info(f"Generated {len(human_turns)} human turns. You can now improve them.")
-                        # Continue with improvement after generation
-                    except Exception as gen_e:
-                        self._show_error(f"Failed to generate human turns: {gen_e}")
-                        return
-                else:
-                    self._show_info("Cannot improve empty cache. Please generate entries first or generate human turns.")
-                    return
-
-            # Reset UI state
-            self.proc_log_view.clear()
-            self._append_proc_log("=== Improving human cache ===")
-            self.setWindowTitle(f"{APP_TITLE} - Improving cache...")
-            self.process_button.setEnabled(False)
-            self.improve_cache_button.setEnabled(False)
-
-            self.proc_queue = queue.Queue()
-
-            def worker_thread():
-                try:
-                    import concurrent.futures
-                    client = Client(api_key=api_key, timeout=300)
-                    
-                    BATCH_SIZE = self.proc_batch_size_spin.value()
-                    MAX_CONCURRENCY = self.proc_concurrency_spin.value()
-                    original_human_turns = human_turns.copy()
-                    num_batches = (len(original_human_turns) + BATCH_SIZE - 1) // BATCH_SIZE
-                    
-                    self.proc_queue.put(("log", f"Processing {len(original_human_turns)} human turns in {num_batches} batches of {BATCH_SIZE} (concurrency: {MAX_CONCURRENCY})..."))
-                    
-                    def process_batch(batch_idx):
-                        from App.SynthMaxxer.llm_helpers import improve_entry
-                        batch_start = batch_idx * BATCH_SIZE
-                        batch = original_human_turns[batch_start:batch_start + BATCH_SIZE]
-                        messages_text = "\n".join([
-                            f"{i+1}. Domain: {item['domain']}\nMessage: {item['message']}"
-                            for i, item in enumerate(batch)
-                        ])
-
-                        base_prompt = (
-                            "You are a professional dataset curator creating PREMIUM quality human-LLM conversations. "
-                            "Your job is to transform RAW, broken, synthetic text into AUTHENTIC human questions that "
-                            "REAL people would type into ChatGPT/Claude/Grok. PRIORITIZE QUALITY over speed.\n\n"
-                            "🚫 PROBLEMS TO ELIMINATE:\n"
-                            "❌ Comma-delimited lists: 'feature A, feature B, feature C'\n"
-                            "❌ Broken fragments: 'how to do X? Y? Z?'\n"
-                            "❌ Robotic repetition: 'I want X. I need X. Please give X.'\n"
-                            "❌ Synthetic phrasing: 'As an AI language model...'\n"
-                            "❌ Bullet-point style: '- point 1 - point 2'\n\n"
-                            "✅ REAL HUMAN PATTERNS:\n"
-                            "• Complete sentences with natural flow\n"
-                            "• Casual contractions: 'I'm', 'it's', 'you're', 'there's'\n"
-                            "• Personal context: 'I've been trying...', 'In my project...'\n"
-                            "• Specific scenarios: 'Yesterday I was working on...'\n"
-                            "• Natural curiosity: 'Do you think...', 'What's the best way...'\n"
-                            "• Enthusiasm/urgency: 'Really need help with...', 'Super excited to...'\n"
-                            "• Typos/fillers optional: 'kinda', 'sorta', 'tbh'\n\n"
-                            "📝 EXAMPLE TRANSFORMATIONS:\n"
-                            "BAD: 'machine learning, neural networks, training data'\n"
-                            "GOOD: \"Hey, I'm building a ML model but struggling with training data quality. "
-                            "The neural network keeps overfitting even with dropout. Any tips on data augmentation?\"\n\n"
-                            "BAD: 'write python code, web scraping, beautifulsoup'\n"
-                            "GOOD: \"Can you help me write a Python web scraper? I want to pull product prices "
-                            "from an ecommerce site using BeautifulSoup but keep getting parsing errors. Here's my code...\"\n\n"
-                            "🎯 YOUR JOB: Rewrite EVERY message above using these exact patterns. "
-                            "Make them 150-450 words. Add personality/context. PRESERVE DOMAIN exactly.\n\n"
-                            f"RAW INPUT MESSAGES:\n{messages_text}\n\n"
-                            "📤 RESPOND with ONLY valid JSON array, same order/format:\n"
-                            '[{"domain": "EXACT SAME DOMAIN", "message": "FULL REALISTIC HUMAN QUESTION"}, ...]\n'
-                            "NO OTHER TEXT. VALID JSON ONLY."
-                        )
-                        
-                        prompt = base_prompt
-                        if system_prompt.strip() and self.proc_reply_in_character_check.isChecked():
-                            prompt = system_prompt.strip() + "\n\n" + base_prompt
-
-                        try:
-                            self.proc_queue.put(("log", f"Sending batch {batch_idx + 1}/{num_batches} ({len(batch)} items)..."))
-                            chat = client.chat.create(model=model_name, temperature=0.8)
-                            chat.append(system(prompt))
-                            response = chat.sample()
-                        
-                            content = response.content
-                            repaired = repair_json(content)
-                            batch_improved = []
-                            if repaired:
-                                try:
-                                    batch_improved = json.loads(repaired)
-                                except:
-                                    batch_improved = []
-
-                            # Validate and filter improved turns
-                            valid_batch = []
-                            skipped = 0
-                            for improved in batch_improved:
-                                if isinstance(improved, dict) and 'message' in improved and 'domain' in improved and improved['message'].strip():
-                                    valid_batch.append(improved)
-                                else:
-                                    skipped += 1
-                            
-                            # Pad incomplete batch with originals
-                            for i in range(len(valid_batch), len(batch)):
-                                valid_batch.append(batch[i])
-                            
-                            self.proc_queue.put(("log", f"Batch {batch_idx + 1}/{num_batches}: got {len(batch_improved)} items, {skipped} skipped, using {len(valid_batch)} valid"))
-                            return valid_batch
-                        except Exception as e:
-                            self.proc_queue.put(("log", f"Batch {batch_idx + 1} failed: {str(e)}"))
-                            return batch
-
-                    improved_turns = []
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as executor:
-                        batch_futures = {
-                            executor.submit(process_batch, i): i 
-                            for i in range(num_batches)
-                        }
-                        
-                        for future in concurrent.futures.as_completed(batch_futures):
-                            batch_idx = batch_futures[future]
-                            try:
-                                valid_batch = future.result()
-                                improved_turns.extend(valid_batch)
-                            except Exception as e:
-                                self.proc_queue.put(("log", f"Batch {batch_idx + 1} exception: {str(e)}"))
-
-                    # Save updated cache
-                    with open(cache_file, 'w', encoding='utf-8') as f:
-                        json.dump(improved_turns, f, indent=2, ensure_ascii=False)
-                    
-                    self.proc_queue.put(("log", f"Successfully rewrote {len(improved_turns)} human turns"))
-                    if improved_turns and original_human_turns:
-                        self.proc_queue.put(("log", f"Sample before: {original_human_turns[0]['message'][:100]}..."))
-                        self.proc_queue.put(("log", f"Sample after:  {improved_turns[0]['message'][:100]}..."))
-                    self.proc_queue.put(("success", f"Human cache improved! {len(improved_turns)} turns updated in {cache_file} (concurrency: {MAX_CONCURRENCY})"))
-
-                except Exception as e:
-                    self.proc_queue.put(("error", f"Cache improvement failed: {str(e)}"))
-
-            t = threading.Thread(target=worker_thread, daemon=True)
-            t.start()
-            self.timer.start()
-
-        except ImportError as e:
-            self._show_error(f"Missing dependency: {str(e)}")
-        except Exception as e:
-            self._show_error(f"Setup error: {str(e)}")
-
-    def start_image_captioning(self):
-        use_hf_dataset = self.mm_use_hf_dataset_check.isChecked()
-        hf_dataset = self.mm_hf_dataset_edit.text().strip() if use_hf_dataset else None
-        hf_token = self.mm_hf_token_edit.text().strip() if use_hf_dataset else None
-        image_dir = self.mm_image_dir_edit.text().strip() if not use_hf_dataset else None
-        output_file = self.mm_output_edit.text().strip()
-        api_key = self.mm_api_key_edit.text().strip()
-        endpoint = self.mm_endpoint_edit.text().strip()
-        model = self.mm_model_combo.currentText().strip()
-        api_type = self.mm_api_type_combo.currentText()
-        caption_prompt = self.mm_caption_prompt_edit.toPlainText().strip()
-        max_tokens = self.mm_max_tokens_spin.value()
-        temperature = self.mm_temperature_spin.value()
-        batch_size = self.mm_batch_size_spin.value()
-        max_captions = self.mm_max_captions_spin.value()
-
-        if use_hf_dataset:
-            if not hf_dataset:
-                self._show_error("Please enter a HuggingFace dataset name.")
-                return
-        else:
-            if not image_dir:
-                self._show_error("Please select an image folder.")
-                return
-            if not os.path.isdir(image_dir):
-                self._show_error("Image folder path is invalid.")
-                return
-        
-        if not api_key:
-            self._show_error("Please enter your API key.")
-            return
-        if not endpoint:
-            self._show_error("Please enter the API endpoint.")
-            return
-        if not model:
-            self._show_error("Please enter the model name.")
-            return
-
-        # Validate model is selected
-        if model == "(Click Refresh to load models)" or not model or model.startswith("("):
-            self._show_error("Please select a model. Click 'Refresh' to load available models.")
-            return
-
-        # Normalize output file path (fix any App\outputs paths)
-        if output_file and ("App\\outputs" in output_file or "App/outputs" in output_file):
-            repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            outputs_dir = os.path.join(repo_root, "outputs")
-            filename = os.path.basename(output_file)
-            output_file = os.path.join(outputs_dir, filename)
-            self.mm_output_edit.setText(output_file)
-        
-        # Auto-generate output filename if not provided
-        if not output_file:
-            # Get repo root (go up from App/SynthMaxxer to repo root)
-            repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            outputs_dir = os.path.join(repo_root, "outputs")
-            os.makedirs(outputs_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = os.path.join(outputs_dir, f"image_captions_{timestamp}.parquet")
-            self.mm_output_edit.setText(output_file)
-
-        # Save config
-        self._save_config()
-
-        # Reset UI state
-        self.mm_log_view.clear()
-        self._append_mm_log("=== Image Captioning started ===")
-        self.setWindowTitle(f"{APP_TITLE} - Captioning...")
-        self.mm_start_button.setEnabled(False)
-        self.mm_stop_button.setEnabled(True)
-        self.mm_stop_flag = threading.Event()
-
-        self.mm_queue = queue.Queue()
-        
-        # Log path correction if it happened
-        if output_file and ("App\\outputs" not in output_file and "App/outputs" not in output_file):
-            # Path is correct, log it
-            self._append_mm_log(f"Output file: {output_file}")
-
-        # Start worker thread
-        self.mm_worker_thread = threading.Thread(
-            target=self._image_captioning_worker,
-            args=(
-                image_dir,
-                output_file,
-                api_key,
-                endpoint,
-                model,
-                api_type,
-                caption_prompt,
-                max_tokens,
-                temperature,
-                batch_size,
-                max_captions,
-                self.mm_stop_flag,
-                hf_dataset,
-                hf_token,
-                self.mm_queue,
-            ),
-            daemon=True,
-        )
-        self.mm_worker_thread.start()
-        self.timer.start()
-
-    def stop_image_captioning(self):
-        if hasattr(self, 'mm_stop_flag'):
-            self.mm_stop_flag.set()
-        self._append_mm_log("Stopping image captioning...")
-        self.mm_stop_button.setEnabled(False)
-    
-    def start_civitai_download(self):
-        """Start Civitai image download"""
-        api_key = self.civitai_api_key_edit.text().strip()
-        output_dir = self.civitai_output_edit.text().strip()
-        max_images = self.civitai_max_images_spin.value()
-        min_width = self.civitai_min_width_spin.value()
-        min_height = self.civitai_min_height_spin.value()
-        nsfw_level_text = self.civitai_nsfw_combo.currentText()
-        sort_mode = self.civitai_sort_combo.currentText()
-        include_terms_text = self.civitai_include_edit.text().strip()
-        exclude_terms_text = self.civitai_exclude_edit.text().strip()
-        save_meta_jsonl = self.civitai_save_meta_check.isChecked()
-        batch_size = self.civitai_batch_size_spin.value()
-        max_empty_batches = self.civitai_max_empty_batches_spin.value()
-        wait_time = self.civitai_wait_time_spin.value()
-        
-        # Parse NSFW level
-        nsfw_mapping = {
-            "Any (no filter)": None,
-            "None (SFW only)": "None",
-            "Soft": "Soft",
-            "Mature": "Mature",
-            "X (explicit)": "X",
-        }
-        nsfw_level = nsfw_mapping.get(nsfw_level_text, None)
-        
-        # Parse include/exclude terms
-        include_terms = [x.strip().lower() for x in include_terms_text.split(",") if x.strip()]
-        exclude_terms = [x.strip().lower() for x in exclude_terms_text.split(",") if x.strip()]
-        
-        if not api_key:
-            self._show_error("Please enter your Civitai API key.")
-            return
-        
-        if not output_dir:
-            # Use default if empty
-            repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            output_dir = os.path.join(repo_root, "Outputs", "images")
-            self.civitai_output_edit.setText(output_dir)
-        
-        # Ensure output directory exists
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Save config
-        self._save_config()
-        
-        # Reset UI state
-        self.mm_log_view.clear()
-        self._append_mm_log("=== Civitai Image Download started ===")
-        self.setWindowTitle(f"{APP_TITLE} - Civitai Downloading...")
-        self.civitai_start_button.setEnabled(False)
-        self.civitai_stop_button.setEnabled(True)
-        self.civitai_stop_flag = threading.Event()
-        
-        self.civitai_queue = queue.Queue()
-        
-        # Start worker thread
-        self.civitai_worker_thread = threading.Thread(
-            target=self._civitai_download_worker,
-            args=(
-                api_key,
-                output_dir,
-                max_images,
-                min_width,
-                min_height,
-                nsfw_level,
-                include_terms,
-                exclude_terms,
-                sort_mode,
-                save_meta_jsonl,
-                self.civitai_stop_flag,
-                self.civitai_queue,
-                batch_size,
-                max_empty_batches,
-                wait_time,
-            ),
-            daemon=True,
-        )
-        self.civitai_worker_thread.start()
-        self.timer.start()
-    
-    def stop_civitai_download(self):
-        """Stop Civitai image download"""
-        if hasattr(self, 'civitai_stop_flag'):
-            self.civitai_stop_flag.set()
-        self._append_mm_log("Stopping Civitai download...")
-        self.civitai_stop_button.setEnabled(False)
-    
-    def _civitai_download_worker(
-        self,
-        api_key,
-        output_dir,
-        max_images,
-        min_width,
-        min_height,
-        nsfw_level,
-        include_terms,
-        exclude_terms,
-        sort_mode,
-        save_meta_jsonl,
-        stop_flag,
-        q,
-        batch_size,
-        max_empty_batches,
-        wait_time,
-    ):
-        """Worker function for Civitai image download"""
-        try:
-            from App.SynthMaxxer.multimodal_worker import civitai_image_download_worker
-            civitai_image_download_worker(
-                api_key,
-                output_dir,
-                max_images,
-                min_width,
-                min_height,
-                nsfw_level,
-                include_terms,
-                exclude_terms,
-                sort_mode,
-                save_meta_jsonl,
-                stop_flag,
-                q,
-                batch_size,
-                max_empty_batches,
-                wait_time,
-            )
-        except Exception as e:
-            import traceback
-            if q:
-                q.put(("error", f"Civitai download worker error: {str(e)}"))
-                q.put(("log", traceback.format_exc()))
-                q.put(("stopped", "Error occurred"))
-
-    def _image_captioning_worker(
-        self,
-        image_dir,
-        output_file,
-        api_key,
-        endpoint,
-        model,
-        api_type,
-        caption_prompt,
-        max_tokens,
-        temperature,
-        batch_size,
-        max_captions,
-        stop_flag,
-        hf_dataset,
-        hf_token,
-        q,
-    ):
-        """Worker function for image captioning"""
-        try:
-            from App.SynthMaxxer.multimodal_worker import image_captioning_worker
-            image_captioning_worker(
-                image_dir,
-                output_file,
-                api_key,
-                endpoint,
-                model,
-                api_type,
-                caption_prompt,
-                max_tokens,
-                temperature,
-                batch_size,
-                max_captions,
-                stop_flag,
-                hf_dataset,
-                hf_token,
-                q,
-            )
-        except Exception as e:
-            import traceback
-            error_msg = f"Image captioning worker error: {str(e)}"
-            if q:
-                q.put(("error", error_msg))
-                q.put(("log", f"Traceback:\n{traceback.format_exc()}"))
-            print(f"IMAGE_CAPTIONING_ERROR: {error_msg}")
 
 
 def main():

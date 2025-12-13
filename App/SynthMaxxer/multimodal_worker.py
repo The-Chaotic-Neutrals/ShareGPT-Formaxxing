@@ -15,6 +15,7 @@ import io
 import re
 import time
 import threading
+from typing import Dict, Optional, Any
 from urllib.parse import urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -1258,7 +1259,7 @@ def make_civitai_session():
         allowed_methods=frozenset(["GET"]),
         raise_on_status=False,
     )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)  # type: ignore[arg-type]
     session.mount("https://", adapter)
     return session
 
@@ -1273,7 +1274,7 @@ def get_with_watchdog(session, url, *, headers, params, timeout, watchdog_second
     Runs requests.get in a background thread and enforces a hard wall-clock timeout.
     Windows-safe. If the request hangs, we bail instead of freezing forever.
     """
-    result = {"resp": None, "err": None}
+    result: Dict[str, Optional[Any]] = {"resp": None, "err": None}
 
     def _run():
         try:
@@ -1330,15 +1331,21 @@ def text_pass(text: str, include_terms: list[str], exclude_terms: list[str]) -> 
     """
     INCLUDE: OR semantics (if include_terms is non-empty, at least one must match)
     EXCLUDE: OR semantics (if any exclude term matches, reject)
+    
+    Uses substring matching (not exact word matching), so "slimegirl" will match "tall slimegirl"
     """
     t = normalize_text(text)
+    
+    # Normalize terms the same way as text for consistent matching
+    normalized_include = [normalize_text(x) for x in include_terms]
+    normalized_exclude = [normalize_text(x) for x in exclude_terms]
 
-    # INCLUDE: OR logic
-    if include_terms and not any(x in t for x in include_terms):
+    # INCLUDE: OR logic - substring matching (any term found anywhere in text)
+    if normalized_include and not any(x in t for x in normalized_include):
         return False
 
-    # EXCLUDE: OR logic
-    for x in exclude_terms:
+    # EXCLUDE: OR logic - substring matching (any term found anywhere in text)
+    for x in normalized_exclude:
         if x in t:
             return False
 
@@ -1424,6 +1431,9 @@ def civitai_image_download_worker(
     save_meta_jsonl: bool,
     stop_flag: threading.Event,
     q=None,
+    batch_size: int = 200,
+    max_empty_batches: int = 40,
+    wait_time: float = 0.0,
 ):
     """
     Worker function for downloading images from Civitai API
@@ -1441,6 +1451,9 @@ def civitai_image_download_worker(
         save_meta_jsonl: Whether to save metadata JSONL file
         stop_flag: Threading event to signal stop
         q: Queue for GUI communication
+        batch_size: Number of images per API request (default: 200)
+        max_empty_batches: Maximum number of empty batches before stopping (default: 40)
+        wait_time: Wait time in seconds between page requests (default: 0.0)
     """
     if q:
         q.put(("log", "=== Civitai Image Downloader started ==="))
@@ -1473,7 +1486,7 @@ def civitai_image_download_worker(
         
         # Setup API parameters
         base_params = {
-            "limit": CIVITAI_API_LIMIT,
+            "limit": batch_size,
             "sort": sort_mode,
             "period": "AllTime",
             "withMeta": "true",
@@ -1484,14 +1497,19 @@ def civitai_image_download_worker(
             base_params["nsfw"] = nsfw_level
         
         has_search_terms = bool(include_terms or exclude_terms)
-        use_cursor = (sort_mode == "Newest")
+        # Try cursor-based pagination for all modes (more reliable than page-based)
+        # The API may support cursor-based pagination for all sort modes
+        use_cursor = True  # Try cursor-based for all modes
         cursor = None
         page = 1
         saved = 0
         empty_batches = 0
+        max_page = 10000  # Safety limit for page-based pagination
+        fallback_to_page = False  # Track if we need to fall back to page-based
+        first_request = True  # Track if this is the first API request
         
         if q:
-            q.put(("log", f"Starting download (limit={CIVITAI_API_LIMIT}, sort={sort_mode}, paging={'cursor' if use_cursor else 'page'})"))
+            q.put(("log", f"Starting download (batch_size={batch_size}, sort={sort_mode}, paging={'cursor' if use_cursor else 'page'})"))
         
         while saved < max_images:
             if stop_flag.is_set():
@@ -1502,10 +1520,17 @@ def civitai_image_download_worker(
             
             params = dict(base_params)
             
-            if use_cursor:
+            if use_cursor and not fallback_to_page:
                 if cursor:
                     params["cursor"] = cursor
+                # First request - don't send cursor param, API will provide one if supported
             else:
+                # Fallback to page-based pagination
+                # Safety check for page-based pagination
+                if page > max_page:
+                    if q:
+                        q.put(("log", f"⚠️  Reached maximum page limit ({max_page}), stopping"))
+                    break
                 params["page"] = page
             
             try:
@@ -1521,6 +1546,12 @@ def civitai_image_download_worker(
                     watchdog_seconds=CIVITAI_API_WATCHDOG_SECONDS,
                     q=q,
                 )
+                
+                if r is None:
+                    if q:
+                        q.put(("log", "⚠️  Received None response"))
+                    sleep_backoff(0)
+                    continue
                 
                 if q:
                     q.put(("log", f"Response {r.status_code} bytes={len(r.content)}"))
@@ -1544,7 +1575,26 @@ def civitai_image_download_worker(
                 if q:
                     q.put(("log", f"❌ {error_msg}"))
                     try:
-                        q.put(("log", f"Response: {r.text[:500]}"))
+                        error_text = r.text[:1000] if r.text else "No response text"
+                        q.put(("log", f"Response: {error_text}"))
+                        # Try to parse JSON error if available
+                        try:
+                            error_json = r.json()
+                            q.put(("log", f"Error JSON: {str(error_json)[:500]}"))
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                # For page-based pagination, if we get a 400 error, try switching to cursor if available
+                if not use_cursor:
+                    try:
+                        error_data = r.json() if r.content else {}
+                        if error_data.get("metadata", {}).get("nextCursor"):
+                            if q:
+                                q.put(("log", f"⚠️  Got error on page {page}, but cursor available - switching to cursor-based"))
+                            use_cursor = True
+                            cursor = error_data["metadata"]["nextCursor"]
+                            continue
                     except Exception:
                         pass
                 break
@@ -1553,33 +1603,90 @@ def civitai_image_download_worker(
             items = data.get("items") or []
             
             md = data.get("metadata") or {}
+            
+            # Check if API provides cursor in response
+            available_cursor = md.get("nextCursor")
+            
+            # If we're trying cursor-based but API doesn't provide one on first request, fall back to page-based
+            if use_cursor and not fallback_to_page and first_request:
+                first_request = False
+                if available_cursor is None:
+                    # First request didn't provide cursor, API might not support it for this sort mode
+                    if q:
+                        q.put(("log", f"⚠️  API didn't provide cursor for sort mode '{sort_mode}', falling back to page-based pagination"))
+                    fallback_to_page = True
+                    use_cursor = False
+                    page = 1  # Reset to page 1
+                    continue  # Retry with page-based
+                else:
+                    # API provided cursor, use it
+                    cursor = available_cursor
+            elif use_cursor and not fallback_to_page:
+                # Use the cursor from API response for subsequent requests
+                cursor = available_cursor
+                first_request = False
+            
+            if not items:
+                if use_cursor:
+                    cursor = md.get("nextCursor")
+                    if cursor:
+                        if q:
+                            q.put(("log", f"Empty batch but cursor exists, continuing..."))
+                        continue
+                    else:
+                        if q:
+                            q.put(("log", "Empty batch and no cursor, stopping"))
+                        break
+                else:
+                    # For page-based pagination, continue through empty batches like cursor-based
+                    # Check if we've hit too many empty batches
+                    empty_batches += 1
+                    if q:
+                        q.put(("log", f"Empty batch on page {page} ({empty_batches}/{max_empty_batches})"))
+                    if empty_batches >= max_empty_batches:
+                        if q:
+                            q.put(("log", f"⚠️  Stopping: too many empty batches on page {page}"))
+                        break
+                    # Continue to next page
+                    page += 1
+                    if page > max_page:
+                        if q:
+                            q.put(("log", f"⚠️  Reached maximum page limit ({max_page}), stopping"))
+                        break
+                    continue
+            
+            # Only update pagination if we got items
             if use_cursor:
                 cursor = md.get("nextCursor")
             else:
                 page += 1
             
-            if not items:
-                if use_cursor and cursor:
-                    continue
-                break
-            
             matched = []
+            skipped_no_url = 0
+            skipped_already_downloaded = 0
+            skipped_size = 0
+            skipped_terms = 0
+            
             for img in items:
                 if stop_flag.is_set():
                     break
                 
                 url = img.get("url")
                 if not url:
+                    skipped_no_url += 1
                     continue
                 
                 if url in downloaded:
+                    skipped_already_downloaded += 1
                     continue
                 
                 if img.get("width", 0) < min_width or img.get("height", 0) < min_height:
+                    skipped_size += 1
                     continue
                 
                 prompt_text = extract_prompt_text(img.get("meta") or {})
                 if has_search_terms and not text_pass(prompt_text, include_terms, exclude_terms):
+                    skipped_terms += 1
                     continue
                 
                 matched.append((img, prompt_text))
@@ -1587,8 +1694,19 @@ def civitai_image_download_worker(
             if not matched:
                 empty_batches += 1
                 if q:
-                    q.put(("log", f"Matched 0 in this batch ({empty_batches}/{CIVITAI_MAX_EMPTY_BATCHES}). items={len(items)}"))
-                if empty_batches >= CIVITAI_MAX_EMPTY_BATCHES:
+                    q.put(("log", f"Matched 0 in this batch ({empty_batches}/{max_empty_batches}). items={len(items)}"))
+                    if empty_batches == 1 or empty_batches % 10 == 0:  # Show details on first batch or every 10th
+                        if skipped_no_url > 0:
+                            q.put(("log", f"   - Skipped {skipped_no_url} items (no URL)"))
+                        if skipped_already_downloaded > 0:
+                            q.put(("log", f"   - Skipped {skipped_already_downloaded} items (already downloaded)"))
+                        if skipped_size > 0:
+                            q.put(("log", f"   - Skipped {skipped_size} items (size < {min_width}x{min_height})"))
+                        if skipped_terms > 0:
+                            q.put(("log", f"   - Skipped {skipped_terms} items (term filters)"))
+                        if skipped_no_url == 0 and skipped_already_downloaded == 0 and skipped_size == 0 and skipped_terms == 0:
+                            q.put(("log", f"   - All {len(items)} items passed filters but none matched (check filters)"))
+                if empty_batches >= max_empty_batches:
                     if q:
                         q.put(("log", "⚠️  Stopping: too many empty batches."))
                     break
@@ -1648,6 +1766,12 @@ def civitai_image_download_worker(
             
             if q:
                 q.put(("log", f"Batch done | matched={len(matched)} | saved={saved}/{max_images}"))
+            
+            # Wait between page requests if configured
+            if wait_time > 0 and saved < max_images and not stop_flag.is_set():
+                if q:
+                    q.put(("log", f"Waiting {wait_time}s before next page request..."))
+                time.sleep(wait_time)
         
         success_msg = f"✅ Download complete! Downloaded {saved} images to {output_dir}"
         if q:

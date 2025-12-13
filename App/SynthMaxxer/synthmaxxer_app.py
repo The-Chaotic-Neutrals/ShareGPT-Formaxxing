@@ -1096,6 +1096,39 @@ class MainWindow(QMainWindow):
         self.civitai_save_meta_check.setToolTip("Save metadata JSONL file with image information")
         civitai_layout.addRow("", self.civitai_save_meta_check)
         
+        self.civitai_batch_size_spin = QSpinBox()
+        self.civitai_batch_size_spin.setRange(1, 500)
+        self.civitai_batch_size_spin.setValue(200)
+        self.civitai_batch_size_spin.setMaximumWidth(100)
+        self.civitai_batch_size_spin.setToolTip("Number of images per API request (batch size)")
+        batch_size_row = QHBoxLayout()
+        batch_size_row.addWidget(self.civitai_batch_size_spin)
+        batch_size_row.addStretch()
+        civitai_layout.addRow(QLabel("Batch Size:"), self._wrap_row(batch_size_row))
+        
+        self.civitai_max_empty_batches_spin = QSpinBox()
+        self.civitai_max_empty_batches_spin.setRange(1, 1000)
+        self.civitai_max_empty_batches_spin.setValue(40)
+        self.civitai_max_empty_batches_spin.setMaximumWidth(100)
+        self.civitai_max_empty_batches_spin.setToolTip("Maximum number of empty batches before stopping (prevents infinite loops)")
+        max_empty_batches_row = QHBoxLayout()
+        max_empty_batches_row.addWidget(self.civitai_max_empty_batches_spin)
+        max_empty_batches_row.addStretch()
+        civitai_layout.addRow(QLabel("Max Empty Batches:"), self._wrap_row(max_empty_batches_row))
+        
+        self.civitai_wait_time_spin = QDoubleSpinBox()
+        self.civitai_wait_time_spin.setRange(0.0, 300.0)
+        self.civitai_wait_time_spin.setValue(0.0)
+        self.civitai_wait_time_spin.setSingleStep(0.5)
+        self.civitai_wait_time_spin.setDecimals(1)
+        self.civitai_wait_time_spin.setMaximumWidth(100)
+        self.civitai_wait_time_spin.setSuffix(" s")
+        self.civitai_wait_time_spin.setToolTip("Wait time in seconds between page requests (0 = no wait)")
+        wait_time_row = QHBoxLayout()
+        wait_time_row.addWidget(self.civitai_wait_time_spin)
+        wait_time_row.addStretch()
+        civitai_layout.addRow(QLabel("Wait Between Pages:"), self._wrap_row(wait_time_row))
+        
         left_panel.addWidget(civitai_group)
         left_panel.addStretch(1)
 
@@ -1408,6 +1441,12 @@ class MainWindow(QMainWindow):
                 self.civitai_exclude_edit.setText(cfg.get("civitai_exclude_terms", ""))
             if "civitai_save_meta_jsonl" in cfg:
                 self.civitai_save_meta_check.setChecked(bool(cfg.get("civitai_save_meta_jsonl", True)))
+            if "civitai_batch_size" in cfg:
+                self.civitai_batch_size_spin.setValue(int(cfg.get("civitai_batch_size", 200)))
+            if "civitai_max_empty_batches" in cfg:
+                self.civitai_max_empty_batches_spin.setValue(int(cfg.get("civitai_max_empty_batches", 40)))
+            if "civitai_wait_time" in cfg:
+                self.civitai_wait_time_spin.setValue(float(cfg.get("civitai_wait_time", 0.0)))
 
     def _save_config(self):
         config_file = CONFIG_FILE
@@ -1513,6 +1552,9 @@ class MainWindow(QMainWindow):
             cfg["civitai_include_terms"] = self.civitai_include_edit.text().strip() if hasattr(self, 'civitai_include_edit') else ""
             cfg["civitai_exclude_terms"] = self.civitai_exclude_edit.text().strip() if hasattr(self, 'civitai_exclude_edit') else ""
             cfg["civitai_save_meta_jsonl"] = self.civitai_save_meta_check.isChecked() if hasattr(self, 'civitai_save_meta_check') else True
+            cfg["civitai_batch_size"] = self.civitai_batch_size_spin.value() if hasattr(self, 'civitai_batch_size_spin') else 200
+            cfg["civitai_max_empty_batches"] = self.civitai_max_empty_batches_spin.value() if hasattr(self, 'civitai_max_empty_batches_spin') else 40
+            cfg["civitai_wait_time"] = self.civitai_wait_time_spin.value() if hasattr(self, 'civitai_wait_time_spin') else 0.0
         
         try:
             with open(config_file, 'w', encoding='utf-8') as f:
@@ -2977,6 +3019,9 @@ class MainWindow(QMainWindow):
         include_terms_text = self.civitai_include_edit.text().strip()
         exclude_terms_text = self.civitai_exclude_edit.text().strip()
         save_meta_jsonl = self.civitai_save_meta_check.isChecked()
+        batch_size = self.civitai_batch_size_spin.value()
+        max_empty_batches = self.civitai_max_empty_batches_spin.value()
+        wait_time = self.civitai_wait_time_spin.value()
         
         # Parse NSFW level
         nsfw_mapping = {
@@ -3034,6 +3079,9 @@ class MainWindow(QMainWindow):
                 save_meta_jsonl,
                 self.civitai_stop_flag,
                 self.civitai_queue,
+                batch_size,
+                max_empty_batches,
+                wait_time,
             ),
             daemon=True,
         )
@@ -3061,6 +3109,9 @@ class MainWindow(QMainWindow):
         save_meta_jsonl,
         stop_flag,
         q,
+        batch_size,
+        max_empty_batches,
+        wait_time,
     ):
         """Worker function for Civitai image download"""
         try:
@@ -3078,6 +3129,9 @@ class MainWindow(QMainWindow):
                 save_meta_jsonl,
                 stop_flag,
                 q,
+                batch_size,
+                max_empty_batches,
+                wait_time,
             )
         except Exception as e:
             import traceback

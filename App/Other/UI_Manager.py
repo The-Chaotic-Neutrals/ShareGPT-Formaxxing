@@ -6,10 +6,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QTabWidget, QMainWindow
 )
 from PyQt5.QtGui import QIcon, QPalette, QColor, QFont
-from PyQt5.QtCore import Qt
-
-# Import the background widget
-from App.Other.BG import FloatingPixelsWidget
+from PyQt5.QtCore import Qt, QTimer
 
 # Import your tools
 from App.Other.Theme import Theme
@@ -46,8 +43,13 @@ class UIManager(QWidget):
         self.resize(800, 480)
         self.icon_path = Path(__file__).parent.parent / "Assets" / "icon.ico"
 
-        self.background_widget = FloatingPixelsWidget(self)
-        self.background_widget.lower()
+        # Use background widget from theme
+        bg_class = self.theme.get('background_widget_class', None)
+        if bg_class:
+            self.background_widget = bg_class(self)
+            self.background_widget.lower()
+        else:
+            self.background_widget = None
 
         self.apply_theme()
         self.set_icon()
@@ -55,7 +57,8 @@ class UIManager(QWidget):
 
     def resizeEvent(self, a0):
         super().resizeEvent(a0)
-        self.background_widget.resize(self.size())
+        if self.background_widget:
+            self.background_widget.resize(self.size())
 
     def apply_theme(self):
         palette = QPalette()
@@ -201,48 +204,74 @@ class UIManager(QWidget):
                 if central:
                     bg = bg_class(central)
                     bg.lower()
+                    bg.setGeometry(0, 0, central.width() or 800, central.height() or 600)
                     # Force transparent background on central to show animated bg
                     current_ss = central.styleSheet()
                     if current_ss:
+                        # Replace various background color patterns
                         current_ss = current_ss.replace("background-color: #000000;", "background-color: transparent;")
+                        current_ss = current_ss.replace("background-color:#000000;", "background-color: transparent;")
+                        current_ss = current_ss.replace("background-color: #05050F;", "background-color: transparent;")
+                        current_ss = current_ss.replace("background-color:#05050F;", "background-color: transparent;")
                     else:
                         current_ss = "background-color: transparent;"
                     central.setStyleSheet(current_ss)
                     # Patch resizeEvent on central
                     original_resize = central.resizeEvent if hasattr(central, 'resizeEvent') else None
                     def new_resize(a0):
-                        bg.resize(central.size())
+                        if bg and central:
+                            bg.resize(central.size())
+                            bg.setGeometry(0, 0, central.width(), central.height())
                         if original_resize:
                             original_resize(a0)
                         else:
                             QWidget.resizeEvent(central, a0)
                     central.resizeEvent = new_resize
-                    # Initial resize
-                    bg.resize(central.size())
+                    # Initial resize with delay to ensure layout is complete
+                    QTimer.singleShot(50, lambda: bg.resize(central.size()) if bg and central else None)
                 else:
                     # If no central, fallback to win
                     bg = bg_class(win)
                     bg.lower()
+                    bg.setGeometry(0, 0, win.width() or 800, win.height() or 600)
                     win.setStyleSheet("background-color: transparent;")
                     original_resize = win.resizeEvent if hasattr(win, 'resizeEvent') else None
                     def new_resize(a0):
-                        bg.resize(win.size())
+                        if bg:
+                            bg.resize(win.size())
+                            bg.setGeometry(0, 0, win.width(), win.height())
                         if original_resize:
                             original_resize(a0)
                         else:
-                            QWidget.resizeEvent(win, a0)
+                            QMainWindow.resizeEvent(win, a0)
                     win.resizeEvent = new_resize
-                    bg.resize(win.size())
+                    QTimer.singleShot(50, lambda: bg.resize(win.size()) if bg else None)
             else:
                 bg = bg_class(win)
                 bg.lower()
+                bg.setGeometry(0, 0, win.width() or 800, win.height() or 600)
                 # Force transparent background on win
                 current_ss = win.styleSheet()
                 if current_ss:
                     current_ss = current_ss.replace("background-color: #000000;", "background-color: transparent;")
+                    current_ss = current_ss.replace("background-color:#000000;", "background-color: transparent;")
+                    current_ss = current_ss.replace("background-color: #05050F;", "background-color: transparent;")
+                    current_ss = current_ss.replace("background-color:#05050F;", "background-color: transparent;")
                 else:
                     current_ss = "background-color: transparent;"
                 win.setStyleSheet(current_ss)
+                # Handle resize for QWidget
+                original_resize = win.resizeEvent if hasattr(win, 'resizeEvent') else None
+                def new_resize(a0):
+                    if bg:
+                        bg.resize(win.size())
+                        bg.setGeometry(0, 0, win.width(), win.height())
+                    if original_resize:
+                        original_resize(a0)
+                    else:
+                        QWidget.resizeEvent(win, a0)
+                win.resizeEvent = new_resize
+                QTimer.singleShot(50, lambda: bg.resize(win.size()) if bg else None)
                 original_resize = win.resizeEvent if hasattr(win, 'resizeEvent') else None
                 def new_resize(a0):
                     bg.resize(win.size())

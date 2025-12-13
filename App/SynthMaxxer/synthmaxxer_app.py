@@ -53,6 +53,9 @@ from App.SynthMaxxer import captionmaxxer as captionmaxxer_module
 from App.SynthMaxxer import civitai as civitai_module
 from App.SynthMaxxer import huggingface as huggingface_module
 
+# Import galaxy background widget
+from App.Other.BG import GalaxyBackgroundWidget
+
 
 APP_TITLE = "SynthMaxxer"
 ICON_FILE = str(Path(__file__).parent.parent / "Assets" / "icon.ico")
@@ -235,6 +238,7 @@ class MultimodalModelFetcher(QObject):
     """Helper class to emit signals from background thread for CaptionMaxxer tab"""
     models_ready = pyqtSignal(list)
 
+
 class MainWindow(QMainWindow):
 
     def __init__(self):
@@ -271,6 +275,12 @@ class MainWindow(QMainWindow):
         self._load_initial_config()
         # Don't auto-fetch models on startup - let user click refresh when ready
     
+    def resizeEvent(self, event):
+        """Handle window resize to update background widget"""
+        super().resizeEvent(event)
+        if hasattr(self, 'galaxy_bg') and hasattr(self, '_central_widget'):
+            self.galaxy_bg.resize(self._central_widget.size())
+    
     def closeEvent(self, event):
         """Save config when window is closed"""
         try:
@@ -282,10 +292,10 @@ class MainWindow(QMainWindow):
     def _setup_style(self):
         self.setStyleSheet("""
             QMainWindow {
-                background-color: #000000;
+                background-color: #05050F;
             }
             QWidget {
-                background-color: #000000;
+                background-color: transparent;
                 color: #F9FAFB;
                 font-family: "Segoe UI", "Inter", system-ui, -apple-system, sans-serif;
                 font-size: 12pt;
@@ -294,11 +304,11 @@ class MainWindow(QMainWindow):
                 color: #E5E7EB;
             }
             QGroupBox {
-                border: 1px solid #111827;
+                border: 1px solid rgba(31, 41, 55, 200);
                 border-radius: 8px;
                 margin-top: 18px;
                 padding: 10px;
-                background-color: #050505;
+                background-color: rgba(5, 5, 15, 180);
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -309,9 +319,9 @@ class MainWindow(QMainWindow):
                 font-size: 16pt;
             }
             QLineEdit, QSpinBox, QComboBox, QDoubleSpinBox {
-                background-color: #050505;
+                background-color: rgba(5, 5, 15, 200);
                 color: #F9FAFB;
-                border: 1px solid #1F2937;
+                border: 1px solid rgba(31, 41, 55, 200);
                 border-radius: 4px;
                 padding: 4px 6px;
                 selection-background-color: #2563EB;
@@ -321,32 +331,32 @@ class MainWindow(QMainWindow):
                 color: #6B7280;
             }
             QPlainTextEdit {
-                background-color: #020202;
+                background-color: rgba(2, 2, 10, 220);
                 color: #D1D5DB;
-                border: 1px solid #1F2937;
+                border: 1px solid rgba(31, 41, 55, 200);
                 border-radius: 8px;
                 font-family: Consolas, "Fira Code", monospace;
                 font-size: 12px;
                 padding: 6px;
             }
             QPushButton {
-                background-color: #020617;
+                background-color: rgba(2, 6, 23, 200);
                 color: #F9FAFB;
-                border: 1px solid #1F2937;
+                border: 1px solid rgba(31, 41, 55, 200);
                 border-radius: 6px;
                 padding: 6px 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #111827;
+                background-color: rgba(17, 24, 39, 220);
             }
             QPushButton:pressed {
-                background-color: #030712;
+                background-color: rgba(3, 7, 18, 240);
             }
             QPushButton:disabled {
                 color: #6B7280;
-                border-color: #111827;
-                background-color: #020202;
+                border-color: rgba(17, 24, 39, 200);
+                background-color: rgba(2, 2, 2, 200);
             }
             QCheckBox {
                 spacing: 6px;
@@ -366,20 +376,20 @@ class MainWindow(QMainWindow):
                 border-radius: 3px;
             }
             QComboBox QAbstractItemView {
-                background-color: #050505;
-                border: 1px solid #1F2937;
+                background-color: rgba(5, 5, 15, 240);
+                border: 1px solid rgba(31, 41, 55, 200);
                 selection-background-color: #2563EB;
                 selection-color: #F9FAFB;
             }
             QTabWidget::pane {
-                border: 1px solid #1F2937;
-                background-color: #000000;
+                border: 1px solid rgba(31, 41, 55, 200);
+                background-color: rgba(5, 5, 15, 180);
                 border-radius: 8px;
             }
             QTabBar::tab {
-                background-color: #050505;
+                background-color: rgba(5, 5, 15, 200);
                 color: #9CA3AF;
-                border: 1px solid #1F2937;
+                border: 1px solid rgba(31, 41, 55, 200);
                 border-bottom: none;
                 padding: 8px 16px;
                 margin-right: 2px;
@@ -387,12 +397,12 @@ class MainWindow(QMainWindow):
                 border-top-right-radius: 6px;
             }
             QTabBar::tab:selected {
-                background-color: #000000;
+                background-color: rgba(5, 5, 15, 180);
                 color: #F9FAFB;
                 border-color: #2563EB;
             }
             QTabBar::tab:hover {
-                background-color: #111827;
+                background-color: rgba(17, 24, 39, 200);
                 color: #E5E7EB;
             }
         """)
@@ -401,10 +411,20 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
 
+        # Create galaxy background widget
+        self.galaxy_bg = GalaxyBackgroundWidget(central)
+        self.galaxy_bg.lower()  # Put it behind everything
+        
+        # Store reference for resize handling
+        self._central_widget = central
+        
         root_layout = QVBoxLayout()
         root_layout.setContentsMargins(16, 16, 16, 16)
         root_layout.setSpacing(12)
         central.setLayout(root_layout)
+        
+        # Initial resize - use a timer to ensure it happens after layout is complete
+        QTimer.singleShot(100, lambda: self.galaxy_bg.resize(central.size()) if hasattr(self, 'galaxy_bg') else None)
 
         header_row = QHBoxLayout()
         title_label = QLabel(APP_TITLE)

@@ -499,11 +499,15 @@ class MainWindow(QMainWindow):
         api_config_left_scroll = QScrollArea()
         api_config_left_scroll.setWidgetResizable(True)
         api_config_left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # type: ignore
+        api_config_left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # type: ignore
         api_config_left_scroll.setFrameShape(QFrame.NoFrame)
+        api_config_left_scroll.viewport().setContentsMargins(0, 0, 0, 0)
         
         api_config_left_container = QWidget()
+        api_config_left_container.setMinimumSize(0, 0)
         api_config_left_panel = QVBoxLayout()
         api_config_left_panel.setSpacing(10)
+        api_config_left_panel.setContentsMargins(0, 0, 0, 0)
         api_config_left_container.setLayout(api_config_left_panel)
         api_config_left_scroll.setWidget(api_config_left_container)
         
@@ -1522,6 +1526,37 @@ class MainWindow(QMainWindow):
                         self.timer.stop()
                         if msg:  # Only log if there's a message
                             self._append_proc_log(str(msg))
+            except queue.Empty:
+                pass
+        
+        # Check HuggingFace queue
+        if hasattr(self, 'hf_queue') and self.hf_queue:
+            try:
+                while True:
+                    msg_type, msg = self.hf_queue.get_nowait()
+                    if msg_type == "log":
+                        self._append_hf_log(str(msg))
+                    elif msg_type == "success":
+                        self.setWindowTitle(f"{APP_TITLE} - Done")
+                        self.hf_dataset_start_button.setEnabled(True)
+                        self.hf_dataset_stop_button.setEnabled(False)
+                        self.timer.stop()
+                        self._append_hf_log(str(msg))
+                        self._show_info(str(msg))
+                    elif msg_type == "error":
+                        self.setWindowTitle(f"{APP_TITLE} - Error")
+                        self.hf_dataset_start_button.setEnabled(True)
+                        self.hf_dataset_stop_button.setEnabled(False)
+                        self.timer.stop()
+                        self._append_hf_log(str(msg))
+                        self._show_error(str(msg))
+                    elif msg_type == "stopped":
+                        self.hf_dataset_start_button.setEnabled(True)
+                        self.hf_dataset_stop_button.setEnabled(False)
+                        self.setWindowTitle(APP_TITLE)
+                        self.timer.stop()
+                        if msg:  # Only log if there's a message
+                            self._append_hf_log(str(msg))
             except queue.Empty:
                 pass
         

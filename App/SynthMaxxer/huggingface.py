@@ -3,6 +3,9 @@ HuggingFace module - HuggingFace dataset and model downloader tab functionality
 Handles HuggingFace dataset/model downloading UI and logic
 """
 import os
+import json
+import threading
+import queue
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -161,16 +164,236 @@ def browse_hf_output(main_window):
         main_window.hf_output_edit.setText(directory)
 
 
+def hf_dataset_worker(dataset_name, output_dir, token, q=None, stop_flag=None):
+    """Worker function to download and save HuggingFace dataset"""
+    try:
+        if q:
+            q.put(("log", f"Starting HuggingFace dataset download: {dataset_name}"))
+        
+        # Check if datasets library is available
+        try:
+            from datasets import load_dataset, DatasetDict, IterableDataset
+        except ImportError:
+            if q:
+                q.put(("error", "datasets library is required. Install with: pip install datasets"))
+            return
+        
+        if q:
+            q.put(("log", f"Output directory: {output_dir}"))
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        if stop_flag and stop_flag.is_set():
+            if q:
+                q.put(("stopped", "Download stopped by user"))
+            return
+        
+        # Load dataset
+        if q:
+            if token:
+                q.put(("log", f"⬇️  Downloading dataset: {dataset_name} (using token)"))
+            else:
+                q.put(("log", f"⬇️  Downloading dataset: {dataset_name}"))
+            q.put(("log", "   (Dataset will be cached at ~/.cache/huggingface/datasets)"))
+        
+        token_param = token if token else None
+        
+        try:
+            dataset_dict = load_dataset(dataset_name, token=token_param)
+        except Exception as e:
+            if q:
+                q.put(("error", f"Failed to load dataset: {str(e)}"))
+            return
+        
+        if stop_flag and stop_flag.is_set():
+            if q:
+                q.put(("stopped", "Download stopped by user"))
+            return
+        
+        # Handle DatasetDict (multiple splits) or single Dataset
+        if isinstance(dataset_dict, DatasetDict):
+            if q:
+                q.put(("log", f"Dataset has {len(dataset_dict)} splits: {', '.join(dataset_dict.keys())}"))
+            
+            # Save each split separately
+            for split_name, dataset in dataset_dict.items():
+                if stop_flag and stop_flag.is_set():
+                    if q:
+                        q.put(("stopped", "Download stopped by user"))
+                    return
+                
+                output_file = os.path.join(output_dir, f"{dataset_name.replace('/', '_')}_{split_name}.jsonl")
+                if q:
+                    q.put(("log", f"Saving split '{split_name}' to {os.path.basename(output_file)}..."))
+                
+                _save_dataset_to_jsonl(dataset, output_file, q, stop_flag)
+                
+                if stop_flag and stop_flag.is_set():
+                    if q:
+                        q.put(("stopped", "Download stopped by user"))
+                    return
+        else:
+            # Single dataset
+            output_file = os.path.join(output_dir, f"{dataset_name.replace('/', '_')}.jsonl")
+            if q:
+                q.put(("log", f"Saving dataset to {os.path.basename(output_file)}..."))
+            
+            _save_dataset_to_jsonl(dataset_dict, output_file, q, stop_flag)
+        
+        if stop_flag and stop_flag.is_set():
+            if q:
+                q.put(("stopped", "Download stopped by user"))
+            return
+        
+        if q:
+            q.put(("success", f"✅ Successfully downloaded and saved dataset: {dataset_name}"))
+    
+    except Exception as e:
+        if q:
+            import traceback
+            q.put(("error", f"Error downloading dataset: {str(e)}"))
+            q.put(("log", traceback.format_exc()))
+
+
+def _save_dataset_to_jsonl(dataset, output_file, q=None, stop_flag=None):
+    """Save a dataset to JSONL format"""
+    try:
+        from datasets import IterableDataset
+        
+        count = 0
+        with open(output_file, 'w', encoding='utf-8') as f:
+            if isinstance(dataset, IterableDataset):
+                # For iterable datasets, we can't get length
+                if q:
+                    q.put(("log", "   Processing iterable dataset (streaming)..."))
+                
+                for item in dataset:
+                    if stop_flag and stop_flag.is_set():
+                        break
+                    
+                    # Convert to dict and handle special types
+                    item_dict = {}
+                    for key, value in item.items():
+                        # Handle PIL Images and other non-serializable types
+                        if hasattr(value, 'save'):  # PIL Image
+                            # Skip images in JSONL - they're too large
+                            continue
+                        elif hasattr(value, '__dict__'):
+                            item_dict[key] = str(value)
+                        else:
+                            try:
+                                json.dumps(value)  # Test if serializable
+                                item_dict[key] = value
+                            except (TypeError, ValueError):
+                                item_dict[key] = str(value)
+                    
+                    json.dump(item_dict, f, ensure_ascii=False)
+                    f.write('\n')
+                    count += 1
+                    
+                    if count % 1000 == 0:
+                        if q:
+                            q.put(("log", f"   Processed {count} examples..."))
+            else:
+                # Regular dataset with known length
+                total = len(dataset)
+                if q:
+                    q.put(("log", f"   Saving {total} examples..."))
+                
+                for i, item in enumerate(dataset):
+                    if stop_flag and stop_flag.is_set():
+                        break
+                    
+                    # Convert to dict and handle special types
+                    item_dict = {}
+                    for key, value in item.items():
+                        # Handle PIL Images and other non-serializable types
+                        if hasattr(value, 'save'):  # PIL Image
+                            # Skip images in JSONL - they're too large
+                            continue
+                        elif hasattr(value, '__dict__'):
+                            item_dict[key] = str(value)
+                        else:
+                            try:
+                                json.dumps(value)  # Test if serializable
+                                item_dict[key] = value
+                            except (TypeError, ValueError):
+                                item_dict[key] = str(value)
+                    
+                    json.dump(item_dict, f, ensure_ascii=False)
+                    f.write('\n')
+                    count += 1
+                    
+                    if (i + 1) % 1000 == 0 or (i + 1) == total:
+                        if q:
+                            q.put(("log", f"   Saved {i + 1}/{total} examples..."))
+        
+        if q:
+            q.put(("log", f"✅ Saved {count} examples to {os.path.basename(output_file)}"))
+    
+    except Exception as e:
+        if q:
+            q.put(("log", f"Error saving dataset: {str(e)}"))
+        raise
+
+
 def start_hf_download(main_window):
     """Start HuggingFace dataset download"""
-    # Placeholder - implement actual download logic
-    main_window._append_hf_log("HuggingFace dataset download not yet implemented")
+    dataset_name = main_window.hf_dataset_edit.text().strip()
+    output_dir = main_window.hf_output_edit.text().strip()
+    token = main_window.hf_token_edit.text().strip() if hasattr(main_window, 'hf_token_edit') else None
+    
+    if not dataset_name:
+        main_window._show_error("Please enter a HuggingFace dataset name.")
+        return
+    
+    if not output_dir:
+        main_window._show_error("Please select an output directory.")
+        return
+    
+    # Reset UI state
+    from App.SynthMaxxer.synthmaxxer_app import APP_TITLE
+    main_window.hf_log_view.clear()
+    main_window._append_hf_log("=== Starting HuggingFace Dataset Download ===")
+    main_window.setWindowTitle(f"{APP_TITLE} - Downloading dataset...")
+    main_window.hf_dataset_start_button.setEnabled(False)
+    main_window.hf_dataset_stop_button.setEnabled(True)
+    
+    # Create queue and stop flag
+    main_window.hf_queue = queue.Queue()
+    main_window.hf_stop_flag = threading.Event()
+    
+    # Start worker thread
+    def worker_wrapper():
+        try:
+            hf_dataset_worker(
+                dataset_name,
+                output_dir,
+                token,
+                main_window.hf_queue,
+                main_window.hf_stop_flag
+            )
+            if not main_window.hf_stop_flag.is_set():
+                main_window.hf_queue.put(("success", f"Dataset download completed: {dataset_name}"))
+        except Exception as e:
+            import traceback
+            main_window.hf_queue.put(("error", f"Download failed: {str(e)}"))
+            main_window.hf_queue.put(("log", traceback.format_exc()))
+    
+    t = threading.Thread(target=worker_wrapper, daemon=True)
+    t.start()
+    main_window.timer.start()
 
 
 def stop_hf_download(main_window):
     """Stop HuggingFace dataset download"""
-    # Placeholder - implement actual stop logic
-    main_window._append_hf_log("Stopping HuggingFace dataset download...")
+    if hasattr(main_window, 'hf_stop_flag'):
+        main_window.hf_stop_flag.set()
+    if hasattr(main_window, '_append_hf_log'):
+        main_window._append_hf_log("Stopping HuggingFace dataset download...")
+    if hasattr(main_window, 'hf_dataset_stop_button'):
+        main_window.hf_dataset_stop_button.setEnabled(False)
 
 
 def start_hf_model_download(main_window):

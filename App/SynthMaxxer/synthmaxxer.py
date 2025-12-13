@@ -53,14 +53,14 @@ def build_synthmaxxer_tab(main_window):
     left_container.setLayout(left_panel)
     left_scroll.setWidget(left_container)
 
-    main_split.addWidget(left_scroll, stretch=3)
+    main_split.addWidget(left_scroll, stretch=5)
 
     right_container = QWidget()
     right_panel = QVBoxLayout()
     right_panel.setSpacing(10)
     right_container.setLayout(right_panel)
 
-    main_split.addWidget(right_container, stretch=4)
+    main_split.addWidget(right_container, stretch=2)
 
     # Output Configuration
     output_group = QGroupBox("📁 Output Configuration")

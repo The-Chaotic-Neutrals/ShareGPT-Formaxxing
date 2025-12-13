@@ -56,14 +56,14 @@ def build_grokmaxxer_tab(main_window):
     proc_left_container.setLayout(proc_left_panel)
     proc_left_scroll.setWidget(proc_left_container)
     
-    proc_split.addWidget(proc_left_scroll, stretch=3)
+    proc_split.addWidget(proc_left_scroll, stretch=5)
     
     proc_right_container = QWidget()
     proc_right_panel = QVBoxLayout()
     proc_right_panel.setSpacing(10)
     proc_right_container.setLayout(proc_right_panel)
     
-    proc_split.addWidget(proc_right_container, stretch=4)
+    proc_split.addWidget(proc_right_container, stretch=2)
     
     # Build processing UI elements
     _build_processing_ui(main_window, proc_left_panel, proc_right_panel)

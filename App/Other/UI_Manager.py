@@ -32,6 +32,7 @@ from App.ParquetMaxxer.parquetmaxxer_app import ParquetMaxxer
 from App.EnglishMaxxer.EnglishMaxxer_app import EnglishFilterApp
 from App.TokenMaxxer.tokenmaxxerv3_app import TokenMaxxerV3App
 from App.SynthMaxxer.synthmaxxer_app import MainWindow as SynthMaxxerApp
+from App.MergeMaxxer.MergeMaxxer import MergeKitGUI
 
 
 class UIManager(QWidget):
@@ -158,6 +159,7 @@ class UIManager(QWidget):
             ("ForMaxxer", self.open_dataset_converter_app),
             ("GrammarMaxxer", self.open_text_correction_app),
             ("SynthMaxxer", self.open_synthmaxxer_app),
+            ("MergeMaxxer", self.open_mergemaxxer_app),
         ]
         maxxer_widget = QWidget()
         maxxer_layout = QHBoxLayout()
@@ -216,19 +218,31 @@ class UIManager(QWidget):
                     else:
                         current_ss = "background-color: transparent;"
                     central.setStyleSheet(current_ss)
-                    # Patch resizeEvent on central
+                    # Patch resizeEvent on central - use a flag to prevent recursion
                     original_resize = central.resizeEvent if hasattr(central, 'resizeEvent') else None
+                    _resizing = False
                     def new_resize(a0):
-                        if bg and central:
-                            bg.resize(central.size())
-                            bg.setGeometry(0, 0, central.width(), central.height())
+                        nonlocal _resizing
+                        if _resizing:
+                            if original_resize:
+                                original_resize(a0)
+                            else:
+                                QWidget.resizeEvent(central, a0)
+                            return
+                        _resizing = True
+                        try:
+                            if bg and central:
+                                # Use setGeometry instead of resize to avoid triggering events
+                                bg.setGeometry(0, 0, central.width(), central.height())
+                        finally:
+                            _resizing = False
                         if original_resize:
                             original_resize(a0)
                         else:
                             QWidget.resizeEvent(central, a0)
                     central.resizeEvent = new_resize
                     # Initial resize with delay to ensure layout is complete
-                    QTimer.singleShot(50, lambda: bg.resize(central.size()) if bg and central else None)
+                    QTimer.singleShot(50, lambda: bg.setGeometry(0, 0, central.width() or 800, central.height() or 600) if bg and central else None)
                 else:
                     # If no central, fallback to win
                     bg = bg_class(win)
@@ -236,16 +250,28 @@ class UIManager(QWidget):
                     bg.setGeometry(0, 0, win.width() or 800, win.height() or 600)
                     win.setStyleSheet("background-color: transparent;")
                     original_resize = win.resizeEvent if hasattr(win, 'resizeEvent') else None
+                    _resizing = False
                     def new_resize(a0):
-                        if bg:
-                            bg.resize(win.size())
-                            bg.setGeometry(0, 0, win.width(), win.height())
+                        nonlocal _resizing
+                        if _resizing:
+                            if original_resize:
+                                original_resize(a0)
+                            else:
+                                QMainWindow.resizeEvent(win, a0)
+                            return
+                        _resizing = True
+                        try:
+                            if bg:
+                                # Use setGeometry instead of resize to avoid triggering events
+                                bg.setGeometry(0, 0, win.width(), win.height())
+                        finally:
+                            _resizing = False
                         if original_resize:
                             original_resize(a0)
                         else:
                             QMainWindow.resizeEvent(win, a0)
                     win.resizeEvent = new_resize
-                    QTimer.singleShot(50, lambda: bg.resize(win.size()) if bg else None)
+                    QTimer.singleShot(50, lambda: bg.setGeometry(0, 0, win.width() or 800, win.height() or 600) if bg else None)
             else:
                 bg = bg_class(win)
                 bg.lower()
@@ -260,28 +286,31 @@ class UIManager(QWidget):
                 else:
                     current_ss = "background-color: transparent;"
                 win.setStyleSheet(current_ss)
-                # Handle resize for QWidget
+                # Handle resize for QWidget - use a flag to prevent recursion
                 original_resize = win.resizeEvent if hasattr(win, 'resizeEvent') else None
+                _resizing = False
                 def new_resize(a0):
-                    if bg:
-                        bg.resize(win.size())
-                        bg.setGeometry(0, 0, win.width(), win.height())
+                    nonlocal _resizing
+                    if _resizing:
+                        if original_resize:
+                            original_resize(a0)
+                        else:
+                            QWidget.resizeEvent(win, a0)
+                        return
+                    _resizing = True
+                    try:
+                        if bg:
+                            # Use setGeometry instead of resize to avoid triggering events
+                            bg.setGeometry(0, 0, win.width(), win.height())
+                    finally:
+                        _resizing = False
                     if original_resize:
                         original_resize(a0)
                     else:
                         QWidget.resizeEvent(win, a0)
                 win.resizeEvent = new_resize
-                QTimer.singleShot(50, lambda: bg.resize(win.size()) if bg else None)
-                original_resize = win.resizeEvent if hasattr(win, 'resizeEvent') else None
-                def new_resize(a0):
-                    bg.resize(win.size())
-                    if original_resize:
-                        original_resize(a0)
-                    else:
-                        QWidget.resizeEvent(win, a0)
-                win.resizeEvent = new_resize
-                # Initial resize
-                bg.resize(win.size())
+                # Initial resize with delay to ensure layout is complete
+                QTimer.singleShot(50, lambda: bg.setGeometry(0, 0, win.width() or 800, win.height() or 600) if bg else None)
 
     # ---- Window Launchers ----
     def open_dataset_converter_app(self):
@@ -397,6 +426,14 @@ class UIManager(QWidget):
 
     def open_synthmaxxer_app(self):
         win = SynthMaxxerApp()
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
+        win.show()
+        self.qt_windows.append(win)
+
+    def open_mergemaxxer_app(self):
+        win = MergeKitGUI(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
         self.add_background_to_window(win)

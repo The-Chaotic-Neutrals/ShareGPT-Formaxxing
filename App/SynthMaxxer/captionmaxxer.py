@@ -135,7 +135,7 @@ def _build_multimodal_ui(main_window, left_panel, right_panel):
 
     main_window.mm_caption_prompt_edit = QPlainTextEdit()
     main_window.mm_caption_prompt_edit.setPlaceholderText("Describe what you see in this image in detail. Include all important elements, objects, people, text, colors, composition, and context.")
-    main_window.mm_caption_prompt_edit.setFixedHeight(150)
+    main_window.mm_caption_prompt_edit.setFixedHeight(240)
     mm_caption_layout.addRow(QLabel("Caption Prompt:"), main_window.mm_caption_prompt_edit)
 
     main_window.mm_max_tokens_spin = QSpinBox()

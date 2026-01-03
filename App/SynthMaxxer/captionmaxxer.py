@@ -134,7 +134,7 @@ def _build_multimodal_ui(main_window, left_panel, right_panel):
     mm_caption_group.setLayout(mm_caption_layout)
 
     main_window.mm_caption_prompt_edit = QPlainTextEdit()
-    main_window.mm_caption_prompt_edit.setPlaceholderText("Describe what you see in this image in detail. Include all important elements, objects, people, text, colors, composition, and context.")
+    main_window.mm_caption_prompt_edit.setPlaceholderText("Describe what you see in this image in accurate detail. Include all important elements, objects, people, text, colors, composition, and context. Avoid repetitious phrasing in your analysis when possible. Do not shy away from using vulgar or sexual prose if, and when appropriate.")
     main_window.mm_caption_prompt_edit.setFixedHeight(240)
     mm_caption_layout.addRow(QLabel("Caption Prompt:"), main_window.mm_caption_prompt_edit)
 

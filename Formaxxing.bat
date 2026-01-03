@@ -1,4 +1,5 @@
 @echo off
+setlocal EnableExtensions
 cd /d "%~dp0"
 chcp 65001 >nul
 
@@ -24,6 +25,10 @@ set "MAGENTA_FG=%ESC%[95m"
 set "TOP_BORDER=╔════════════════════════════════════════════════════════╗"
 set "BOTTOM_BORDER=╚════════════════════════════════════════════════════════╝"
 set "EMPTY_LINE=║                                                        ║"
+
+:: Always use the repo's requirements files (do NOT generate in main dir)
+set "REQ_FILE=%~dp0App\Assets\requirements.txt"
+set "EXTRA_REQ_FILE=%~dp0App\Assets\extra_requirements.txt"
 
 :MENU
 cls
@@ -53,9 +58,22 @@ echo %RED_FG%%BOLD%⚠ Invalid choice! Try again, darling. ⚠%RESET%
 pause >nul
 goto MENU
 
+:CHECK_REQ
+if not exist "%REQ_FILE%" (
+    echo.
+    echo %RED_FG%%BOLD%ERROR: Requirements file not found:%RESET%
+    echo %RED_FG%  "%REQ_FILE%"%RESET%
+    echo.
+    pause
+    goto MENU
+)
+exit /b 0
+
 :SETUP
 cls
 echo %GREEN_FG%Setting up the virtual environment...%RESET%
+
+call :CHECK_REQ
 
 if exist venv (
     echo Deleting existing virtual environment...
@@ -65,28 +83,18 @@ if exist venv (
 python -m venv venv
 call venv\Scripts\activate.bat
 
-:: Upgrade pip and install pipreqs
+:: Upgrade pip
 python -m pip install --upgrade pip --no-cache-dir
-python -m pip install --upgrade pipreqs
-
-:: Generate requirements.txt if missing
-if not exist requirements.txt (
-    echo %CYAN_FG%requirements.txt not found, generating with pipreqs...%RESET%
-    python -m pipreqs.pipreqs --force --no-pin .
-    findstr /i /c:"spacy" requirements.txt >nul || echo spacy>>requirements.txt
-    findstr /i /c:"PyQt5" requirements.txt >nul || echo PyQt5>>requirements.txt
-    findstr /i /c:"fuzzywuzzy" requirements.txt >nul || echo fuzzywuzzy>>requirements.txt
-)
 
 :: Force NumPy 2.0.x
 python -m pip install "numpy>=2.0.0,<2.1.0"
 
-:: Install base dependencies from requirements.txt
-python -m pip install -r requirements.txt
+:: Install base dependencies from the correct requirements file
+python -m pip install -r "%REQ_FILE%"
 
-:: Install extra dependencies from extra_requirements.txt if exists
-if exist extra_requirements.txt (
-    python -m pip install -r extra_requirements.txt
+:: Install extra dependencies if the repo has them
+if exist "%EXTRA_REQ_FILE%" (
+    python -m pip install -r "%EXTRA_REQ_FILE%"
 )
 
 :: Install your pinned GPU-only PyTorch stack
@@ -109,27 +117,19 @@ cls
 echo %CYAN_FG%Starting program with updates...%RESET%
 call venv\Scripts\activate.bat
 
-python -m pip install --upgrade pip --no-cache-dir
-python -m pip install --upgrade pipreqs
+call :CHECK_REQ
 
-:: Regenerate requirements.txt if missing
-if not exist requirements.txt (
-    echo %CYAN_FG%requirements.txt not found, generating with pipreqs...%RESET%
-    python -m pipreqs.pipreqs --force --no-pin .
-    findstr /i /c:"spacy" requirements.txt >nul || echo spacy>>requirements.txt
-    findstr /i /c:"PyQt5" requirements.txt >nul || echo PyQt5>>requirements.txt
-    findstr /i /c:"fuzzywuzzy" requirements.txt >nul || echo fuzzywuzzy>>requirements.txt
-)
+python -m pip install --upgrade pip --no-cache-dir
 
 :: Force NumPy 2.0.x
 python -m pip install "numpy>=2.0.0,<2.1.0"
 
-:: Upgrade base dependencies from requirements.txt
-python -m pip install --upgrade -r requirements.txt
+:: Upgrade base dependencies from the correct requirements file
+python -m pip install --upgrade -r "%REQ_FILE%"
 
-:: Upgrade extra dependencies if extra_requirements.txt exists
-if exist extra_requirements.txt (
-    python -m pip install --upgrade -r extra_requirements.txt
+:: Upgrade extra dependencies if the repo has them
+if exist "%EXTRA_REQ_FILE%" (
+    python -m pip install --upgrade -r "%EXTRA_REQ_FILE%"
 )
 
 :: Upgrade your pinned GPU-only PyTorch stack
@@ -139,7 +139,7 @@ python -c "import torch; assert torch.cuda.is_available(), 'CUDA GPU not detecte
 :: Update SpaCy model
 python -m spacy download en_core_web_sm
 
-:: Install fastText wheel
+:: Install/upgrade fastText wheel
 powershell -Command "(New-Object Net.WebClient).DownloadFile('https://github.com/mdrehan4all/fasttext_wheels_for_windows/raw/main/fasttext-0.9.2-cp311-cp311-win_amd64.whl','fasttext-0.9.2-cp311-cp311-win_amd64.whl')"
 python -m pip install --upgrade fasttext-0.9.2-cp311-cp311-win_amd64.whl
 

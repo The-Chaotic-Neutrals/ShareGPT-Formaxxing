@@ -16,6 +16,10 @@ from App.DeslopMancer.DeslopTool_app import DeslopToolApp
 from App.WordCloudMaxxer.WordCloudGenerator_app import GenerateWordCloudApp
 from App.RefusalMancer.binary_classification_app import BinaryClassificationApp
 from App.DedupeMancer.DedupeMancer_app import DeduplicationApp
+
+# ✅ NEW: ImageDedupMancer
+from App.ImageDedupMancer.ImageDedupMancer_app import ImageDeduplicationApp
+
 # Import N-GraMancer using workaround for hyphen in directory name
 import sys
 import importlib.util
@@ -174,6 +178,10 @@ class UIManager(QWidget):
             ("DeslopMancer", self.open_deslop_tool),
             ("RefusalMancer", self.open_binary_classification_app),
             ("DedupMancer", self.open_deduplication_app),
+
+            # ✅ NEW button
+            ("ImageDedupMancer", self.open_image_dedupmancer_app),
+
             ("LineMancer", self.open_linemancer_app),
             ("N-GraMancer", self.open_ngram_analyzer_app),
         ]
@@ -348,6 +356,15 @@ class UIManager(QWidget):
 
     def open_deduplication_app(self):
         win = DeduplicationApp(self.theme)
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
+        win.show()
+        self.qt_windows.append(win)
+
+    # ✅ NEW launcher
+    def open_image_dedupmancer_app(self):
+        win = ImageDeduplicationApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
         self.add_background_to_window(win)

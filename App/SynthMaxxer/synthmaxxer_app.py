@@ -926,6 +926,19 @@ class MainWindow(QMainWindow):
                 self._toggle_hf_dataset_mode(use_hf)
             if cfg.get("hf_token"):
                 self.hf_token_edit.setText(cfg.get("hf_token", ""))
+            # Load HuggingFace upload settings (optional section)
+            if hasattr(self, 'mm_upload_group') and "mm_upload_enabled" in cfg:
+                self.mm_upload_group.setChecked(bool(cfg.get("mm_upload_enabled", False)))
+            if hasattr(self, 'mm_hf_repo_edit') and cfg.get("mm_hf_repo"):
+                self.mm_hf_repo_edit.setText(cfg.get("mm_hf_repo", ""))
+            if hasattr(self, 'mm_private_repo_check') and "mm_private_repo" in cfg:
+                self.mm_private_repo_check.setChecked(bool(cfg.get("mm_private_repo", True)))
+            if hasattr(self, 'mm_shard_size_spin') and "mm_shard_size" in cfg:
+                self.mm_shard_size_spin.setValue(int(cfg.get("mm_shard_size", 1000)))
+            if hasattr(self, 'mm_upload_batch_spin') and "mm_upload_batch_size" in cfg:
+                self.mm_upload_batch_spin.setValue(int(cfg.get("mm_upload_batch_size", 2000)))
+            if hasattr(self, 'mm_resume_upload_check') and "mm_resume_upload" in cfg:
+                self.mm_resume_upload_check.setChecked(bool(cfg.get("mm_resume_upload", True)))
         
         # Load Civitai config
         if hasattr(self, 'civitai_api_key_edit'):
@@ -1050,6 +1063,13 @@ class MainWindow(QMainWindow):
             "mm_hf_dataset": self.mm_hf_dataset_edit.text().strip() if hasattr(self, 'mm_hf_dataset_edit') else "",
             "mm_use_hf_dataset": self.mm_use_hf_dataset_check.isChecked() if hasattr(self, 'mm_use_hf_dataset_check') else False,
             "hf_token": self.hf_token_edit.text().strip() if hasattr(self, 'hf_token_edit') else "",
+            # HuggingFace Upload settings (optional section)
+            "mm_upload_enabled": self.mm_upload_group.isChecked() if hasattr(self, 'mm_upload_group') else False,
+            "mm_hf_repo": self.mm_hf_repo_edit.text().strip() if hasattr(self, 'mm_hf_repo_edit') else "",
+            "mm_private_repo": self.mm_private_repo_check.isChecked() if hasattr(self, 'mm_private_repo_check') else True,
+            "mm_shard_size": self.mm_shard_size_spin.value() if hasattr(self, 'mm_shard_size_spin') else 1000,
+            "mm_upload_batch_size": self.mm_upload_batch_spin.value() if hasattr(self, 'mm_upload_batch_spin') else 2000,
+            "mm_resume_upload": self.mm_resume_upload_check.isChecked() if hasattr(self, 'mm_resume_upload_check') else True,
         }
         
         # Save processing API key if it exists
@@ -1432,6 +1452,11 @@ class MainWindow(QMainWindow):
                         self.setWindowTitle(f"{APP_TITLE} - Done")
                         self.mm_start_button.setEnabled(True)
                         self.mm_stop_button.setEnabled(False)
+                        # Also re-enable upload buttons
+                        if hasattr(self, 'mm_upload_button'):
+                            self.mm_upload_button.setEnabled(True)
+                        if hasattr(self, 'mm_stop_upload_button'):
+                            self.mm_stop_upload_button.setEnabled(False)
                         self.timer.stop()
                         self._append_mm_log(str(msg))
                         self._show_info(str(msg))
@@ -1439,6 +1464,11 @@ class MainWindow(QMainWindow):
                         self.setWindowTitle(f"{APP_TITLE} - Error")
                         self.mm_start_button.setEnabled(True)
                         self.mm_stop_button.setEnabled(False)
+                        # Also re-enable upload buttons
+                        if hasattr(self, 'mm_upload_button'):
+                            self.mm_upload_button.setEnabled(True)
+                        if hasattr(self, 'mm_stop_upload_button'):
+                            self.mm_stop_upload_button.setEnabled(False)
                         self.timer.stop()
                         self._append_mm_log(str(msg))
                         self._show_error(str(msg))
@@ -1448,6 +1478,11 @@ class MainWindow(QMainWindow):
                     elif msg_type == "stopped":
                         self.mm_start_button.setEnabled(True)
                         self.mm_stop_button.setEnabled(False)
+                        # Also re-enable upload buttons
+                        if hasattr(self, 'mm_upload_button'):
+                            self.mm_upload_button.setEnabled(True)
+                        if hasattr(self, 'mm_stop_upload_button'):
+                            self.mm_stop_upload_button.setEnabled(False)
                         self.setWindowTitle(APP_TITLE)
                         self.timer.stop()
                         if msg:  # Only log if there's a message

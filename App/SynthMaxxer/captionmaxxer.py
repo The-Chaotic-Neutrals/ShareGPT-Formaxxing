@@ -91,16 +91,16 @@ def _build_multimodal_ui(main_window, left_panel, right_panel):
 
     # Get repo root (go up from App/SynthMaxxer to repo root)
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    outputs_dir = os.path.join(repo_root, "outputs")
-    default_output = os.path.join(outputs_dir, "image_captions.parquet")
+    outputs_dir = os.path.join(repo_root, "Outputs")
+    default_output = os.path.join(outputs_dir, "captions")
     output_row, _ = create_file_browse_row(
         line_edit_name="mm_output_edit",
-        placeholder_text="Leave empty to auto-generate in outputs folder (will be .parquet)",
+        placeholder_text="Output folder (will contain images/ + metadata.jsonl)",
         default_text=default_output,
         on_browse_clicked=lambda: browse_mm_output(main_window)
     )
     main_window.mm_output_edit = output_row.itemAt(0).widget()
-    mm_files_layout.addRow(QLabel("Output JSONL:"), _wrap_row(output_row))
+    mm_files_layout.addRow(QLabel("Output Folder:"), _wrap_row(output_row))
     left_panel.addWidget(mm_files_group)
 
     # HuggingFace Dataset Input (for captioning from HF datasets)
@@ -181,6 +181,70 @@ def _build_multimodal_ui(main_window, left_panel, right_panel):
     max_captions_row.addStretch()
     mm_caption_layout.addRow(QLabel("Max Captions:"), _wrap_row(max_captions_row))
     left_panel.addWidget(mm_caption_group)
+
+    # HuggingFace Upload Settings (Optional - collapsible)
+    mm_upload_group = QGroupBox("🚀 HuggingFace Upload (Optional)")
+    mm_upload_group.setCheckable(True)
+    mm_upload_group.setChecked(False)  # Collapsed by default
+    mm_upload_layout = QFormLayout()
+    mm_upload_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    mm_upload_layout.setHorizontalSpacing(10)
+    mm_upload_layout.setVerticalSpacing(6)
+    mm_upload_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+    mm_upload_group.setLayout(mm_upload_layout)
+
+    main_window.mm_hf_repo_edit = QLineEdit()
+    main_window.mm_hf_repo_edit.setPlaceholderText("e.g., username/dataset_name")
+    main_window.mm_hf_repo_edit.setToolTip("HuggingFace dataset repo ID (must be like 'username/dataset_name')")
+    mm_upload_layout.addRow(QLabel("HF Repo ID:"), main_window.mm_hf_repo_edit)
+
+    main_window.mm_private_repo_check = QCheckBox("Private repository")
+    main_window.mm_private_repo_check.setChecked(True)
+    main_window.mm_private_repo_check.setToolTip("Create repository as private")
+    mm_upload_layout.addRow("", main_window.mm_private_repo_check)
+
+    main_window.mm_shard_size_spin = QSpinBox()
+    main_window.mm_shard_size_spin.setRange(100, 9000)
+    main_window.mm_shard_size_spin.setValue(1000)
+    main_window.mm_shard_size_spin.setMaximumWidth(100)
+    main_window.mm_shard_size_spin.setToolTip("Images per subfolder (HF limit: <10000 files per folder)")
+    shard_row = QHBoxLayout()
+    shard_row.addWidget(main_window.mm_shard_size_spin)
+    shard_row.addStretch()
+    mm_upload_layout.addRow(QLabel("Shard Size:"), _wrap_row(shard_row))
+
+    main_window.mm_upload_batch_spin = QSpinBox()
+    main_window.mm_upload_batch_spin.setRange(50, 20000)
+    main_window.mm_upload_batch_spin.setValue(2000)
+    main_window.mm_upload_batch_spin.setMaximumWidth(100)
+    main_window.mm_upload_batch_spin.setToolTip("Images per commit (larger = fewer commits, but larger individual uploads)")
+    batch_row = QHBoxLayout()
+    batch_row.addWidget(main_window.mm_upload_batch_spin)
+    batch_row.addStretch()
+    mm_upload_layout.addRow(QLabel("Batch Size:"), _wrap_row(batch_row))
+
+    main_window.mm_resume_upload_check = QCheckBox("Resume (skip already-uploaded images)")
+    main_window.mm_resume_upload_check.setChecked(True)
+    main_window.mm_resume_upload_check.setToolTip("Check remote repo and skip images that already exist")
+    mm_upload_layout.addRow("", main_window.mm_resume_upload_check)
+
+    # Upload button
+    upload_btn_row = QHBoxLayout()
+    main_window.mm_upload_button = QPushButton("Upload to HuggingFace")
+    main_window.mm_upload_button.clicked.connect(lambda: start_hf_upload(main_window))
+    main_window.mm_upload_button.setToolTip("Upload the output folder to HuggingFace")
+    main_window.mm_stop_upload_button = QPushButton("Stop Upload")
+    main_window.mm_stop_upload_button.clicked.connect(lambda: stop_hf_upload(main_window))
+    main_window.mm_stop_upload_button.setEnabled(False)
+    upload_btn_row.addWidget(main_window.mm_upload_button)
+    upload_btn_row.addWidget(main_window.mm_stop_upload_button)
+    upload_btn_row.addStretch()
+    mm_upload_layout.addRow("", _wrap_row(upload_btn_row))
+
+    left_panel.addWidget(mm_upload_group)
+    
+    # Store reference for config save/load
+    main_window.mm_upload_group = mm_upload_group
     left_panel.addStretch(1)
 
     # Right panel - Logs
@@ -210,28 +274,29 @@ def browse_mm_image_dir(main_window):
 
 
 def browse_mm_output(main_window):
-    """Browse for output file"""
+    """Browse for output folder"""
     from PyQt5.QtWidgets import QFileDialog
     # Get repo root (go up from App/SynthMaxxer to repo root)
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    default_path = os.path.join(repo_root, "outputs")
+    default_path = os.path.join(repo_root, "Outputs")
     if not os.path.exists(default_path):
         os.makedirs(default_path, exist_ok=True)
     
     current_path = main_window.mm_output_edit.text().strip()
-    if current_path and os.path.dirname(current_path):
+    if current_path and os.path.isdir(current_path):
+        start_dir = current_path
+    elif current_path and os.path.isdir(os.path.dirname(current_path)):
         start_dir = os.path.dirname(current_path)
     else:
         start_dir = default_path
     
-    filename, _ = QFileDialog.getSaveFileName(
+    directory = QFileDialog.getExistingDirectory(
         main_window,
-        "Select output Parquet file",
-        os.path.join(start_dir, "image_captions.parquet"),
-        "Parquet files (*.parquet);;All files (*.*)",
+        "Select output folder for captions",
+        start_dir,
     )
-    if filename:
-        main_window.mm_output_edit.setText(filename)
+    if directory:
+        main_window.mm_output_edit.setText(directory)
 
 
 def _toggle_hf_dataset_mode(main_window, checked):
@@ -250,7 +315,7 @@ def start_image_captioning(main_window):
     hf_dataset = main_window.mm_hf_dataset_edit.text().strip() if use_hf_dataset else None
     hf_token = main_window.hf_token_edit.text().strip() if use_hf_dataset else None
     image_dir = main_window.mm_image_dir_edit.text().strip() if not use_hf_dataset else None
-    output_file = main_window.mm_output_edit.text().strip()
+    output_folder = main_window.mm_output_edit.text().strip()
     api_key = main_window.mm_api_key_edit.text().strip()
     endpoint = main_window.mm_endpoint_edit.text().strip()
     model = main_window.mm_model_combo.currentText().strip()
@@ -288,23 +353,13 @@ def start_image_captioning(main_window):
         main_window._show_error("Please select a model. Click 'Refresh' to load available models.")
         return
 
-    # Normalize output file path (fix any App\outputs paths)
-    if output_file and ("App\\outputs" in output_file or "App/outputs" in output_file):
+    # Auto-generate output folder if not provided
+    if not output_folder:
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        outputs_dir = os.path.join(repo_root, "outputs")
-        filename = os.path.basename(output_file)
-        output_file = os.path.join(outputs_dir, filename)
-        main_window.mm_output_edit.setText(output_file)
-    
-    # Auto-generate output filename if not provided
-    if not output_file:
-        # Get repo root (go up from App/SynthMaxxer to repo root)
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        outputs_dir = os.path.join(repo_root, "outputs")
-        os.makedirs(outputs_dir, exist_ok=True)
+        outputs_dir = os.path.join(repo_root, "Outputs")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = os.path.join(outputs_dir, f"image_captions_{timestamp}.parquet")
-        main_window.mm_output_edit.setText(output_file)
+        output_folder = os.path.join(outputs_dir, f"captions_{timestamp}")
+        main_window.mm_output_edit.setText(output_folder)
 
     # Save config
     main_window._save_config()
@@ -313,24 +368,20 @@ def start_image_captioning(main_window):
     from App.SynthMaxxer.synthmaxxer_app import APP_TITLE
     main_window.mm_log_view.clear()
     main_window._append_mm_log("=== Image Captioning started ===")
+    main_window._append_mm_log(f"Output folder: {output_folder}")
     main_window.setWindowTitle(f"{APP_TITLE} - Captioning...")
     main_window.mm_start_button.setEnabled(False)
     main_window.mm_stop_button.setEnabled(True)
     main_window.mm_stop_flag = threading.Event()
 
     main_window.mm_queue = queue.Queue()
-    
-    # Log path correction if it happened
-    if output_file and ("App\\outputs" not in output_file and "App/outputs" not in output_file):
-        # Path is correct, log it
-        main_window._append_mm_log(f"Output file: {output_file}")
 
     # Start worker thread
     main_window.mm_worker_thread = threading.Thread(
         target=image_captioning_worker,
         args=(
             image_dir,
-            output_file,
+            output_folder,
             api_key,
             endpoint,
             model,
@@ -357,4 +408,258 @@ def stop_image_captioning(main_window):
         main_window.mm_stop_flag.set()
     main_window._append_mm_log("Stopping image captioning...")
     main_window.mm_stop_button.setEnabled(False)
+
+
+def start_hf_upload(main_window):
+    """Start the HuggingFace upload process"""
+    output_folder = main_window.mm_output_edit.text().strip()
+    repo_id = main_window.mm_hf_repo_edit.text().strip()
+    hf_token = main_window.hf_token_edit.text().strip() if hasattr(main_window, 'hf_token_edit') else None
+    is_private = main_window.mm_private_repo_check.isChecked()
+    shard_size = main_window.mm_shard_size_spin.value()
+    batch_size = main_window.mm_upload_batch_spin.value()
+    resume = main_window.mm_resume_upload_check.isChecked()
+
+    # Validate inputs
+    if not output_folder:
+        main_window._show_error("Please specify an output folder first.")
+        return
+    
+    if not repo_id:
+        main_window._show_error("Please enter a HuggingFace repo ID (e.g., 'username/dataset_name').")
+        return
+    
+    if repo_id.count("/") != 1:
+        main_window._show_error("Repo ID must be in format 'username/dataset_name'.")
+        return
+
+    # Output folder IS the dataset folder (contains images/ + metadata.jsonl)
+    images_dir = os.path.join(output_folder, "images")
+    metadata_path = os.path.join(output_folder, "metadata.jsonl")
+
+    if not os.path.exists(output_folder):
+        main_window._show_error(f"Output folder not found: {output_folder}\nRun captioning first to generate images and metadata.")
+        return
+
+    if not os.path.exists(images_dir):
+        main_window._show_error(f"Images directory not found: {images_dir}\nRun captioning first.")
+        return
+
+    if not os.path.exists(metadata_path):
+        main_window._show_error(f"metadata.jsonl not found: {metadata_path}\nRun captioning first.")
+        return
+
+    # Check for images
+    from pathlib import Path
+    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+    local_files = [p for p in Path(images_dir).iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
+    if not local_files:
+        main_window._show_error("No images found in images directory.")
+        return
+
+    # Save config
+    main_window._save_config()
+
+    # Reset UI state
+    from App.SynthMaxxer.synthmaxxer_app import APP_TITLE
+    main_window._append_mm_log("")
+    main_window._append_mm_log("=== HuggingFace Upload started ===")
+    main_window.setWindowTitle(f"{APP_TITLE} - Uploading...")
+    main_window.mm_upload_button.setEnabled(False)
+    main_window.mm_stop_upload_button.setEnabled(True)
+    main_window.mm_upload_stop_flag = threading.Event()
+
+    # Start worker thread
+    main_window.mm_upload_thread = threading.Thread(
+        target=hf_upload_worker,
+        args=(
+            output_folder,
+            repo_id,
+            hf_token,
+            is_private,
+            shard_size,
+            batch_size,
+            resume,
+            main_window.mm_upload_stop_flag,
+            main_window.mm_queue,
+        ),
+        daemon=True,
+    )
+    main_window.mm_upload_thread.start()
+    main_window.timer.start()
+
+
+def stop_hf_upload(main_window):
+    """Stop the HuggingFace upload process"""
+    if hasattr(main_window, 'mm_upload_stop_flag'):
+        main_window.mm_upload_stop_flag.set()
+    main_window._append_mm_log("Stopping upload...")
+    main_window.mm_stop_upload_button.setEnabled(False)
+
+
+def hf_upload_worker(work_dir, repo_id, token, is_private, shard_size, batch_size, resume, stop_flag, q):
+    """Worker function to upload dataset to HuggingFace"""
+    import math
+    import json
+    import shutil
+    import tempfile
+    from pathlib import Path
+    
+    try:
+        from huggingface_hub import create_repo, upload_file, upload_folder, HfApi
+    except ImportError:
+        if q:
+            q.put(("error", "huggingface_hub is required. Install with: pip install huggingface_hub"))
+        return
+
+    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+
+    def shard_subdir_from_index(idx, per_dir):
+        """Get shard subdirectory name from image index"""
+        return f"{idx // per_dir:05d}"
+
+    try:
+        images_dir = Path(work_dir) / "images"
+        meta_path = Path(work_dir) / "metadata.jsonl"
+
+        if q:
+            q.put(("log", f"📁 Working directory: {work_dir}"))
+            q.put(("log", f"📦 Repo: {repo_id} (private={is_private})"))
+            q.put(("log", f"⚙️  Shard size: {shard_size}, Batch size: {batch_size}"))
+
+        # Create repo
+        if q:
+            q.put(("log", "Creating repository..."))
+        create_repo(repo_id, repo_type="dataset", private=is_private, exist_ok=True, token=token)
+
+        # Collect local images
+        local_files = sorted([p for p in images_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS])
+        if not local_files:
+            if q:
+                q.put(("error", "No images found in images directory."))
+            return
+
+        if q:
+            q.put(("log", f"📷 Found {len(local_files)} local images"))
+
+        # Resume: check already-uploaded files
+        already = set()
+        if resume:
+            if q:
+                q.put(("log", "Checking existing files on Hub..."))
+            api = HfApi(token=token)
+            try:
+                repo_files = api.list_repo_files(repo_id=repo_id, repo_type="dataset")
+                for p in repo_files:
+                    if p.startswith("images/"):
+                        already.add(Path(p).name)
+                if q:
+                    q.put(("log", f"📂 Found {len(already)} already-uploaded images"))
+            except Exception as e:
+                if q:
+                    q.put(("log", f"⚠️  Could not check existing files: {e}"))
+
+        to_upload = [p for p in local_files if p.name not in already] if already else local_files
+        total = len(to_upload)
+
+        if total == 0:
+            if q:
+                q.put(("log", "✅ Nothing to upload (all images already present)."))
+                q.put(("success", "Upload complete - all images already present."))
+            return
+
+        # Upload sharded metadata.jsonl
+        if q:
+            q.put(("log", "📝 Uploading sharded metadata.jsonl..."))
+
+        with tempfile.TemporaryDirectory() as tmp_meta_dir:
+            tmp_meta = Path(tmp_meta_dir) / "metadata.jsonl"
+            with meta_path.open("r", encoding="utf-8") as fin, tmp_meta.open("w", encoding="utf-8") as fout:
+                for line in fin:
+                    try:
+                        row = json.loads(line)
+                        fn = row.get("file_name", "")
+                        if not fn:
+                            continue
+                        # Parse index from filename (e.g., "00000123.png" -> 123)
+                        try:
+                            idx = int(Path(fn).stem)
+                        except ValueError:
+                            idx = 0
+                        sub = shard_subdir_from_index(idx, shard_size)
+                        row["file_name"] = f"{sub}/{fn}"
+                        fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    except json.JSONDecodeError:
+                        continue
+
+            upload_file(
+                path_or_fileobj=str(tmp_meta),
+                path_in_repo="metadata.jsonl",
+                repo_id=repo_id,
+                repo_type="dataset",
+                token=token,
+                commit_message=f"Upload sharded metadata (shard_size={shard_size})",
+            )
+
+        # Upload images in batches
+        num_batches = math.ceil(total / batch_size)
+        if q:
+            q.put(("log", f"📤 Uploading {total} images in {num_batches} batches..."))
+
+        for b in range(num_batches):
+            if stop_flag and stop_flag.is_set():
+                if q:
+                    q.put(("log", "Upload stopped by user"))
+                    q.put(("stopped", "Stopped by user"))
+                return
+
+            start = b * batch_size
+            end = min((b + 1) * batch_size, total)
+            batch = to_upload[start:end]
+
+            if q:
+                q.put(("log", f"📦 Batch {b+1}/{num_batches} ({start+1}-{end} of {total})..."))
+
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_root = Path(tmp)
+                tmp_images_root = tmp_root / "images"
+                tmp_images_root.mkdir(parents=True, exist_ok=True)
+
+                # Stage files with sharding
+                for p in batch:
+                    try:
+                        idx = int(p.stem)
+                    except ValueError:
+                        idx = 0
+                    sub = shard_subdir_from_index(idx, shard_size)
+                    target_dir = tmp_images_root / sub
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(p, target_dir / p.name)
+
+                commit_msg = f"Upload images batch {start:07d}-{end-1:07d}"
+
+                upload_folder(
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    folder_path=str(tmp_root),
+                    path_in_repo=".",
+                    token=token,
+                    commit_message=commit_msg,
+                )
+
+            if q:
+                q.put(("log", f"✅ Batch {b+1}/{num_batches} uploaded"))
+
+        success_msg = f"✅ Upload complete! https://huggingface.co/datasets/{repo_id}"
+        if q:
+            q.put(("log", success_msg))
+            q.put(("success", success_msg))
+
+    except Exception as e:
+        error_msg = f"Upload failed: {str(e)}"
+        if q:
+            q.put(("error", error_msg))
+        import traceback
+        print(f"HF_UPLOAD_WORKER_ERROR: {error_msg}")
+        print(traceback.format_exc())
 

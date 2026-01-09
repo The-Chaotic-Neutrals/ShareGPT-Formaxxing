@@ -48,7 +48,6 @@ from App.SynthMaxxer.processing_worker import processing_worker
 
 # Import tab modules
 from App.SynthMaxxer import synthmaxxer as synthmaxxer_module
-from App.SynthMaxxer import grokmaxxer as grokmaxxer_module
 from App.SynthMaxxer import captionmaxxer as captionmaxxer_module
 from App.SynthMaxxer import civitai as civitai_module
 from App.SynthMaxxer import huggingface as huggingface_module
@@ -452,13 +451,9 @@ class MainWindow(QMainWindow):
         # API Configuration tab (first tab - central API management)
         self._build_api_config_tab()
         
-        # Generation tab (SynthMaxxer)
-        generation_tab = synthmaxxer_module.build_synthmaxxer_tab(self)
-        self.tabs.addTab(generation_tab, "🔄 SynthMaxxer")
-        
-        # Processing tab (GrokMaxxer)
-        processing_tab = grokmaxxer_module.build_grokmaxxer_tab(self)
-        self.tabs.addTab(processing_tab, "⚙️ GrokMaxxer")
+        # SynthMaxxer tab (unified generation + processing)
+        synthmaxxer_tab = synthmaxxer_module.build_synthmaxxer_tab(self)
+        self.tabs.addTab(synthmaxxer_tab, "🔄 SynthMaxxer")
         
         # CaptionMaxxer tab
         multimodal_tab = captionmaxxer_module.build_captionmaxxer_tab(self)
@@ -557,32 +552,6 @@ class MainWindow(QMainWindow):
         
         left_panel.addWidget(gen_api_group)
         
-        # GrokMaxxer API Configuration
-        proc_api_group = QGroupBox("⚙️ GrokMaxxer")
-        proc_api_layout = QFormLayout()
-        proc_api_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)  # type: ignore
-        proc_api_layout.setHorizontalSpacing(10)
-        proc_api_layout.setVerticalSpacing(6)
-        proc_api_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)  # type: ignore
-        proc_api_group.setLayout(proc_api_layout)
-        
-        proc_api_row = QHBoxLayout()
-        self.proc_api_key_edit = QLineEdit()
-        self.proc_api_key_edit.setEchoMode(QLineEdit.Password)
-        self.proc_api_key_edit.setPlaceholderText("sk-...")
-        self.proc_show_key_check = QCheckBox("Show")
-        self.proc_show_key_check.toggled.connect(self.toggle_proc_api_visibility)
-        proc_api_row.addWidget(self.proc_api_key_edit)
-        proc_api_row.addWidget(self.proc_show_key_check)
-        proc_api_layout.addRow(QLabel("API Key:"), self._wrap_row(proc_api_row))
-        
-        self.proc_model_edit = QLineEdit()
-        self.proc_model_edit.setPlaceholderText("Enter model name (e.g., grok-beta)")
-        self.proc_model_edit.setText("grok-4.1-fast-non-reasoning")
-        proc_api_layout.addRow(QLabel("Model:"), self.proc_model_edit)
-        
-        left_panel.addWidget(proc_api_group)
-        
         # CaptionMaxxer API Configuration
         mm_api_group, mm_api_widgets = create_api_config_group(
             api_key_edit_name="mm_api_key_edit",
@@ -666,14 +635,14 @@ class MainWindow(QMainWindow):
         info_text.setReadOnly(True)
         info_text.setPlainText(
             "API Configuration\n\n"
-            "This tab centralizes all API settings used across SynthMaxxer:\n\n"
-            "• SynthMaxxer: Used for conversation generation\n"
-            "• GrokMaxxer: Used for entry enhancement and cache generation\n"
+            "This tab centralizes all API settings:\n\n"
+            "• SynthMaxxer: Generate, process, extend, and rewrite datasets\n"
+            "  Supports: Anthropic, OpenAI, Grok, Gemini, OpenRouter, DeepSeek\n"
             "• CaptionMaxxer: Used for image captioning\n"
             "• Civitai: Used for downloading images from Civitai\n"
             "• HuggingFace: Used for accessing HuggingFace datasets\n\n"
             "Configure your API keys, endpoints, and models here. "
-            "These settings are automatically saved and shared across all tabs."
+            "Settings are automatically saved and shared across all tabs."
         )
         info_text.setStyleSheet("background-color: #020202; color: #D1D5DB; border: 1px solid #1F2937; border-radius: 8px; padding: 10px;")
         info_layout.addWidget(info_text)
@@ -806,10 +775,6 @@ class MainWindow(QMainWindow):
                         proc_cfg["reply_in_character"] = main_cfg.get("proc_reply_in_character")
                     if "proc_dynamic_names_mode" in main_cfg:
                         proc_cfg["dynamic_names_mode"] = main_cfg.get("proc_dynamic_names_mode")
-                    if "proc_concurrency" in main_cfg:
-                        proc_cfg["concurrency"] = main_cfg.get("proc_concurrency")
-                    if "proc_batch_size" in main_cfg:
-                        proc_cfg["batch_size"] = main_cfg.get("proc_batch_size")
             except Exception:
                 pass
         
@@ -824,10 +789,8 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
         
-        # Apply loaded config
+        # Apply loaded config (processing settings)
         if proc_cfg:
-            if proc_cfg.get("api_key"):
-                self.proc_api_key_edit.setText(proc_cfg.get("api_key", ""))
             if proc_cfg.get("last_input"):
                 self.proc_input_edit.setText(proc_cfg.get("last_input", ""))  # type: ignore
             if proc_cfg.get("last_output"):
@@ -843,11 +806,6 @@ class MainWindow(QMainWindow):
                     self.proc_output_edit.setText(default_output)  # type: ignore
             if proc_cfg.get("system_prompt"):
                 self.proc_system_prompt_edit.setPlainText(proc_cfg.get("system_prompt", ""))
-            if proc_cfg.get("model"):
-                self.proc_model_edit.setText(proc_cfg.get("model", "grok-4.1-fast-non-reasoning"))
-            elif proc_cfg.get("models_csv"):
-                model_name = proc_cfg.get("models_csv", "").split(',')[0].strip() if proc_cfg.get("models_csv") else "grok-4.1-fast-non-reasoning"
-                self.proc_model_edit.setText(model_name)
             if proc_cfg.get("start_line"):
                 self.proc_start_line_edit.setText(str(proc_cfg.get("start_line", "")))
             if proc_cfg.get("end_line"):
@@ -863,10 +821,6 @@ class MainWindow(QMainWindow):
                 self.proc_reply_in_character_check.setChecked(bool(proc_cfg.get("reply_in_character", False)))
             if "dynamic_names_mode" in proc_cfg:
                 self.proc_dynamic_names_check.setChecked(bool(proc_cfg.get("dynamic_names_mode", False)))
-            if "concurrency" in proc_cfg:
-                self.proc_concurrency_spin.setValue(int(proc_cfg.get("concurrency", 20)))
-            if "batch_size" in proc_cfg:
-                self.proc_batch_size_spin.setValue(int(proc_cfg.get("batch_size", 16)))
         
         # Load multimodal config
         if hasattr(self, 'mm_image_dir_edit'):
@@ -1112,11 +1066,10 @@ class MainWindow(QMainWindow):
             "refusal_phrases": [p.strip() for p in self.refusal_phrases_edit.toPlainText().split('\n') if p.strip()],
             "force_retry_phrases": [p.strip() for p in self.force_retry_phrases_edit.toPlainText().split('\n') if p.strip()],
             "api_type": self.api_type_combo.currentText(),
-            # Processing tab config
+            # Processing settings (now uses main API config)
             "proc_last_input": self.proc_input_edit.text().strip(),  # type: ignore
             "proc_last_output": self.proc_output_edit.text().strip(),  # type: ignore
             "proc_system_prompt": self.proc_system_prompt_edit.toPlainText().strip(),
-            "proc_model": self.proc_model_edit.text().strip(),
             "proc_start_line": self.proc_start_line_edit.text().strip(),
             "proc_end_line": self.proc_end_line_edit.text().strip(),
             "proc_rewrite_existing": self.proc_rewrite_check.isChecked(),
@@ -1124,8 +1077,6 @@ class MainWindow(QMainWindow):
             "proc_num_new": self.proc_num_new_edit.text().strip(),
             "proc_reply_in_character": self.proc_reply_in_character_check.isChecked(),
             "proc_dynamic_names_mode": self.proc_dynamic_names_check.isChecked(),
-            "proc_concurrency": self.proc_concurrency_spin.value(),
-            "proc_batch_size": self.proc_batch_size_spin.value(),
             # CaptionMaxxer tab config
             "mm_image_dir": self.mm_image_dir_edit.text().strip() if hasattr(self, 'mm_image_dir_edit') else "",  # type: ignore
             "mm_output": self.mm_output_edit.text().strip() if hasattr(self, 'mm_output_edit') else "",  # type: ignore
@@ -1159,16 +1110,6 @@ class MainWindow(QMainWindow):
             "hf_upload_batch_size": self.hf_upload_batch_spin.value() if hasattr(self, 'hf_upload_batch_spin') else 2000,
             "hf_resume_upload": self.hf_resume_upload_check.isChecked() if hasattr(self, 'hf_resume_upload_check') else True,
         }
-        
-        # Save processing API key if it exists
-        if hasattr(self, 'proc_api_key_edit'):
-            proc_api_key = self.proc_api_key_edit.text().strip()
-            if proc_api_key:
-                # Save processing API key (defaults to Grok for processing tab)
-                proc_api_type = "Grok (xAI)"  # Default for processing tab
-                api_keys[proc_api_type] = proc_api_key
-                cfg["api_keys"] = api_keys
-                cfg["proc_api_key"] = proc_api_key  # Also save directly for backward compat
         
         # Save multimodal API key if it exists
         if hasattr(self, 'mm_api_key_edit'):
@@ -1606,30 +1547,21 @@ class MainWindow(QMainWindow):
                         self._append_proc_log(str(msg))
                     elif msg_type == "success":
                         self.setWindowTitle(f"{APP_TITLE} - Done")
-                        self.process_button.setEnabled(True)
-                        self.generate_cache_button.setEnabled(True)
-                        self.improve_cache_button.setEnabled(True)
-                        if hasattr(self, 'proc_stop_button'):
-                            self.proc_stop_button.setEnabled(False)
+                        self.start_button.setEnabled(True)
+                        self.stop_button.setEnabled(False)
                         self.timer.stop()
                         self._append_proc_log(str(msg))
                         self._show_info(str(msg))
                     elif msg_type == "error":
                         self.setWindowTitle(f"{APP_TITLE} - Error")
-                        self.process_button.setEnabled(True)
-                        self.generate_cache_button.setEnabled(True)
-                        self.improve_cache_button.setEnabled(True)
-                        if hasattr(self, 'proc_stop_button'):
-                            self.proc_stop_button.setEnabled(False)
+                        self.start_button.setEnabled(True)
+                        self.stop_button.setEnabled(False)
                         self.timer.stop()
                         self._append_proc_log(str(msg))
                         self._show_error(str(msg))
                     elif msg_type == "stopped":
-                        self.process_button.setEnabled(True)
-                        self.generate_cache_button.setEnabled(True)
-                        self.improve_cache_button.setEnabled(True)
-                        if hasattr(self, 'proc_stop_button'):
-                            self.proc_stop_button.setEnabled(False)
+                        self.start_button.setEnabled(True)
+                        self.stop_button.setEnabled(False)
                         self.setWindowTitle(APP_TITLE)
                         self.timer.stop()
                         if msg:  # Only log if there's a message
@@ -1716,11 +1648,6 @@ class MainWindow(QMainWindow):
         except queue.Empty:
             pass
 
-    def toggle_proc_api_visibility(self, checked):
-        if checked:
-            self.proc_api_key_edit.setEchoMode(QLineEdit.Normal)
-        else:
-            self.proc_api_key_edit.setEchoMode(QLineEdit.Password)
 
     def toggle_mm_api_visibility(self, checked):
         if checked:

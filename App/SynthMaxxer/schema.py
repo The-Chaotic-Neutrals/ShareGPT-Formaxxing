@@ -1,40 +1,32 @@
+"""
+Schema utilities for SynthMaxxer
+Uses standard chat format internally, converts to ShareGPT on output
+"""
 import json
 import re
 
-# Schema validation for ShareGPT format
-ALLOWED_ROLES = {"system", "human", "gpt"}
-
-SCHEMA_DESCRIPTION = (
-    "Each dataset entry is a JSON object:\n"
-    "{\n"
-    "  \"conversations\": [\n"
-    "    {\"from\": \"system\" | \"human\" | \"gpt\", \"value\": \"...\"},\n"
-    "    ...\n"
-    "  ]\n"
-    "}\n"
-    "Rules:\n"
-    "- Optional leading system message at index 0.\n"
-    "- After the optional system message, roles alternate strictly:\n"
-    "    human, gpt, human, gpt, ...\n"
-    "- The final message MUST NOT be from 'human'.\n"
-    "- 'value' is always a string.\n"
-)
-
 
 def extract_json_array(text):
+    """Extract a JSON array from text, handling markdown code blocks"""
     if not isinstance(text, str):
         raise ValueError("Input must be string")
     text = text.strip()
+    
+    # Strip markdown code blocks
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z0-9]*\s*", "", text)
         text = re.sub(r"```$", "", text).strip()
+    
     try:
         return json.loads(text)
     except:
         pass
+    
+    # Find array bounds
     start_idx = text.find("[")
     if start_idx == -1:
         raise ValueError("No opening [ found")
+    
     bracket_count = 0
     end_idx = start_idx
     for i in range(start_idx, len(text)):
@@ -45,6 +37,7 @@ def extract_json_array(text):
             if bracket_count == 0:
                 end_idx = i + 1
                 break
+    
     if bracket_count != 0:
         try:
             from json_repair import repair_json
@@ -54,6 +47,7 @@ def extract_json_array(text):
         except:
             pass
         raise ValueError("Unbalanced brackets")
+    
     chunk = text[start_idx:end_idx]
     try:
         return json.loads(chunk)
@@ -69,6 +63,7 @@ def extract_json_array(text):
 
 
 def extract_json_object(text):
+    """Extract a JSON object from text"""
     if not isinstance(text, str):
         return text
 
@@ -80,12 +75,12 @@ def extract_json_object(text):
 
     try:
         return json.loads(text)
-    except Exception:
+    except:
         pass
 
     start_idx = text.find("{")
     if start_idx == -1:
-        raise ValueError("No opening brace found in response")
+        raise ValueError("No opening brace found")
     
     brace_count = 0
     end_idx = start_idx
@@ -106,12 +101,12 @@ def extract_json_object(text):
                 return json.loads(repaired)
         except:
             pass
-        raise ValueError("Unbalanced braces in JSON response")
+        raise ValueError("Unbalanced braces")
     
     chunk = text[start_idx:end_idx]
     try:
         return json.loads(chunk)
-    except Exception:
+    except:
         try:
             from json_repair import repair_json
             repaired = repair_json(chunk)
@@ -119,203 +114,214 @@ def extract_json_object(text):
                 return json.loads(repaired)
         except:
             pass
-        raise ValueError("Could not parse JSON from response")
+        raise ValueError("Could not parse JSON")
 
+
+# ============================================================================
+# Standard Chat Format (internal)
+# ============================================================================
+# [
+#   {"role": "system", "content": "..."},
+#   {"role": "user", "content": "..."},
+#   {"role": "assistant", "content": "..."},
+# ]
+
+def validate_messages(messages):
+    """Validate a list of chat messages"""
+    if not isinstance(messages, list) or not messages:
+        return False, "Empty messages list"
+    
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            return False, f"Message {i} is not a dict"
+        if "role" not in msg or "content" not in msg:
+            return False, f"Message {i} missing role or content"
+        if msg["role"] not in ("system", "user", "assistant"):
+            return False, f"Invalid role at {i}: {msg['role']}"
+        if not isinstance(msg["content"], str):
+            return False, f"Content at {i} is not a string"
+    
+    # Check structure: optional system, then user/assistant alternation
+    idx = 0
+    if messages[0]["role"] == "system":
+        idx = 1
+    
+    if idx >= len(messages):
+        return False, "Only system message present"
+    
+    if messages[idx]["role"] != "user":
+        return False, f"First non-system must be user, got {messages[idx]['role']}"
+    
+    # Check alternation
+    expected = "user"
+    for j in range(idx, len(messages)):
+        if messages[j]["role"] != expected:
+            return False, f"Expected {expected} at {j}, got {messages[j]['role']}"
+        expected = "assistant" if expected == "user" else "user"
+    
+    if messages[-1]["role"] == "user":
+        return False, "Conversation ends on user"
+    
+    return True, None
+
+
+def fix_messages(messages):
+    """Fix common issues in message lists"""
+    if not isinstance(messages, list) or not messages:
+        return None
+    
+    fixed = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        
+        # Normalize role names
+        role = msg.get("role", msg.get("from", ""))
+        content = msg.get("content", msg.get("value", ""))
+        
+        if not role or not isinstance(content, str):
+            continue
+        
+        role = str(role).lower()
+        if role in ("human", "user"):
+            role = "user"
+        elif role in ("gpt", "assistant", "ai", "bot", "model"):
+            role = "assistant"
+        elif role == "system":
+            role = "system"
+        else:
+            role = "assistant"  # Default unknown to assistant
+        
+        fixed.append({"role": role, "content": content.strip() or " "})
+    
+    if len(fixed) < 2:
+        return None
+    
+    # Ensure system is first if present
+    system_msgs = [i for i, m in enumerate(fixed) if m["role"] == "system"]
+    if len(system_msgs) > 1:
+        # Keep only first system message
+        for i in sorted(system_msgs[1:], reverse=True):
+            del fixed[i]
+    elif system_msgs and system_msgs[0] != 0:
+        fixed.insert(0, fixed.pop(system_msgs[0]))
+    
+    # Fix alternation
+    idx = 1 if fixed and fixed[0]["role"] == "system" else 0
+    if idx >= len(fixed):
+        return None
+    
+    # First non-system must be user
+    if fixed[idx]["role"] != "user":
+        fixed[idx]["role"] = "user"
+    
+    expected = "user"
+    for j in range(idx, len(fixed)):
+        if fixed[j]["role"] != expected:
+            fixed[j]["role"] = expected
+        expected = "assistant" if expected == "user" else "user"
+    
+    # Must end on assistant
+    if fixed[-1]["role"] == "user":
+        fixed.append({"role": "assistant", "content": "I understand."})
+    
+    return fixed if len(fixed) >= 2 else None
+
+
+def add_system_message(messages, system_prompt):
+    """Add or update system message at the start"""
+    if not system_prompt or not isinstance(messages, list):
+        return messages
+    
+    if messages and messages[0]["role"] == "system":
+        messages[0]["content"] = system_prompt
+    else:
+        messages.insert(0, {"role": "system", "content": system_prompt})
+    
+    return messages
+
+
+# ============================================================================
+# ShareGPT Format Conversion (for output)
+# ============================================================================
+
+def to_sharegpt(messages):
+    """Convert standard messages to ShareGPT format"""
+    role_map = {"system": "system", "user": "human", "assistant": "gpt"}
+    return {
+        "conversations": [
+            {"from": role_map.get(m["role"], m["role"]), "value": m["content"]}
+            for m in messages
+        ]
+    }
+
+
+def from_sharegpt(entry):
+    """Convert ShareGPT format to standard messages"""
+    if not isinstance(entry, dict):
+        return None
+    
+    conv = entry.get("conversations", [])
+    if not isinstance(conv, list):
+        return None
+    
+    role_map = {"human": "user", "gpt": "assistant", "system": "system"}
+    messages = []
+    
+    for msg in conv:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("from", "")
+        content = msg.get("value", "")
+        if role and isinstance(content, str):
+            messages.append({
+                "role": role_map.get(role, role),
+                "content": content
+            })
+    
+    return messages if messages else None
+
+
+# ============================================================================
+# Legacy compatibility (for existing code that uses old function names)
+# ============================================================================
 
 def validate_sharegpt_entry(entry, lenient=False):
-    if not isinstance(entry, dict):
-        return False, "Entry is not a JSON object"
-
-    conv = entry.get("conversations")
-    if not isinstance(conv, list) or not conv:
-        return False, "Missing or empty 'conversations' list"
-
-    for i, msg in enumerate(conv):
-        if not isinstance(msg, dict):
-            return False, f"Message {i} is not an object"
-        role = msg.get("from")
-        value = msg.get("value")
-        if role not in ALLOWED_ROLES:
-            if lenient:
-                continue
-            return False, f"Invalid role '{role}' at index {i}"
-        if not isinstance(value, str):
-            if lenient:
-                continue
-            return False, f"'value' at index {i} is not a string"
-
-    idx = 0
-    if conv[0]["from"] == "system":
-        idx = 1
-
-    if idx >= len(conv):
-        return False, "Conversation has only a system message and nothing else"
-
-    if conv[idx]["from"] != "human":
-        if lenient:
-            pass
-        else:
-            return False, f"First non-system message must be 'human', got '{conv[idx]['from']}'"
-
-    expected = "human"
-    alternation_errors = []
-    for j in range(idx, len(conv)):
-        role = conv[j]["from"]
-        if role != expected:
-            if lenient:
-                alternation_errors.append(f"Expected '{expected}' at index {j}, got '{role}'")
-            else:
-                return False, f"Expected '{expected}' at index {j}, got '{role}'"
-        expected = "gpt" if expected == "human" else "human"
-
-    if conv[-1]["from"] == "human":
-        if lenient:
-            pass
-        else:
-            return False, "Conversation ends on 'human'"
-
-    return True, None
+    """Validate a ShareGPT format entry"""
+    messages = from_sharegpt(entry)
+    if not messages:
+        return False, "Invalid ShareGPT entry"
+    return validate_messages(messages)
 
 
 def validate_conversations(conv, lenient=False):
-    if not isinstance(conv, list) or not conv:
-        return False, "Empty conversations list"
-    for i, msg in enumerate(conv):
-        if not isinstance(msg, dict):
-            return False, f"Message {i} not dict"
-        role = msg.get("from")
-        value = msg.get("value")
-        if role not in ALLOWED_ROLES:
-            if lenient:
-                continue
-            return False, f"Invalid role '{role}' at {i}"
-        if not isinstance(value, str):
-            if lenient:
-                continue
-            return False, f"Value at {i} not str"
-    idx = 0
-    if conv and conv[0].get("from") == "system":
-        idx = 1
-    if idx >= len(conv):
-        return False, "Only system message"
-    if conv[idx].get("from") != "human":
-        if lenient:
-            pass
-        else:
-            return False, f"First non-system not human: {conv[idx].get('from')}"
-    expected = "human"
-    for j in range(idx, len(conv)):
-        role = conv[j].get("from")
-        if role != expected:
-            if lenient:
-                pass
-            else:
-                return False, f"Expected {expected} at {j}, got {role}"
-        expected = "gpt" if expected == "human" else "human"
-    if conv[-1].get("from") == "human":
-        if lenient:
-            pass
-        else:
-            return False, "Ends on human"
-    return True, None
-
-
-def ensure_system_message(entry, system_prompt):
-    if not system_prompt:
-        return entry
-    if not isinstance(entry, dict):
-        return entry
-
-    conv = entry.get("conversations")
-    if not isinstance(conv, list) or not conv:
-        return entry
-
-    if conv[0].get("from") == "system":
-        conv[0]["value"] = system_prompt
-    else:
-        conv.insert(0, {"from": "system", "value": system_prompt})
-
-    return entry
+    """Validate a conversations list (ShareGPT format)"""
+    messages = from_sharegpt({"conversations": conv})
+    if not messages:
+        return False, "Invalid conversations"
+    return validate_messages(messages)
 
 
 def fix_sharegpt_entry(entry):
-    if not isinstance(entry, dict):
+    """Fix a ShareGPT format entry"""
+    messages = from_sharegpt(entry)
+    if not messages:
         return None
-
-    conv = entry.get("conversations")
-    if not isinstance(conv, list):
-        conv = []
-        entry["conversations"] = conv
-
-    if len(conv) < 1:
+    fixed = fix_messages(messages)
+    if not fixed:
         return None
+    return to_sharegpt(fixed)
 
-    fixed_conv = []
-    for msg in conv:
-        if not isinstance(msg, dict):
-            continue
-        if "from" not in msg or "value" not in msg:
-            continue
-        
-        value = msg.get("value")
-        if not isinstance(value, str):
-            if value is None:
-                value = " "
-            else:
-                value = str(value)
-            msg["value"] = value
-        
-        role = msg.get("from")
-        if role not in ALLOWED_ROLES:
-            role_lower = str(role).lower() if role else ""
-            if "user" in role_lower or "human" in role_lower or "person" in role_lower:
-                msg["from"] = "human"
-            elif "assistant" in role_lower or "ai" in role_lower or "bot" in role_lower or "model" in role_lower:
-                msg["from"] = "gpt"
-            elif "system" in role_lower:
-                msg["from"] = "system"
-            else:
-                msg["from"] = "gpt"
-        
-        fixed_conv.append(msg)
-    
-    conv = fixed_conv
-    if len(conv) < 2:
-        return None
 
-    system_msgs = [i for i, msg in enumerate(conv) if msg["from"] == "system"]
-    if len(system_msgs) > 1:
-        for i in sorted(system_msgs[1:], reverse=True):
-            del conv[i]
-    elif system_msgs:
-        if system_msgs[0] != 0:
-            conv.insert(0, conv.pop(system_msgs[0]))
+def ensure_system_message(entry, system_prompt):
+    """Add system message to ShareGPT entry"""
+    messages = from_sharegpt(entry)
+    if not messages:
+        return entry
+    messages = add_system_message(messages, system_prompt)
+    return to_sharegpt(messages)
 
-    idx = 1 if conv and conv[0]["from"] == "system" else 0
 
-    if idx >= len(conv):
-        return None
-
-    if conv[idx]["from"] != "human":
-        conv[idx]["from"] = "human"
-
-    expected = "human"
-    for j in range(idx, len(conv)):
-        role = conv[j]["from"]
-        if role != expected:
-            conv[j]["from"] = expected
-        expected = "gpt" if expected == "human" else "human"
-
-    for msg in conv:
-        value = msg.get("value", "")
-        if not isinstance(value, str) or not value.strip():
-            msg["value"] = " "
-
-    if conv[-1]["from"] == "human":
-        conv.append({"from": "gpt", "value": "I understand."})
-
-    if len(conv) < 2:
-        return None
-
-    return entry
-
+# Keep for backward compatibility
+ALLOWED_ROLES = {"system", "human", "gpt"}
+SCHEMA_DESCRIPTION = "Standard chat format with system/user/assistant roles"

@@ -714,6 +714,7 @@ class MainWindow(QMainWindow):
     def _load_initial_config(self):
         # Load from a config file if it exists, or use defaults
         config_file = CONFIG_FILE
+        cfg = {}  # Initialize cfg to empty dict to avoid UnboundLocalError
         if os.path.exists(config_file):
             try:
                 with open(config_file, 'r', encoding='utf-8') as f:
@@ -908,12 +909,73 @@ class MainWindow(QMainWindow):
                     # Only update endpoint if it wasn't saved (to preserve custom endpoints)
                     if not cfg.get("mm_endpoint"):
                         self._update_mm_endpoint_placeholder(api_type)
-            if cfg.get("mm_caption_prompt"):
+            # Load caption prompts (new format) or migrate from old format
+            if hasattr(self, 'mm_caption_prompts'):
+                saved_caption_prompts = cfg.get("mm_caption_prompts", [])
+                if saved_caption_prompts:
+                    # Load saved caption prompts (with per-prompt temperature and enabled state)
+                    self.mm_caption_prompts = saved_caption_prompts
+                    # Ensure all prompts have required fields (backward compat)
+                    for cp in self.mm_caption_prompts:
+                        if "temp_min" not in cp:
+                            cp["temp_min"] = 0.7
+                        if "temp_max" not in cp:
+                            cp["temp_max"] = 1.0
+                        if "enabled" not in cp:
+                            cp["enabled"] = True
+                    self.mm_caption_prompts_list.clear()
+                    # Add items with checkboxes
+                    from PyQt5.QtWidgets import QListWidgetItem
+                    for cp in self.mm_caption_prompts:
+                        item = QListWidgetItem(cp.get("name", "Unnamed"))
+                        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                        item.setCheckState(Qt.Checked if cp.get("enabled", True) else Qt.Unchecked)
+                        self.mm_caption_prompts_list.addItem(item)
+                    # Block signals during setCurrentRow to avoid partial updates
+                    self.mm_caption_prompts_list.blockSignals(True)
+                    self.mm_caption_prompts_list.setCurrentRow(0)
+                    self.mm_caption_prompts_list.blockSignals(False)
+                    # Explicitly set the prompt editor and temperature for the first prompt
+                    self._mm_current_prompt_index = 0
+                    self._mm_updating_prompt = True
+                    if self.mm_caption_prompts:
+                        first_prompt = self.mm_caption_prompts[0]
+                        self.mm_caption_prompt_edit.setPlainText(first_prompt.get("prompt", ""))
+                        self.mm_prompt_temp_min_spin.setValue(first_prompt.get("temp_min", 0.7))
+                        self.mm_prompt_temp_max_spin.setValue(first_prompt.get("temp_max", 1.0))
+                    self._mm_updating_prompt = False
+                elif cfg.get("mm_caption_prompt"):
+                    # Migrate from old single-prompt format
+                    old_temp = cfg.get("mm_temperature", 0.7)
+                    self.mm_caption_prompts = [{
+                        "name": "Default",
+                        "prompt": cfg.get("mm_caption_prompt", ""),
+                        "temp_min": old_temp,
+                        "temp_max": old_temp,
+                        "enabled": True
+                    }]
+                    self.mm_caption_prompts_list.clear()
+                    from PyQt5.QtWidgets import QListWidgetItem
+                    item = QListWidgetItem("Default")
+                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    item.setCheckState(Qt.Checked)
+                    self.mm_caption_prompts_list.addItem(item)
+                    self.mm_caption_prompts_list.blockSignals(True)
+                    self.mm_caption_prompts_list.setCurrentRow(0)
+                    self.mm_caption_prompts_list.blockSignals(False)
+                    # Explicitly set the prompt editor text and temperature
+                    self._mm_current_prompt_index = 0
+                    self._mm_updating_prompt = True
+                    self.mm_caption_prompt_edit.setPlainText(cfg.get("mm_caption_prompt", ""))
+                    self.mm_prompt_temp_min_spin.setValue(old_temp)
+                    self.mm_prompt_temp_max_spin.setValue(old_temp)
+                    self._mm_updating_prompt = False
+            elif cfg.get("mm_caption_prompt"):
+                # Fallback for when caption prompts UI doesn't exist yet
                 self.mm_caption_prompt_edit.setPlainText(cfg.get("mm_caption_prompt", ""))
             if "mm_max_tokens" in cfg:
                 self.mm_max_tokens_spin.setValue(int(cfg.get("mm_max_tokens", 500)))
-            if "mm_temperature" in cfg:
-                self.mm_temperature_spin.setValue(float(cfg.get("mm_temperature", 0.7)))
+            # Note: Temperature is now per-prompt and loaded with each prompt above
             if "mm_batch_size" in cfg:
                 self.mm_batch_size_spin.setValue(int(cfg.get("mm_batch_size", 1)))
             if "mm_max_captions" in cfg:
@@ -927,18 +989,34 @@ class MainWindow(QMainWindow):
             if cfg.get("hf_token"):
                 self.hf_token_edit.setText(cfg.get("hf_token", ""))
             # Load HuggingFace upload settings (optional section)
-            if hasattr(self, 'mm_upload_group') and "mm_upload_enabled" in cfg:
-                self.mm_upload_group.setChecked(bool(cfg.get("mm_upload_enabled", False)))
-            if hasattr(self, 'mm_hf_repo_edit') and cfg.get("mm_hf_repo"):
-                self.mm_hf_repo_edit.setText(cfg.get("mm_hf_repo", ""))
-            if hasattr(self, 'mm_private_repo_check') and "mm_private_repo" in cfg:
-                self.mm_private_repo_check.setChecked(bool(cfg.get("mm_private_repo", True)))
-            if hasattr(self, 'mm_shard_size_spin') and "mm_shard_size" in cfg:
-                self.mm_shard_size_spin.setValue(int(cfg.get("mm_shard_size", 1000)))
-            if hasattr(self, 'mm_upload_batch_spin') and "mm_upload_batch_size" in cfg:
-                self.mm_upload_batch_spin.setValue(int(cfg.get("mm_upload_batch_size", 2000)))
-            if hasattr(self, 'mm_resume_upload_check') and "mm_resume_upload" in cfg:
-                self.mm_resume_upload_check.setChecked(bool(cfg.get("mm_resume_upload", True)))
+            # Load HuggingFace upload settings (now in HuggingFace tab)
+            if hasattr(self, 'hf_upload_source_edit') and cfg.get("hf_upload_source"):
+                self.hf_upload_source_edit.setText(cfg.get("hf_upload_source", ""))
+            if hasattr(self, 'hf_upload_repo_edit') and cfg.get("hf_upload_repo"):
+                self.hf_upload_repo_edit.setText(cfg.get("hf_upload_repo", ""))
+            # Migrate from old mm_hf_repo if exists
+            elif hasattr(self, 'hf_upload_repo_edit') and cfg.get("mm_hf_repo"):
+                self.hf_upload_repo_edit.setText(cfg.get("mm_hf_repo", ""))
+            if hasattr(self, 'hf_private_repo_check') and "hf_private_repo" in cfg:
+                self.hf_private_repo_check.setChecked(bool(cfg.get("hf_private_repo", True)))
+            # Migrate from old mm_private_repo if exists
+            elif hasattr(self, 'hf_private_repo_check') and "mm_private_repo" in cfg:
+                self.hf_private_repo_check.setChecked(bool(cfg.get("mm_private_repo", True)))
+            if hasattr(self, 'hf_shard_size_spin') and "hf_shard_size" in cfg:
+                self.hf_shard_size_spin.setValue(int(cfg.get("hf_shard_size", 1000)))
+            # Migrate from old mm_shard_size if exists
+            elif hasattr(self, 'hf_shard_size_spin') and "mm_shard_size" in cfg:
+                self.hf_shard_size_spin.setValue(int(cfg.get("mm_shard_size", 1000)))
+            if hasattr(self, 'hf_upload_batch_spin') and "hf_upload_batch_size" in cfg:
+                self.hf_upload_batch_spin.setValue(int(cfg.get("hf_upload_batch_size", 2000)))
+            # Migrate from old mm_upload_batch_size if exists
+            elif hasattr(self, 'hf_upload_batch_spin') and "mm_upload_batch_size" in cfg:
+                self.hf_upload_batch_spin.setValue(int(cfg.get("mm_upload_batch_size", 2000)))
+            if hasattr(self, 'hf_resume_upload_check') and "hf_resume_upload" in cfg:
+                self.hf_resume_upload_check.setChecked(bool(cfg.get("hf_resume_upload", True)))
+            # Migrate from old mm_resume_upload if exists
+            elif hasattr(self, 'hf_resume_upload_check') and "mm_resume_upload" in cfg:
+                self.hf_resume_upload_check.setChecked(bool(cfg.get("mm_resume_upload", True)))
         
         # Load Civitai config
         if hasattr(self, 'civitai_api_key_edit'):
@@ -1055,21 +1133,31 @@ class MainWindow(QMainWindow):
             "mm_endpoint": self.mm_endpoint_edit.text().strip() if hasattr(self, 'mm_endpoint_edit') else "",
             "mm_model": self.mm_model_combo.currentText().strip() if hasattr(self, 'mm_model_combo') else "",
             "mm_api_type": self.mm_api_type_combo.currentText() if hasattr(self, 'mm_api_type_combo') else "",
-            "mm_caption_prompt": self.mm_caption_prompt_edit.toPlainText().strip() if hasattr(self, 'mm_caption_prompt_edit') else "",
+            "mm_caption_prompt": self.mm_caption_prompt_edit.toPlainText().strip() if hasattr(self, 'mm_caption_prompt_edit') else "",  # Keep for backward compat
+            "mm_caption_prompts": [
+                {
+                    "name": cp.get("name", f"Prompt {i+1}"),
+                    "prompt": cp.get("prompt", ""),
+                    "temp_min": cp.get("temp_min", 0.7),
+                    "temp_max": cp.get("temp_max", 1.0),
+                    "enabled": cp.get("enabled", True)
+                }
+                for i, cp in enumerate(self.mm_caption_prompts)
+            ] if hasattr(self, 'mm_caption_prompts') and self.mm_caption_prompts else [],
             "mm_max_tokens": self.mm_max_tokens_spin.value() if hasattr(self, 'mm_max_tokens_spin') else 500,
-            "mm_temperature": self.mm_temperature_spin.value() if hasattr(self, 'mm_temperature_spin') else 0.7,
             "mm_batch_size": self.mm_batch_size_spin.value() if hasattr(self, 'mm_batch_size_spin') else 1,
             "mm_max_captions": self.mm_max_captions_spin.value() if hasattr(self, 'mm_max_captions_spin') else 0,
             "mm_hf_dataset": self.mm_hf_dataset_edit.text().strip() if hasattr(self, 'mm_hf_dataset_edit') else "",
             "mm_use_hf_dataset": self.mm_use_hf_dataset_check.isChecked() if hasattr(self, 'mm_use_hf_dataset_check') else False,
             "hf_token": self.hf_token_edit.text().strip() if hasattr(self, 'hf_token_edit') else "",
             # HuggingFace Upload settings (optional section)
-            "mm_upload_enabled": self.mm_upload_group.isChecked() if hasattr(self, 'mm_upload_group') else False,
-            "mm_hf_repo": self.mm_hf_repo_edit.text().strip() if hasattr(self, 'mm_hf_repo_edit') else "",
-            "mm_private_repo": self.mm_private_repo_check.isChecked() if hasattr(self, 'mm_private_repo_check') else True,
-            "mm_shard_size": self.mm_shard_size_spin.value() if hasattr(self, 'mm_shard_size_spin') else 1000,
-            "mm_upload_batch_size": self.mm_upload_batch_spin.value() if hasattr(self, 'mm_upload_batch_spin') else 2000,
-            "mm_resume_upload": self.mm_resume_upload_check.isChecked() if hasattr(self, 'mm_resume_upload_check') else True,
+            # HuggingFace upload settings (now in HuggingFace tab)
+            "hf_upload_source": self.hf_upload_source_edit.text().strip() if hasattr(self, 'hf_upload_source_edit') else "",
+            "hf_upload_repo": self.hf_upload_repo_edit.text().strip() if hasattr(self, 'hf_upload_repo_edit') else "",
+            "hf_private_repo": self.hf_private_repo_check.isChecked() if hasattr(self, 'hf_private_repo_check') else True,
+            "hf_shard_size": self.hf_shard_size_spin.value() if hasattr(self, 'hf_shard_size_spin') else 1000,
+            "hf_upload_batch_size": self.hf_upload_batch_spin.value() if hasattr(self, 'hf_upload_batch_spin') else 2000,
+            "hf_resume_upload": self.hf_resume_upload_check.isChecked() if hasattr(self, 'hf_resume_upload_check') else True,
         }
         
         # Save processing API key if it exists
@@ -1452,11 +1540,6 @@ class MainWindow(QMainWindow):
                         self.setWindowTitle(f"{APP_TITLE} - Done")
                         self.mm_start_button.setEnabled(True)
                         self.mm_stop_button.setEnabled(False)
-                        # Also re-enable upload buttons
-                        if hasattr(self, 'mm_upload_button'):
-                            self.mm_upload_button.setEnabled(True)
-                        if hasattr(self, 'mm_stop_upload_button'):
-                            self.mm_stop_upload_button.setEnabled(False)
                         self.timer.stop()
                         self._append_mm_log(str(msg))
                         self._show_info(str(msg))
@@ -1464,11 +1547,6 @@ class MainWindow(QMainWindow):
                         self.setWindowTitle(f"{APP_TITLE} - Error")
                         self.mm_start_button.setEnabled(True)
                         self.mm_stop_button.setEnabled(False)
-                        # Also re-enable upload buttons
-                        if hasattr(self, 'mm_upload_button'):
-                            self.mm_upload_button.setEnabled(True)
-                        if hasattr(self, 'mm_stop_upload_button'):
-                            self.mm_stop_upload_button.setEnabled(False)
                         self.timer.stop()
                         self._append_mm_log(str(msg))
                         self._show_error(str(msg))
@@ -1478,11 +1556,6 @@ class MainWindow(QMainWindow):
                     elif msg_type == "stopped":
                         self.mm_start_button.setEnabled(True)
                         self.mm_stop_button.setEnabled(False)
-                        # Also re-enable upload buttons
-                        if hasattr(self, 'mm_upload_button'):
-                            self.mm_upload_button.setEnabled(True)
-                        if hasattr(self, 'mm_stop_upload_button'):
-                            self.mm_stop_upload_button.setEnabled(False)
                         self.setWindowTitle(APP_TITLE)
                         self.timer.stop()
                         if msg:  # Only log if there's a message
@@ -1564,7 +1637,7 @@ class MainWindow(QMainWindow):
             except queue.Empty:
                 pass
         
-        # Check HuggingFace queue
+        # Check HuggingFace queue (handles downloads and uploads)
         if hasattr(self, 'hf_queue') and self.hf_queue:
             try:
                 while True:
@@ -1575,6 +1648,11 @@ class MainWindow(QMainWindow):
                         self.setWindowTitle(f"{APP_TITLE} - Done")
                         self.hf_dataset_start_button.setEnabled(True)
                         self.hf_dataset_stop_button.setEnabled(False)
+                        # Also re-enable upload buttons
+                        if hasattr(self, 'hf_upload_button'):
+                            self.hf_upload_button.setEnabled(True)
+                        if hasattr(self, 'hf_stop_upload_button'):
+                            self.hf_stop_upload_button.setEnabled(False)
                         self.timer.stop()
                         self._append_hf_log(str(msg))
                         self._show_info(str(msg))
@@ -1582,12 +1660,22 @@ class MainWindow(QMainWindow):
                         self.setWindowTitle(f"{APP_TITLE} - Error")
                         self.hf_dataset_start_button.setEnabled(True)
                         self.hf_dataset_stop_button.setEnabled(False)
+                        # Also re-enable upload buttons
+                        if hasattr(self, 'hf_upload_button'):
+                            self.hf_upload_button.setEnabled(True)
+                        if hasattr(self, 'hf_stop_upload_button'):
+                            self.hf_stop_upload_button.setEnabled(False)
                         self.timer.stop()
                         self._append_hf_log(str(msg))
                         self._show_error(str(msg))
                     elif msg_type == "stopped":
                         self.hf_dataset_start_button.setEnabled(True)
                         self.hf_dataset_stop_button.setEnabled(False)
+                        # Also re-enable upload buttons
+                        if hasattr(self, 'hf_upload_button'):
+                            self.hf_upload_button.setEnabled(True)
+                        if hasattr(self, 'hf_stop_upload_button'):
+                            self.hf_stop_upload_button.setEnabled(False)
                         self.setWindowTitle(APP_TITLE)
                         self.timer.stop()
                         if msg:  # Only log if there's a message

@@ -661,71 +661,48 @@ def ensure_output_directory(output_folder, q=None):
     return output_folder, images_dir
 
 
-def rebuild_metadata_jsonl_from_index(output_folder, index, q=None):
-    """Rebuild metadata.jsonl from the caption index (used for resume consistency)"""
-    try:
-        metadata_path = os.path.join(output_folder, "metadata.jsonl")
-        
-        # Sort by index to maintain order
-        sorted_items = sorted(index.items(), key=lambda x: x[1].get("index", 0))
-        
-        with open(metadata_path, 'w', encoding='utf-8') as f:
-            for original_path, entry in sorted_items:
-                file_name = entry.get("file_name", "")
-                caption = entry.get("caption", "")
-                if file_name and caption:
-                    metadata_entry = {"file_name": file_name, "text": caption}
-                    f.write(json.dumps(metadata_entry, ensure_ascii=False) + '\n')
-        
-        if q:
-            q.put(("log", f"📝 Rebuilt metadata.jsonl with {len(sorted_items)} entries"))
-    except Exception as e:
-        if q:
-            q.put(("log", f"⚠️  Warning: Failed to rebuild metadata.jsonl: {str(e)}"))
-
-
-def load_caption_index(output_folder, q=None):
-    """Load the JSON index file mapping image paths to captions"""
-    index_file = os.path.join(output_folder, "captions_index.json")
-    if os.path.exists(index_file):
+def load_processed_from_metadata(output_folder, q=None):
+    """Load already processed original filenames from metadata.jsonl for resume functionality"""
+    metadata_path = os.path.join(output_folder, "metadata.jsonl")
+    processed = {}  # Maps original_filename -> entry data
+    
+    if os.path.exists(metadata_path):
         try:
-            with open(index_file, 'r', encoding='utf-8') as f:
-                index = json.load(f)
-            if q:
-                q.put(("log", f"📂 Loaded caption index with {len(index)} entries"))
-            return index
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line.strip())
+                        original_filename = entry.get("original_filename", "")
+                        if original_filename:
+                            processed[original_filename] = entry
+                    except json.JSONDecodeError:
+                        continue
+            if q and processed:
+                q.put(("log", f"📂 Found {len(processed)} previously captioned images in metadata.jsonl"))
+            return processed
         except Exception as e:
             if q:
-                q.put(("log", f"⚠️  Warning: Could not load caption index: {str(e)}"))
+                q.put(("log", f"⚠️  Warning: Could not load metadata.jsonl: {str(e)}"))
             return {}
     return {}
 
 
-def save_caption_index(output_folder, index, q=None):
-    """Save the JSON index file mapping image paths to captions"""
-    index_file = os.path.join(output_folder, "captions_index.json")
-    try:
-        with open(index_file, 'w', encoding='utf-8') as f:
-            json.dump(index, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        if q:
-            q.put(("log", f"⚠️  Warning: Failed to save caption index: {str(e)}"))
-
-
-def save_image_caption_streaming(original_image_path, image, caption, output_folder, images_dir, index, q=None):
+def save_image_caption_streaming(original_image_path, image, caption, output_folder, images_dir, current_index, q=None, prompt_metadata=None):
     """Save a single image and caption pair to the output directory in HF-ready format
     
     Images are saved with numeric filenames (00000000.png, 00000001.png, etc.)
     and metadata.jsonl is updated with the correct format for HuggingFace ImageFolder.
+    
+    Args:
+        current_index: Current image index number for filename generation
+        prompt_metadata: Optional dict containing prompt info (name, prompt text) used for this caption
     """
     try:
-        # Get original extension for reference
+        # Get original filename for reference
         original_name = os.path.basename(original_image_path)
         
         # Use sequential numeric filename (HuggingFace ImageFolder format)
-        idx = len(index)
-        # Always save as PNG for consistency
-        numeric_filename = f"{idx:08d}.png"
+        numeric_filename = f"{current_index:08d}.png"
         saved_image_path = os.path.join(images_dir, numeric_filename)
         
         # Save the image
@@ -741,20 +718,8 @@ def save_image_caption_streaming(original_image_path, image, caption, output_fol
                     img = img.convert('RGB')
                 img.save(saved_image_path, 'PNG')
         
-        # Update index with HF-compatible structure
-        index[original_image_path] = {
-            "caption": caption,
-            "saved_image_path": saved_image_path,
-            "file_name": numeric_filename,  # Just the filename, not path
-            "index": idx,
-            "original_filename": original_name
-        }
-        
-        # Save index immediately
-        save_caption_index(output_folder, index, q)
-        
-        # Also update metadata.jsonl incrementally
-        save_metadata_jsonl_entry(output_folder, numeric_filename, caption, q)
+        # Save to metadata.jsonl (single source of truth)
+        save_metadata_jsonl_entry(output_folder, numeric_filename, caption, original_name, q, prompt_metadata)
         
         return saved_image_path
         
@@ -764,11 +729,20 @@ def save_image_caption_streaming(original_image_path, image, caption, output_fol
         return None
 
 
-def save_metadata_jsonl_entry(output_folder, file_name, caption, q=None):
+def save_metadata_jsonl_entry(output_folder, file_name, caption, original_filename, q=None, prompt_metadata=None):
     """Append a single entry to metadata.jsonl in HuggingFace ImageFolder format"""
     try:
         metadata_path = os.path.join(output_folder, "metadata.jsonl")
-        entry = {"file_name": file_name, "text": caption}
+        entry = {
+            "file_name": file_name,
+            "text": caption,
+            "original_filename": original_filename
+        }
+        
+        # Add prompt metadata if provided
+        if prompt_metadata:
+            entry["prompt_metadata"] = prompt_metadata
+        
         with open(metadata_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(entry, ensure_ascii=False) + '\n')
     except Exception as e:
@@ -783,9 +757,8 @@ def image_captioning_worker(
     endpoint,
     model,
     api_type,
-    caption_prompt,
+    caption_prompts,
     max_tokens,
-    temperature,
     batch_size,
     max_captions,
     stop_flag,
@@ -798,11 +771,30 @@ def image_captioning_worker(
     Outputs directly to a HuggingFace ImageFolder format:
     - <output_folder>/images/00000000.png, 00000001.png, ...
     - <output_folder>/metadata.jsonl with {"file_name": "00000000.png", "text": "caption"}
+    
+    Args:
+        caption_prompts: List of prompt dicts with 'name', 'prompt', 'temp_min', 'temp_max' keys
+                        Each prompt has its own temperature range for varied generation
     """
+    import random
+    from collections import deque
+    
+    # Handle backward compatibility - convert single string prompt to list format
+    if isinstance(caption_prompts, str):
+        caption_prompts = [{"name": "Default", "prompt": caption_prompts, "temp_min": 0.7, "temp_max": 1.0}]
+    
+    # Ensure all prompts have temperature values (for backward compatibility)
+    for cp in caption_prompts:
+        if "temp_min" not in cp:
+            cp["temp_min"] = 0.7
+        if "temp_max" not in cp:
+            cp["temp_max"] = 1.0
+    
     if q:
         q.put(("log", f"Starting image captioning..."))
         q.put(("log", f"Output folder: {output_folder}"))
         q.put(("log", f"API type: {api_type}, Model: {model}"))
+        q.put(("log", f"Caption prompts: {len(caption_prompts)} available"))
     
     temp_dir_to_cleanup = None
     
@@ -869,25 +861,36 @@ def image_captioning_worker(
         
         # Set up output directory (creates images/ subfolder)
         output_folder, images_dir = ensure_output_directory(output_folder, q)
-        caption_index = load_caption_index(output_folder, q)
+        
+        # Load already processed images from metadata.jsonl for resume
+        processed_metadata = load_processed_from_metadata(output_folder, q)
+        processed_filenames = set(processed_metadata.keys())  # Set of original filenames
         
         # Check for existing captions for resume
-        processed_paths = set()
-        if caption_index:
-            processed_paths = set(caption_index.keys())
+        if processed_filenames:
             if q:
-                q.put(("log", f"✓ Found {len(processed_paths)} previously captioned images"))
+                q.put(("log", f"✓ Found {len(processed_filenames)} previously captioned images"))
                 q.put(("log", f"   Will skip processed images and continue from where we left off"))
-            # Rebuild metadata.jsonl to ensure consistency
-            rebuild_metadata_jsonl_from_index(output_folder, caption_index, q)
+        
+        # Track the next index number for new images
+        current_index = len(processed_filenames)
         
         # Process images, skipping already processed ones
-        processed = len(processed_paths)  # Start count from existing
+        processed = len(processed_filenames)  # Start count from existing
         failed = 0
         
         # Track skipped images for batched logging
         skipped_start_idx = None
         skipped_count = 0
+        
+        # Create a shuffled queue of prompts - pops until empty, then refills
+        # This guarantees all prompts are used exactly once before any repeat
+        def create_prompt_queue():
+            shuffled = caption_prompts.copy()
+            random.shuffle(shuffled)
+            return deque(shuffled)
+        
+        prompt_queue = create_prompt_queue()
         
         for idx, image_path in enumerate(image_paths):
             if stop_flag and stop_flag.is_set():
@@ -896,8 +899,9 @@ def image_captioning_worker(
                     q.put(("stopped", "Stopped by user"))
                 return
             
-            # Skip if already processed
-            if image_path in processed_paths:
+            # Skip if already processed (check by original filename)
+            original_filename = os.path.basename(image_path)
+            if original_filename in processed_filenames:
                 if skipped_start_idx is None:
                     skipped_start_idx = idx + 1
                 skipped_count += 1
@@ -914,15 +918,41 @@ def image_captioning_worker(
                 skipped_count = 0
             
             try:
+                # Pop next prompt from queue (guarantees no repeats until queue empty)
+                selected_prompt = prompt_queue.popleft()
+                
+                # Refill queue when empty (start new cycle)
+                if not prompt_queue:
+                    prompt_queue = create_prompt_queue()
+                    if q and len(caption_prompts) > 1:
+                        q.put(("log", f"♻️  Cycled through all {len(caption_prompts)} prompts, reshuffling..."))
+                
+                prompt_name = selected_prompt.get("name", "Unknown")
+                caption_prompt_text = selected_prompt.get("prompt", "")
+                
+                # Get per-prompt temperature range
+                prompt_temp_min = selected_prompt.get("temp_min", 0.7)
+                prompt_temp_max = selected_prompt.get("temp_max", 1.0)
+                
+                # Randomly select temperature within this prompt's range
+                if prompt_temp_min == prompt_temp_max:
+                    temperature = prompt_temp_min
+                else:
+                    temperature = round(random.uniform(prompt_temp_min, prompt_temp_max), 2)
+                
                 if q:
                     q.put(("log", f"Processing image {idx+1}/{total_images}: {os.path.basename(image_path)}"))
+                    if len(caption_prompts) > 1:
+                        q.put(("log", f"   Using prompt: {prompt_name}"))
+                    if prompt_temp_min != prompt_temp_max:
+                        q.put(("log", f"   Temperature: {temperature} (range: {prompt_temp_min}-{prompt_temp_max})"))
                 
                 caption = caption_func(
                     image_path,
                     api_key,
                     endpoint,
                     model,
-                    caption_prompt,
+                    caption_prompt_text,
                     max_tokens,
                     temperature,
                     q
@@ -943,13 +973,24 @@ def image_captioning_worker(
                         failed += 1
                         continue
                 
+                # Build prompt metadata for this image
+                prompt_meta = {
+                    "prompt_name": prompt_name,
+                    "prompt_text": caption_prompt_text,
+                    "model": model,
+                    "api_type": api_type,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature
+                }
+                
                 # Save image and caption directly to output folder
-                saved_path = save_image_caption_streaming(image_path, img, caption, output_folder, images_dir, caption_index, q)
+                saved_path = save_image_caption_streaming(image_path, img, caption, output_folder, images_dir, current_index, q, prompt_meta)
                 if saved_path:
                     processed += 1
-                    processed_paths.add(image_path)
+                    current_index += 1
+                    processed_filenames.add(original_filename)
                     if q:
-                        q.put(("log", f"✅ Captioned and saved image {idx+1}/{total_images}: {os.path.basename(image_path)}"))
+                        q.put(("log", f"✅ Captioned and saved image {idx+1}/{total_images}: {original_filename}"))
                 else:
                     failed += 1
                     if q:
@@ -980,24 +1021,27 @@ def image_captioning_worker(
         # Show sample from output folder
         if processed > 0:
             try:
-                index = load_caption_index(output_folder, q=None)  # Don't log again
-                if index:
-                    sorted_items = sorted(index.items(), key=lambda x: x[1].get("index", 0))
-                    if sorted_items:
-                        first_path, first_entry = sorted_items[0]
-                        sample_text = first_entry.get("caption", "")
-                        saved_image_path = first_entry.get("saved_image_path", "")
-                        if saved_image_path and os.path.exists(saved_image_path):
-                            with Image.open(saved_image_path) as img:
-                                preview_image = img.copy()
-                            if q:
-                                q.put(("log", ""))
-                                q.put(("log", "=" * 70))
-                                q.put(("log", "📸 SAMPLE RESULT:"))
-                                q.put(("log", "=" * 70))
-                                q.put(("log", f"Caption: {sample_text}"))
-                                q.put(("log", "=" * 70))
-                                q.put(("preview_image", preview_image))
+                # Load first entry from metadata.jsonl for preview
+                metadata_path = os.path.join(output_folder, "metadata.jsonl")
+                if os.path.exists(metadata_path):
+                    with open(metadata_path, 'r', encoding='utf-8') as f:
+                        first_line = f.readline().strip()
+                        if first_line:
+                            first_entry = json.loads(first_line)
+                            sample_text = first_entry.get("text", "")
+                            file_name = first_entry.get("file_name", "")
+                            saved_image_path = os.path.join(images_dir, file_name)
+                            if saved_image_path and os.path.exists(saved_image_path):
+                                with Image.open(saved_image_path) as img:
+                                    preview_image = img.copy()
+                                if q:
+                                    q.put(("log", ""))
+                                    q.put(("log", "=" * 70))
+                                    q.put(("log", "📸 SAMPLE RESULT:"))
+                                    q.put(("log", "=" * 70))
+                                    q.put(("log", f"Caption: {sample_text}"))
+                                    q.put(("log", "=" * 70))
+                                    q.put(("preview_image", preview_image))
             except Exception as preview_error:
                 if q:
                     q.put(("log", f"⚠️  Could not load preview: {str(preview_error)}"))

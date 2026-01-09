@@ -196,6 +196,25 @@ def worker(
         refusal_pattern = re.compile("|".join(refusal_phrases)) if refusal_phrases else None
         force_retry_pattern = re.compile("|".join(force_retry_phrases)) if force_retry_phrases else None
 
+        # Build prompt metadata to save with each generation
+        prompt_metadata = {
+            "model": model,
+            "endpoint": endpoint,
+            "api_type": api_type,
+            "system_message": system_message,
+            "user_first_message": user_first_message,
+            "assistant_first_message": assistant_first_message,
+            "user_start_tag": user_start_tag,
+            "user_end_tag": user_end_tag,
+            "assistant_start_tag": assistant_start_tag,
+            "assistant_end_tag": assistant_end_tag,
+            "is_instruct": is_instruct,
+            "min_turns": actual_min_turns,
+            "stop_percentage": actual_stop_percentage,
+            "temperature": 1,
+            "max_tokens": 200000,
+        }
+
         # Create session
         session = requests.Session()
 
@@ -247,7 +266,7 @@ def worker(
                                 try:
                                     _save_response(response_to_check, False, user_start_tag, assistant_start_tag,
                                                    assistant_end_tag, user_end_tag, output_path, start_index,
-                                                   system_message, q)
+                                                   system_message, q, prompt_metadata)
                                 except Exception as e:
                                     if q:
                                         q.put(("log", f"Could not save partial response: {e}"))
@@ -310,14 +329,14 @@ def worker(
                                             if _handle_response(accumulated_content, user_start_tag, assistant_start_tag, 
                                                                 assistant_end_tag, user_end_tag, actual_min_turns, 
                                                                 actual_stop_percentage, output_path, start_index, 
-                                                                system_message, q):
+                                                                system_message, q, prompt_metadata):
                                                 break
                                     else:
                                         if accumulated_content.endswith(assistant_end_tag):
                                             if _handle_response(full_response, user_start_tag, assistant_start_tag, 
                                                                 assistant_end_tag, user_end_tag, actual_min_turns, 
                                                                 actual_stop_percentage, output_path, start_index, 
-                                                                system_message, q):
+                                                                system_message, q, prompt_metadata):
                                                 break
 
                                     # Check for refusal
@@ -369,14 +388,14 @@ def worker(
                             try:
                                 _save_response(response_to_check, False, user_start_tag, assistant_start_tag,
                                                assistant_end_tag, user_end_tag, output_path, start_index,
-                                               system_message, q)
+                                               system_message, q, prompt_metadata)
                             except Exception as e:
                                 if q:
                                     q.put(("log", f"Could not save partial response: {e}"))
                         elif user_end_tag in response_to_check and assistant_end_tag in response_to_check:
                             _save_response(response_to_check, False, user_start_tag, assistant_start_tag,
                                            assistant_end_tag, user_end_tag, output_path, start_index,
-                                           system_message, q)
+                                           system_message, q, prompt_metadata)
                         else:
                             if q:
                                 q.put(("log", f"Missing USER or ASSISTANT tags. Response length: {len(response_to_check)}"))
@@ -428,7 +447,7 @@ def worker(
 
 def _handle_response(response_text, user_start_tag, assistant_start_tag, 
                     assistant_end_tag, user_end_tag, min_turns, stop_percentage,
-                    output_path, start_index, system_message, q):
+                    output_path, start_index, system_message, q, prompt_metadata=None):
     """Handle a response and decide if we should save and stop"""
     messages = re.split(f"({user_start_tag}|{assistant_start_tag})", user_start_tag + response_text)[1:]
     gpt_turns = sum(1 for i in range(0, len(messages), 2) if messages[i] == assistant_start_tag)
@@ -440,7 +459,7 @@ def _handle_response(response_text, user_start_tag, assistant_start_tag,
             q.put(("log", "--------------------"))
         _save_response(messages, True, user_start_tag, assistant_start_tag,
                       assistant_end_tag, user_end_tag, output_path, start_index,
-                      system_message, q)
+                      system_message, q, prompt_metadata)
         return True
     else:
         if q:
@@ -451,8 +470,23 @@ def _handle_response(response_text, user_start_tag, assistant_start_tag,
 
 
 def _save_response(messages, preprocessed, user_start_tag, assistant_start_tag,
-                   assistant_end_tag, user_end_tag, output_path, start_index, system_message, q):
-    """Save a response to a JSONL file"""
+                   assistant_end_tag, user_end_tag, output_path, start_index, system_message, q,
+                   prompt_metadata=None):
+    """Save a response to a JSONL file
+    
+    Args:
+        messages: The conversation messages
+        preprocessed: Whether messages are already split
+        user_start_tag: Tag marking start of user message
+        assistant_start_tag: Tag marking start of assistant message
+        assistant_end_tag: Tag marking end of assistant message
+        user_end_tag: Tag marking end of user message
+        output_path: Path to output directory
+        start_index: Index to start processing messages from
+        system_message: System message used
+        q: Queue for logging
+        prompt_metadata: Dict containing prompt configuration used for generation
+    """
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         filename = output_path / f"{timestamp}_claude_opus_synthstruct.jsonl"
@@ -494,11 +528,15 @@ def _save_response(messages, preprocessed, user_start_tag, assistant_start_tag,
                 q.put(("log", "No valid messages to save"))
             return
 
-        # Create ShareGPT format
+        # Create ShareGPT format with metadata
         sharegpt_data = {
             "id": timestamp,
             "conversations": structured_messages
         }
+        
+        # Add prompt metadata if provided
+        if prompt_metadata:
+            sharegpt_data["prompt_metadata"] = prompt_metadata
 
         # Save to file
         with open(filename, "w", encoding="utf-8") as f:
@@ -516,4 +554,3 @@ def _save_response(messages, preprocessed, user_start_tag, assistant_start_tag,
             q.put(("log", traceback.format_exc()))
         else:
             print(f"Error saving response: {e}")
-

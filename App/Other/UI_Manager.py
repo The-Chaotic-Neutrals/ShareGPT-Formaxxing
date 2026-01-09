@@ -20,6 +20,9 @@ from App.DedupeMancer.DedupeMancer_app import DeduplicationApp
 # ✅ NEW: ImageDedupMancer
 from App.ImageDedupMancer.ImageDedupMancer_app import ImageDeduplicationApp
 
+# BehaviorMancer
+from App.BehaviorMancer.BehaviorMancer_app import BehaviorMancerApp
+
 # Import N-GraMancer using workaround for hyphen in directory name
 import sys
 import importlib.util
@@ -177,6 +180,7 @@ class UIManager(QWidget):
         mancer_buttons = [
             ("DeslopMancer", self.open_deslop_tool),
             ("RefusalMancer", self.open_binary_classification_app),
+            ("BehaviorMancer", self.open_behaviormancer_app),
             ("DedupMancer", self.open_deduplication_app),
 
             # ✅ NEW button
@@ -348,6 +352,14 @@ class UIManager(QWidget):
 
     def open_binary_classification_app(self):
         win = BinaryClassificationApp(self.theme)
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
+        win.show()
+        self.qt_windows.append(win)
+    
+    def open_behaviormancer_app(self):
+        win = BehaviorMancerApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
         self.add_background_to_window(win)

@@ -28,3 +28,7 @@ datasets
 pyqt5
 json-repair
 xai_sdk
+accelerate
+safetensors
+einops
+huggingface_hub

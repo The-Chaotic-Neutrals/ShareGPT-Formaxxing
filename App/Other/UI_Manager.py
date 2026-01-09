@@ -11,7 +11,6 @@ from PyQt5.QtCore import Qt, QTimer
 # Import your tools
 from App.Other.Theme import Theme
 from App.ForMaxxer.ForMaxxer_app import DatasetConverterApp
-from App.DataMaxxer.DataMaxxer_app import DataMaxxerApp
 from App.DeslopMancer.DeslopTool_app import DeslopToolApp
 from App.WordCloudMaxxer.WordCloudGenerator_app import GenerateWordCloudApp
 from App.RefusalMancer.binary_classification_app import BinaryClassificationApp
@@ -32,11 +31,10 @@ spec = importlib.util.spec_from_file_location("N_GraMancer_app", _ngramancer_app
 N_GraMancer_app = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(N_GraMancer_app)
 NgramAnalyzerApp = N_GraMancer_app.NgramAnalyzerApp
-from App.GrammarMaxxer.GrammarMaxxer_app import GrammarMaxxerApp
+from App.LanguageMaxxer.LanguageMaxxer_app import LanguageMaxxerApp
 from App.SafetensorMaxxer.safetensormaxxer_app import SafetensorMaxxerApp
 from App.LineMancer.LineMancer_app import LineMancerFrame
 from App.ParquetMaxxer.parquetmaxxer_app import ParquetMaxxer
-from App.EnglishMaxxer.EnglishMaxxer_app import EnglishFilterApp
 from App.TokenMaxxer.tokenmaxxerv3_app import TokenMaxxerV3App
 from App.SynthMaxxer.synthmaxxer_app import MainWindow as SynthMaxxerApp
 from App.MergeMaxxer.MergeMaxxer import MergeKitGUI
@@ -157,14 +155,12 @@ class UIManager(QWidget):
 
         # Maxxer Tools tab
         maxxer_buttons = [
-            ("DataMaxxer", self.open_filter_app),
+            ("ForMaxxer", self.open_dataset_converter_app),
+            ("LanguageMaxxer", self.open_languagemaxxer_app),
             ("WordCloudMaxxer", self.open_wordcloud_generator_app),
             ("SafetensorMaxxer", self.open_safetensormaxxer_app),
             ("ParquetMaxxer", self.open_parquetmaxxer_app),
-            ("EnglishMaxxer", self.open_englishfilter_app),
             ("TokenMaxxer", self.open_tokenmaxxer_app),
-            ("ForMaxxer", self.open_dataset_converter_app),
-            ("GrammarMaxxer", self.open_text_correction_app),
             ("SynthMaxxer", self.open_synthmaxxer_app),
             ("MergeMaxxer", self.open_mergemaxxer_app),
         ]
@@ -333,14 +329,6 @@ class UIManager(QWidget):
         win.show()
         self.qt_windows.append(win)
 
-    def open_filter_app(self):
-        win = DataMaxxerApp(self.theme)
-        if self.icon_path.exists():
-            win.setWindowIcon(QIcon(str(self.icon_path)))
-        self.add_background_to_window(win)
-        win.show()
-        self.qt_windows.append(win)
-
     def open_deslop_tool(self):
         win = DeslopToolApp()
         win.setStyleSheet(f"background-color: transparent; color: {self.theme.get('text_fg')};")
@@ -391,8 +379,8 @@ class UIManager(QWidget):
         win.show()
         self.qt_windows.append(win)
 
-    def open_text_correction_app(self):
-        win = GrammarMaxxerApp(self.theme)
+    def open_languagemaxxer_app(self):
+        win = LanguageMaxxerApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
         self.add_background_to_window(win)
@@ -419,15 +407,6 @@ class UIManager(QWidget):
 
     def open_parquetmaxxer_app(self):
         win = ParquetMaxxer()
-        if self.icon_path.exists():
-            win.setWindowIcon(QIcon(str(self.icon_path)))
-        win.setStyleSheet(f"background-color: transparent; color: {self.theme.get('text_fg')};")
-        self.add_background_to_window(win)
-        win.show()
-        self.qt_windows.append(win)
-
-    def open_englishfilter_app(self):
-        win = EnglishFilterApp()
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
         win.setStyleSheet(f"background-color: transparent; color: {self.theme.get('text_fg')};")

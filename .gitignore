@@ -20,11 +20,9 @@ fasttext-0.9.2-cp311-cp311-win_amd64.whl
 .vscode/settings.json
 pyrightconfig.json
 /App/__pycache__
-/App/DataMaxxer/__pycache__
 /App/DeslopMancer/__pycache__
-/App/EnglishMaxxer/__pycache__
 /App/ForMaxxer/__pycache__
-/App/GrammarMaxxer/__pycache__
+/App/LanguageMaxxer/__pycache__
 /App/LineMancer/__pycache__
 /App/N-GraMancer/__pycache__
 /App/Other/__pycache__

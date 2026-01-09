@@ -10,14 +10,12 @@ ShareGPT Formaxxing Tool is a modular application designed to help researchers a
 
 ### 🛠 Maxxer Tools
 
-- **DataMaxxer** - Filter and clean conversation datasets with configurable criteria
+- **ForMaxxer** - Convert various JSON formats to standardized JSONL format, with optional filtering/cleaning (formerly DataMaxxer)
+- **LanguageMaxxer** - Filter for English conversations and/or correct grammar (combines EnglishMaxxer + GrammarMaxxer)
 - **WordCloudMaxxer** - Generate word clouds from conversation data
 - **SafetensorMaxxer** - Convert, Verify and fix safetensor model index files
 - **ParquetMaxxer** - Convert between JSONL and Parquet formats
-- **EnglishMaxxer** - Filter conversations by language (English detection)
 - **TokenMaxxer** - Analyze token counts, clean datasets by token limits, and tokenize files
-- **ForMaxxer** - Convert various JSON formats to standardized JSONL format
-- **GrammarMaxxer** - Correct grammar and spelling in conversations using LanguageTool
 - **SynthMaxxer** - Generate synthetic conversation data using LLM APIs
 
 ### ⚒️ Mancer Tools
@@ -167,17 +165,6 @@ Click any tool button to open its dedicated window.
 
 ## 📖 Tool Documentation
 
-### DataMaxxer
-Filters conversation datasets based on multiple criteria:
-- Remove blank turns
-- Remove invalid endings
-- Remove null GPT responses
-- Remove duplicate system messages
-- Remove duplicate human→GPT turns
-- Allow/deny empty system roles
-
-**Output**: Filtered dataset saved to `Outputs/datamaxxer/`
-
 ### DedupMancer
 Removes duplicate conversations using two methods:
 - **SHA-256**: Exact duplicate detection via content hashing
@@ -204,13 +191,24 @@ Analyzes and processes datasets by token count:
 **Output**: Processed files saved to `Outputs/`
 
 ### ForMaxxer
-Converts various JSON formats to standardized JSONL:
-- Handles JSON arrays
-- Handles JSONL files
-- Extracts conversations from nested structures
-- Validates output format
+Converts various JSON formats to standardized JSONL with optional filtering:
 
-**Output**: Converted files saved to `Outputs/formaxxer/`
+**Format Conversion:**
+- Auto-detects input format (ShareGPT, HuggingFace, Vicuna, Alpaca, ChatML)
+- Handles JSON arrays and JSONL files
+- Extracts conversations from nested structures
+- Validates and normalizes output format
+
+**Optional Filtering (formerly DataMaxxer):**
+Enable post-conversion filtering to clean your dataset:
+- Remove blank turns
+- Remove invalid endings
+- Remove null GPT responses
+- Remove duplicate system messages
+- Remove duplicate human→GPT turns
+- Allow/deny empty system roles
+
+**Output**: Converted files saved to `Outputs/formaxxer/`, filtered files saved to `Outputs/formaxxer/filtered/`
 
 ### ParquetMaxxer
 Converts between JSONL and Parquet formats:
@@ -221,21 +219,27 @@ Converts between JSONL and Parquet formats:
 
 **Output**: Converted files saved to `Outputs/`
 
-### EnglishMaxxer
-Filters conversations by language:
+### LanguageMaxxer
+Combined English filtering and grammar correction tool (formerly EnglishMaxxer + GrammarMaxxer):
+
+**English Filtering (FastText):**
 - Uses FastText language detection model
-- Configurable confidence threshold
+- Configurable confidence threshold (default 0.69)
 - Multi-processing support for large files
+- Filters out non-English conversations
 
-**Output**: English-only dataset saved to `Outputs/`
-
-### GrammarMaxxer
-Corrects grammar and spelling in conversations:
+**Grammar Correction (LanguageTool):**
 - Uses LanguageTool for grammar checking
 - Processes GPT responses only
 - Live correction tracking
+- Can be applied after English filtering or standalone
 
-**Output**: Corrected dataset saved to `corrected/`
+**Workflow:**
+1. Enable English filtering to keep only English conversations
+2. Optionally enable grammar correction to fix grammar in GPT responses
+3. Both operations can be run together or separately
+
+**Output**: Files saved to `Outputs/languagemaxxer/english_filtered/` and `Outputs/languagemaxxer/grammar_corrected/`
 
 ### SynthMaxxer
 Comprehensive synthetic data generation and processing tool with multiple modes and mechanisms:
@@ -388,12 +392,10 @@ Verifies and repairs safetensor model files:
 ShareGPT-Formaxxing/
 ├── App/
 │   ├── Assets/              # Icons, models, requirements
-│   ├── DataMaxxer/          # Dataset filtering tool
 │   ├── DedupeMancer/        # Deduplication tool
 │   ├── DeslopMancer/        # Criteria-based filtering
-│   ├── EnglishMaxxer/       # Language filtering
-│   ├── ForMaxxer/           # Format conversion
-│   ├── GrammarMaxxer/       # Grammar correction
+│   ├── ForMaxxer/           # Format conversion & filtering
+│   ├── LanguageMaxxer/      # English filtering & grammar correction
 │   ├── LineMancer/          # File manipulation
 │   ├── N-GraMancer/         # N-gram analysis
 │   ├── Other/               # UI components, theme, manager
@@ -431,8 +433,10 @@ ShareGPT-Formaxxing/
 
 All tools save their output to the `Outputs/` directory in the repository root, organized by tool name:
 
-- `Outputs/datamaxxer/` - DataMaxxer filtered datasets
 - `Outputs/formaxxer/` - ForMaxxer converted files
+- `Outputs/formaxxer/filtered/` - ForMaxxer filtered datasets
+- `Outputs/languagemaxxer/english_filtered/` - LanguageMaxxer English-filtered files
+- `Outputs/languagemaxxer/grammar_corrected/` - LanguageMaxxer grammar-corrected files
 - `Outputs/linemancer/` - LineMancer processed files
 - `Outputs/` - General output for other tools
 

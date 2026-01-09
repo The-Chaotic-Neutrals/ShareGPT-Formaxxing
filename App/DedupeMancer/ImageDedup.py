@@ -57,11 +57,15 @@ class ImageDeduplication:
         prefix_bits: int = 16,
         embedding_threshold: float = 0.97,
         embed_model_name: str = "openai/clip-vit-base-patch32",
+        text_sim_threshold: float = 0.85,
+        text_embed_model: str = "all-MiniLM-L6-v2",
     ):
         self.dhash_hamming_threshold = dhash_hamming_threshold
         self.prefix_bits = prefix_bits
         self.embedding_threshold = embedding_threshold
         self.embed_model_name = embed_model_name
+        self.text_sim_threshold = text_sim_threshold
+        self.text_embed_model = text_embed_model
 
     def iter_image_paths(self, inputs: List[str]) -> List[str]:
         paths: List[str] = []
@@ -588,3 +592,197 @@ class ImageDeduplication:
             logging.error(f"Error during embedding dedup: {e}", exc_info=True)
             update_status(f"Embedding dedup failed: {type(e).__name__}")
             return []
+
+    def perform_text_metadata_dedup(
+        self,
+        input_dir: str,
+        output_dir: str,
+        report_path: str,
+        update_status: Callable[[str], None] = default_update_status,
+        update_progress: Callable[[int, int], None] = default_update_progress,
+        metadata_file: str = "metadata.jsonl",
+        images_subdir: str = "images",
+        text_field: str = "text",
+        filename_field: str = "file_name",
+    ) -> Tuple[int, int]:
+        """
+        Deduplicate an image dataset based on text/caption similarity.
+        
+        Expects a folder structure like:
+            input_dir/
+                metadata.jsonl   (or custom name)
+                images/          (or custom subdir)
+                    image1.jpg
+                    image2.png
+                    ...
+        
+        Each line in metadata.jsonl should have at least:
+            {"file_name": "image1.jpg", "text": "A caption describing the image"}
+        
+        Args:
+            input_dir: Root directory containing metadata and images
+            output_dir: Where to write deduplicated output
+            report_path: Path to write the dedup report
+            metadata_file: Name of the metadata file (default: metadata.jsonl)
+            images_subdir: Name of images subdirectory (default: images)
+            text_field: Field name containing the text/caption (default: text)
+            filename_field: Field name containing the image filename (default: file_name)
+        
+        Returns:
+            Tuple of (kept_count, total_count)
+        """
+        import shutil
+        
+        try:
+            input_path = Path(input_dir)
+            meta_path = input_path / metadata_file
+            images_path = input_path / images_subdir
+            
+            # Also check if images are directly in input_dir (no subdir)
+            if not images_path.exists():
+                images_path = input_path
+            
+            if not meta_path.exists():
+                update_status(f"❌ Metadata file not found: {meta_path}")
+                return (0, 0)
+            
+            # Load metadata records
+            update_status(f"Loading metadata from {meta_path}...")
+            records = []
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            records.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            
+            if not records:
+                update_status("❌ No valid records found in metadata.")
+                return (0, 0)
+            
+            total = len(records)
+            update_status(f"Found {total} records. Extracting text for embedding...")
+            
+            # Extract texts
+            texts = []
+            valid_records = []
+            for rec in records:
+                text = rec.get(text_field, "")
+                if isinstance(text, str) and text.strip():
+                    texts.append(text.strip())
+                    valid_records.append(rec)
+                else:
+                    # Skip records without text
+                    pass
+            
+            if not texts:
+                update_status(f"❌ No text found in field '{text_field}'.")
+                return (0, 0)
+            
+            update_status(f"Encoding {len(texts)} texts with {self.text_embed_model}...")
+            update_progress(0, len(texts))
+            
+            # Load sentence transformer model
+            with suppress_stdout_stderr():
+                from sentence_transformers import SentenceTransformer
+                model = SentenceTransformer(self.text_embed_model)
+            
+            # Encode texts
+            embeddings = model.encode(
+                texts,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+                batch_size=128,
+            )
+            
+            update_progress(len(texts) // 2, len(texts))
+            
+            # Deduplicate based on similarity
+            update_status("Finding duplicates by text similarity...")
+            kept_indices = []
+            kept_embeddings = []
+            duplicate_groups = []
+            
+            threshold = float(self.text_sim_threshold)
+            
+            for i, (rec, emb) in enumerate(zip(valid_records, embeddings)):
+                if kept_embeddings:
+                    # Compute similarity with all kept embeddings
+                    sims = np.dot(kept_embeddings, emb)
+                    max_sim = float(np.max(sims))
+                    
+                    if max_sim >= threshold:
+                        # This is a duplicate - find which group it belongs to
+                        max_idx = int(np.argmax(sims))
+                        # Track as duplicate (for reporting)
+                        continue
+                
+                # Keep this record
+                kept_indices.append(i)
+                kept_embeddings.append(emb)
+                
+                if i % 100 == 0:
+                    update_progress(len(texts) // 2 + i // 2, len(texts))
+            
+            kept_records = [valid_records[i] for i in kept_indices]
+            removed_count = len(valid_records) - len(kept_records)
+            
+            update_status(f"Keeping {len(kept_records)} / {len(valid_records)} records (removed {removed_count} duplicates)")
+            
+            # Create output directory
+            out_path = Path(output_dir)
+            out_images_path = out_path / images_subdir
+            self._ensure_dir(str(out_path))
+            self._ensure_dir(str(out_images_path))
+            
+            # Copy unique images and write new metadata
+            update_status("Copying unique images to output...")
+            copied = 0
+            
+            with open(out_path / metadata_file, 'w', encoding='utf-8') as f:
+                for i, rec in enumerate(kept_records):
+                    filename = rec.get(filename_field, "")
+                    if filename:
+                        src = images_path / filename
+                        dst = out_images_path / filename
+                        
+                        if src.exists():
+                            try:
+                                shutil.copy2(str(src), str(dst))
+                                copied += 1
+                            except Exception:
+                                logging.error(f"Failed to copy: {src}", exc_info=True)
+                    
+                    # Write record to new metadata
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    
+                    if i % 50 == 0:
+                        update_progress(len(texts) // 2 + len(texts) // 4 + i * len(texts) // (4 * len(kept_records)), len(texts))
+            
+            update_progress(len(texts), len(texts))
+            
+            # Write report
+            self._ensure_dir(os.path.dirname(report_path))
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write(json.dumps({
+                    "method": "text_similarity",
+                    "model": self.text_embed_model,
+                    "threshold": threshold,
+                    "total_records": len(valid_records),
+                    "kept_records": len(kept_records),
+                    "removed_duplicates": removed_count,
+                    "images_copied": copied,
+                    "input_dir": str(input_path),
+                    "output_dir": str(out_path),
+                }, ensure_ascii=False) + "\n")
+            
+            update_status(f"✅ Text dedup complete! Kept {len(kept_records)}/{len(valid_records)} ({copied} images copied)")
+            
+            return (len(kept_records), len(valid_records))
+            
+        except Exception as e:
+            logging.error(f"Error during text metadata dedup: {e}", exc_info=True)
+            update_status(f"❌ Text dedup failed: {type(e).__name__}: {e}")
+            return (0, 0)

@@ -31,12 +31,10 @@ pyrightconfig.json
 /App/SafetensorMaxxer/__pycache__
 /App/SynthMaxxer/__pycache__
 /App/TokenMaxxer/__pycache__
-/App/WordCloudMaxxer/__pycache__
 /App/DedupeMancer/__pycache__
 App/SynthMaxxer/global_names_cache.json
 App/SynthMaxxer/synthmaxxer_config.json
 App/SynthMaxxer/grok_tool_config.json
 /Outputs
 /App/MergeMaxxer/__pycache__
-/App/ImageDedupMancer/__pycache__
 /App/BehaviorMancer/__pycache__

@@ -12,7 +12,6 @@ ShareGPT Formaxxing Tool is a modular application designed to help researchers a
 
 - **ForMaxxer** - Convert various JSON formats to standardized JSONL format, with optional filtering/cleaning (formerly DataMaxxer)
 - **LanguageMaxxer** - Filter for English conversations and/or correct grammar (combines EnglishMaxxer + GrammarMaxxer)
-- **WordCloudMaxxer** - Generate word clouds from conversation data
 - **SafetensorMaxxer** - Convert, Verify and fix safetensor model index files
 - **ParquetMaxxer** - Convert between JSONL and Parquet formats
 - **TokenMaxxer** - Analyze token counts, clean datasets by token limits, and tokenize files
@@ -22,7 +21,7 @@ ShareGPT Formaxxing Tool is a modular application designed to help researchers a
 
 - **DeslopMancer** - Filter conversations based on custom criteria files
 - **RefusalMancer** - Classification models to detect and filter refusal responses
-- **DedupMancer** - Deduplicate conversations using SHA-256 or MinHash algorithms
+- **DedupeMancer** - Unified deduplication for datasets (SHA-256/MinHash) and images (dHash/CLIP embeddings)
 - **LineMancer** - Split, merge, and shuffle JSONL files
 - **N-GraMancer** - Analyze n-gram patterns in conversation datasets
 
@@ -165,17 +164,28 @@ Click any tool button to open its dedicated window.
 
 ## 📖 Tool Documentation
 
-### DedupMancer
-Removes duplicate conversations using two methods:
-- **SHA-256**: Exact duplicate detection via content hashing
-- **MinHash**: Similarity-based deduplication with configurable thresholds
+### DedupeMancer
+Unified deduplication tool with tabs for datasets and images (formerly DedupMancer + ImageDedupMancer):
 
-**Features**:
+**Dataset Deduplication Tab:**
+- **SHA-256/String-Match**: Exact duplicate detection via content hashing
+- **MinHash + Semantic**: Similarity-based deduplication with configurable thresholds
 - Cross-file deduplication support
-- Semantic similarity detection
-- Progress tracking
+- Progress tracking with speed display
 
-**Output**: Deduplicated dataset saved to `Outputs/`
+**Image Deduplication Tab:**
+- **Perceptual Hash (Fast)**: SHA-256 exact + dHash near-duplicate detection
+- **Image Embeddings (Deep)**: CLIP-based semantic similarity detection
+- **Text/Caption Dedup**: Deduplicate by caption similarity using sentence-transformers
+  - Works with HuggingFace-style datasets (metadata.jsonl + images/ folder)
+  - Configurable text field, filename field, and similarity threshold
+- Drag-and-drop folder/image support
+- Copy unique images to output, optionally move duplicates
+
+**Output**: 
+- Datasets: `Outputs/dedupemancer/datasets/`
+- Images: `Outputs/dedupemancer/images/unique/` and `Outputs/dedupemancer/images/duplicates/`
+- Text dedup: `Outputs/dedupemancer/text_dedup/unique/`
 
 ### TokenMaxxer
 Analyzes and processes datasets by token count:
@@ -370,14 +380,6 @@ Analyzes n-gram patterns:
 
 **Output**: Analysis reports saved to `Outputs/`
 
-### WordCloudMaxxer
-Generates word clouds from conversation data:
-- Customizable appearance
-- Frequency-based word sizing
-- Export to image formats
-
-**Output**: Word cloud images saved to `Outputs/`
-
 ### SafetensorMaxxer
 Verifies and repairs safetensor model files:
 - Index file validation
@@ -392,7 +394,7 @@ Verifies and repairs safetensor model files:
 ShareGPT-Formaxxing/
 ├── App/
 │   ├── Assets/              # Icons, models, requirements
-│   ├── DedupeMancer/        # Deduplication tool
+│   ├── DedupeMancer/        # Dataset & image deduplication
 │   ├── DeslopMancer/        # Criteria-based filtering
 │   ├── ForMaxxer/           # Format conversion & filtering
 │   ├── LanguageMaxxer/      # English filtering & grammar correction
@@ -403,8 +405,7 @@ ShareGPT-Formaxxing/
 │   ├── RefusalMancer/       # Refusal detection
 │   ├── SafetensorMaxxer/    # Safetensor tools
 │   ├── SynthMaxxer/         # Synthetic data generation
-│   ├── TokenMaxxer/         # Token analysis
-│   └── WordCloudMaxxer/     # Word cloud generation
+│   └── TokenMaxxer/         # Token analysis
 ├── Datasets/                # Input datasets directory
 ├── Outputs/                 # Output directory for all tools
 ├── Formaxxing.bat           # Windows launcher
@@ -437,6 +438,9 @@ All tools save their output to the `Outputs/` directory in the repository root, 
 - `Outputs/formaxxer/filtered/` - ForMaxxer filtered datasets
 - `Outputs/languagemaxxer/english_filtered/` - LanguageMaxxer English-filtered files
 - `Outputs/languagemaxxer/grammar_corrected/` - LanguageMaxxer grammar-corrected files
+- `Outputs/dedupemancer/datasets/` - DedupeMancer deduplicated JSONL files
+- `Outputs/dedupemancer/images/unique/` - DedupeMancer unique images
+- `Outputs/dedupemancer/images/duplicates/` - DedupeMancer duplicate images (if moved)
 - `Outputs/linemancer/` - LineMancer processed files
 - `Outputs/` - General output for other tools
 

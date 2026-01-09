@@ -3,10 +3,12 @@ import shutil
 import concurrent.futures
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
-    QLabel, QTextEdit, QGroupBox, QMessageBox, QSizePolicy
+    QLabel, QTextEdit, QGroupBox, QMessageBox, QSizePolicy, QFrame
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject
+from PyQt5.QtGui import QFont
 from App.SafetensorMaxxer.safetensormaxxer import SafetensorMaxxer
+from App.Other.BG import GalaxyBackgroundWidget
 import sys
 from App.Other.Theme import Theme
 
@@ -20,12 +22,11 @@ class WorkerSignals(QObject):
 
 
 class SafetensorMaxxerApp(QWidget):
-    def __init__(self, theme):
+    def __init__(self, theme=None):
         super().__init__()
 
-        self.theme = theme
+        self.theme = theme or Theme.DARK
         self.safetensor_maxxer = SafetensorMaxxer()
-        # Don't create folder until conversion actually starts
         self.safetensor_maxxer.output_folder = os.path.join(os.getcwd(), "safetensorfied")
 
         self.executor = None
@@ -40,104 +41,261 @@ class SafetensorMaxxerApp(QWidget):
 
         self.model_path = None
 
-        self.init_ui()
-        self.apply_theme()
+        # Background
+        self.background = GalaxyBackgroundWidget(self)
+        self.background.lower()
 
-    def apply_theme(self):
-        # Apply theme colors to the entire window and widgets
-        self.setStyleSheet(f"""
-            QWidget {{
-                background-color: {self.theme.get('bg', '#222222')};
-                color: {self.theme.get('fg', '#ffffff')};
-                font-family: Segoe UI, Arial;
-                font-size: 12pt;
-            }}
-            QGroupBox {{
-                font-weight: bold;
-                border: 1px solid {self.theme.get('button_bg', '#444444')};
-                border-radius: 6px;
-                margin-top: 8px;
-                padding: 8px;
-            }}
-            QGroupBox:title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top center;
-                padding: 0 4px;
-                color: {self.theme.get('fg', '#ffffff')};
-            }}
-            QPushButton {{
-                background-color: {self.theme.get('button_bg', '#555555')};
-                color: {self.theme.get('button_fg', '#ffffff')};
-                border: none;
-                padding: 10px 16px;
-                border-radius: 8px;
-            }}
-            QPushButton:hover {{
-                background-color: {self.theme.get('button_hover_bg', '#666666')};
-            }}
-            QPushButton:disabled {{
-                background-color: #777777;
-                color: #aaaaaa;
-            }}
-            QTextEdit {{
-                background-color: {self.theme.get('log_bg', '#333333')};
-                color: {self.theme.get('log_fg', '#ffffff')};
-                border: 1px solid {self.theme.get('button_bg', '#555555')};
-                border-radius: 4px;
-                font-family: Consolas, monospace;
+        self._setup_style()
+        self._build_ui()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'background'):
+            self.background.resize(self.size())
+
+    def _setup_style(self):
+        self.setStyleSheet("""
+            QWidget {
+                background-color: transparent;
+                color: #e6e6fa;
+                font-family: 'Segoe UI', Arial, sans-serif;
                 font-size: 11pt;
-                padding: 6px;
-            }}
-            QLabel#statusBar {{
-                background-color: {self.theme.get('status_bar_bg', '#444444')};
-                color: {self.theme.get('status_bar_fg', '#ffffff')};
-                padding: 6px;
-                border-top: 1px solid {self.theme.get('button_bg', '#555555')};
-            }}
+            }
+            QLabel {
+                background-color: transparent;
+                color: #e6e6fa;
+            }
+            QLabel#titleLabel {
+                font-family: 'Georgia', 'Times New Roman', serif;
+                font-size: 26px;
+                font-weight: bold;
+                color: #e6e6fa;
+                padding: 0px;
+                margin: 0px;
+            }
+            QLabel#subtitleLabel {
+                font-size: 12px;
+                color: #a0a0c0;
+                padding: 0px;
+                margin: 0px;
+            }
+            QGroupBox {
+                background-color: rgba(10, 10, 30, 0.7);
+                border: 1px solid rgba(100, 100, 180, 0.3);
+                border-radius: 12px;
+                margin-top: 16px;
+                padding: 16px;
+                padding-top: 28px;
+                font-weight: bold;
+                font-size: 12pt;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 4px 12px;
+                background-color: rgba(30, 60, 120, 0.6);
+                border-radius: 8px;
+                color: #c0c0ff;
+                left: 12px;
+            }
+            QPushButton {
+                background-color: rgba(30, 80, 160, 0.8);
+                color: #ffffff;
+                border: 1px solid rgba(100, 150, 255, 0.4);
+                border-radius: 8px;
+                padding: 12px 20px;
+                font-weight: bold;
+                font-size: 11pt;
+                min-width: 140px;
+            }
+            QPushButton:hover {
+                background-color: rgba(50, 100, 200, 0.9);
+                border: 1px solid rgba(150, 180, 255, 0.6);
+            }
+            QPushButton:pressed {
+                background-color: rgba(20, 60, 140, 0.9);
+            }
+            QPushButton:disabled {
+                background-color: rgba(60, 60, 80, 0.5);
+                color: #707090;
+                border: 1px solid rgba(80, 80, 100, 0.3);
+            }
+            QTextEdit {
+                background-color: rgba(5, 5, 20, 0.8);
+                color: #c8c8e8;
+                border: 1px solid rgba(100, 100, 180, 0.3);
+                border-radius: 8px;
+                padding: 10px;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 10pt;
+                selection-background-color: rgba(70, 100, 180, 0.6);
+            }
+            QLabel#statusBar {
+                background-color: rgba(15, 15, 40, 0.8);
+                color: #a0c0ff;
+                padding: 10px 14px;
+                border: 1px solid rgba(100, 100, 180, 0.3);
+                border-radius: 8px;
+                font-size: 10pt;
+            }
         """)
 
-    def init_ui(self):
-        self.setWindowTitle("Safetensor Maxxer")
-        self.setMinimumSize(750, 600)
+    def _primary_button_style(self):
+        return """
+            QPushButton {
+                background-color: rgba(30, 80, 160, 0.8);
+                color: #ffffff;
+                border: 1px solid rgba(100, 150, 255, 0.4);
+                border-radius: 8px;
+                padding: 12px 20px;
+                font-weight: bold;
+                font-size: 11pt;
+                min-width: 140px;
+            }
+            QPushButton:hover {
+                background-color: rgba(50, 100, 200, 0.9);
+                border: 1px solid rgba(150, 180, 255, 0.6);
+            }
+            QPushButton:pressed {
+                background-color: rgba(20, 60, 140, 0.9);
+            }
+            QPushButton:disabled {
+                background-color: rgba(60, 60, 80, 0.5);
+                color: #707090;
+                border: 1px solid rgba(80, 80, 100, 0.3);
+            }
+        """
+
+    def _green_button_style(self):
+        return """
+            QPushButton {
+                background-color: rgba(30, 140, 80, 0.8);
+                color: #ffffff;
+                border: 1px solid rgba(80, 200, 120, 0.4);
+                border-radius: 8px;
+                padding: 12px 20px;
+                font-weight: bold;
+                font-size: 11pt;
+                min-width: 140px;
+            }
+            QPushButton:hover {
+                background-color: rgba(40, 160, 100, 0.9);
+                border: 1px solid rgba(100, 220, 140, 0.6);
+            }
+            QPushButton:pressed {
+                background-color: rgba(20, 120, 60, 0.9);
+            }
+            QPushButton:disabled {
+                background-color: rgba(60, 60, 80, 0.5);
+                color: #707090;
+                border: 1px solid rgba(80, 80, 100, 0.3);
+            }
+        """
+
+    def _purple_button_style(self):
+        return """
+            QPushButton {
+                background-color: rgba(100, 60, 160, 0.8);
+                color: #ffffff;
+                border: 1px solid rgba(150, 100, 220, 0.4);
+                border-radius: 8px;
+                padding: 12px 20px;
+                font-weight: bold;
+                font-size: 11pt;
+                min-width: 140px;
+            }
+            QPushButton:hover {
+                background-color: rgba(120, 80, 180, 0.9);
+                border: 1px solid rgba(170, 120, 240, 0.6);
+            }
+            QPushButton:pressed {
+                background-color: rgba(80, 40, 140, 0.9);
+            }
+            QPushButton:disabled {
+                background-color: rgba(60, 60, 80, 0.5);
+                color: #707090;
+                border: 1px solid rgba(80, 80, 100, 0.3);
+            }
+        """
+
+    def _build_ui(self):
+        self.setWindowTitle("SafetensorMaxxer")
+        self.setMinimumSize(800, 650)
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(12, 12, 12, 12)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(24, 20, 24, 20)
+        main_layout.setSpacing(16)
 
-        # Buttons group box
-        button_group = QGroupBox("Model Tools")
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
-        button_group.setLayout(button_layout)
+        # Header
+        header_layout = QVBoxLayout()
+        header_layout.setSpacing(4)
+        header_layout.setContentsMargins(0, 0, 0, 8)
+
+        title_label = QLabel("🔒 SafetensorMaxxer")
+        title_label.setObjectName("titleLabel")
+        title_label.setAlignment(Qt.AlignCenter)
+
+        subtitle_label = QLabel("Convert PyTorch models to Safetensor format & verify index files")
+        subtitle_label.setObjectName("subtitleLabel")
+        subtitle_label.setAlignment(Qt.AlignCenter)
+
+        header_layout.addWidget(title_label)
+        header_layout.addWidget(subtitle_label)
+        main_layout.addLayout(header_layout)
+
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setStyleSheet("background-color: rgba(100, 100, 180, 0.3); max-height: 1px;")
+        main_layout.addWidget(separator)
+
+        # Model Tools group box
+        tools_group = QGroupBox("🛠️ Model Tools")
+        tools_layout = QHBoxLayout(tools_group)
+        tools_layout.setSpacing(16)
+        tools_layout.setContentsMargins(16, 16, 16, 16)
 
         self.select_button = QPushButton("📁 Select Model Folder")
+        self.select_button.setStyleSheet(self._primary_button_style())
         self.select_button.clicked.connect(self.select_model_path)
+        self.select_button.setCursor(Qt.PointingHandCursor)
 
         self.convert_button = QPushButton("⚙️ Start Conversion")
+        self.convert_button.setStyleSheet(self._green_button_style())
         self.convert_button.clicked.connect(self.start_conversion)
+        self.convert_button.setCursor(Qt.PointingHandCursor)
 
         self.verify_button = QPushButton("🔍 Verify Folder")
+        self.verify_button.setStyleSheet(self._purple_button_style())
         self.verify_button.clicked.connect(self.select_verify_folder)
+        self.verify_button.setCursor(Qt.PointingHandCursor)
 
-        button_layout.addWidget(self.select_button)
-        button_layout.addWidget(self.convert_button)
-        button_layout.addWidget(self.verify_button)
+        tools_layout.addStretch()
+        tools_layout.addWidget(self.select_button)
+        tools_layout.addWidget(self.convert_button)
+        tools_layout.addWidget(self.verify_button)
+        tools_layout.addStretch()
 
-        main_layout.addWidget(button_group)
+        main_layout.addWidget(tools_group)
 
-        # Log output (read-only QTextEdit)
+        # Log Output group box
+        log_group = QGroupBox("📋 Output Log")
+        log_layout = QVBoxLayout(log_group)
+        log_layout.setContentsMargins(12, 12, 12, 12)
+
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        main_layout.addWidget(self.log_output, stretch=1)
+        self.log_output.setPlaceholderText("Select a model folder to get started...")
+        log_layout.addWidget(self.log_output)
 
-        # Status bar label
-        self.status_bar = QLabel("Ready")
+        main_layout.addWidget(log_group, stretch=1)
+
+        # Status bar
+        self.status_bar = QLabel("✨ Ready - Select a model folder to begin")
         self.status_bar.setObjectName("statusBar")
         self.status_bar.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         main_layout.addWidget(self.status_bar)
-
-        self.show()
 
     def log_message(self, message):
         self.status_bar.setText(message)
@@ -147,7 +305,6 @@ class SafetensorMaxxerApp(QWidget):
     def select_model_path(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Model Folder")
         if not folder:
-            QMessageBox.warning(self, "Input Folder", "No folder selected")
             return
         self.model_path = folder
         self.safetensor_maxxer.model_path = folder
@@ -179,7 +336,6 @@ class SafetensorMaxxerApp(QWidget):
             self.signals.log.emit("⚠️ No model folder selected.")
             return
 
-        # Create output folder only when conversion actually starts
         os.makedirs(self.safetensor_maxxer.output_folder, exist_ok=True)
 
         index_filename = os.path.join(path, "pytorch_model.bin.index.json")
@@ -253,7 +409,6 @@ class SafetensorMaxxerApp(QWidget):
     def select_verify_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Safetensor Output Folder")
         if not folder:
-            QMessageBox.warning(self, "Folder", "No folder selected.")
             return
 
         self.log_message(f"📁 Verifying folder: {folder}")

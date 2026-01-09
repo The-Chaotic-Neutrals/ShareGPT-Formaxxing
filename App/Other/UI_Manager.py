@@ -12,12 +12,8 @@ from PyQt5.QtCore import Qt, QTimer
 from App.Other.Theme import Theme
 from App.ForMaxxer.ForMaxxer_app import DatasetConverterApp
 from App.DeslopMancer.DeslopTool_app import DeslopToolApp
-from App.WordCloudMaxxer.WordCloudGenerator_app import GenerateWordCloudApp
 from App.RefusalMancer.binary_classification_app import BinaryClassificationApp
 from App.DedupeMancer.DedupeMancer_app import DeduplicationApp
-
-# ✅ NEW: ImageDedupMancer
-from App.ImageDedupMancer.ImageDedupMancer_app import ImageDeduplicationApp
 
 # BehaviorMancer
 from App.BehaviorMancer.BehaviorMancer_app import BehaviorMancerApp
@@ -157,7 +153,6 @@ class UIManager(QWidget):
         maxxer_buttons = [
             ("ForMaxxer", self.open_dataset_converter_app),
             ("LanguageMaxxer", self.open_languagemaxxer_app),
-            ("WordCloudMaxxer", self.open_wordcloud_generator_app),
             ("SafetensorMaxxer", self.open_safetensormaxxer_app),
             ("ParquetMaxxer", self.open_parquetmaxxer_app),
             ("TokenMaxxer", self.open_tokenmaxxer_app),
@@ -177,11 +172,7 @@ class UIManager(QWidget):
             ("DeslopMancer", self.open_deslop_tool),
             ("RefusalMancer", self.open_binary_classification_app),
             ("BehaviorMancer", self.open_behaviormancer_app),
-            ("DedupMancer", self.open_deduplication_app),
-
-            # ✅ NEW button
-            ("ImageDedupMancer", self.open_image_dedupmancer_app),
-
+            ("DedupeMancer", self.open_deduplication_app),
             ("LineMancer", self.open_linemancer_app),
             ("N-GraMancer", self.open_ngram_analyzer_app),
         ]
@@ -362,15 +353,6 @@ class UIManager(QWidget):
         win.show()
         self.qt_windows.append(win)
 
-    # ✅ NEW launcher
-    def open_image_dedupmancer_app(self):
-        win = ImageDeduplicationApp(self.theme)
-        if self.icon_path.exists():
-            win.setWindowIcon(QIcon(str(self.icon_path)))
-        self.add_background_to_window(win)
-        win.show()
-        self.qt_windows.append(win)
-
     def open_ngram_analyzer_app(self):
         win = NgramAnalyzerApp(self.theme)
         if self.icon_path.exists():
@@ -422,15 +404,6 @@ class UIManager(QWidget):
         self.add_background_to_window(win)
         win.show()
         self.qt_windows.append(win)
-
-    def open_wordcloud_generator_app(self):
-        app = GenerateWordCloudApp(None, self.theme)
-        if hasattr(app, 'window'):
-            if self.icon_path.exists():
-                app.window.setWindowIcon(QIcon(str(self.icon_path)))
-            self.add_background_to_window(app.window)
-            app.window.show()
-            self.qt_windows.append(app.window)
 
     def open_synthmaxxer_app(self):
         win = SynthMaxxerApp()

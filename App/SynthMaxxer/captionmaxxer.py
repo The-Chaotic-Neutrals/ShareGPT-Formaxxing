@@ -488,10 +488,10 @@ def _build_multimodal_ui(main_window, left_panel, right_panel):
     mm_caption_form.addRow(QLabel("Max Tokens:"), _wrap_row(max_tokens_row))
 
     main_window.mm_batch_size_spin = QSpinBox()
-    main_window.mm_batch_size_spin.setRange(1, 20)
-    main_window.mm_batch_size_spin.setValue(1)
+    main_window.mm_batch_size_spin.setRange(1, 32)
+    main_window.mm_batch_size_spin.setValue(8)
     main_window.mm_batch_size_spin.setMaximumWidth(100)
-    main_window.mm_batch_size_spin.setToolTip("Number of images to process in parallel (1 recommended for most APIs)")
+    main_window.mm_batch_size_spin.setToolTip("Number of images to process in parallel (8-16 recommended for high-limit APIs like Grok)")
     batch_row = QHBoxLayout()
     batch_row.addWidget(main_window.mm_batch_size_spin)
     batch_row.addStretch()

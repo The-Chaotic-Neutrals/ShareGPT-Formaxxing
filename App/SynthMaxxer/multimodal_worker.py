@@ -15,7 +15,8 @@ import io
 import re
 import time
 import threading
-from typing import Dict, Optional, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, Optional, Any, List, Tuple
 from urllib.parse import urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -891,62 +892,47 @@ def image_captioning_worker(
             return deque(shuffled)
         
         prompt_queue = create_prompt_queue()
+        prompt_queue_lock = threading.Lock()
         
-        for idx, image_path in enumerate(image_paths):
-            if stop_flag and stop_flag.is_set():
-                if q:
-                    q.put(("log", "Captioning stopped by user"))
-                    q.put(("stopped", "Stopped by user"))
-                return
-            
-            # Skip if already processed (check by original filename)
-            original_filename = os.path.basename(image_path)
-            if original_filename in processed_filenames:
-                if skipped_start_idx is None:
-                    skipped_start_idx = idx + 1
-                skipped_count += 1
-                continue
-            
-            # Log skipped range if we have any
-            if skipped_count > 0 and skipped_start_idx is not None:
-                if q:
-                    if skipped_count == 1:
-                        q.put(("log", f"⏭️  Skipped image {skipped_start_idx}/{total_images} (already processed)"))
-                    else:
-                        q.put(("log", f"⏭️  Skipped images {skipped_start_idx}-{skipped_start_idx + skipped_count - 1}/{total_images} ({skipped_count} images, already processed)"))
-                skipped_start_idx = None
-                skipped_count = 0
-            
-            try:
-                # Pop next prompt from queue (guarantees no repeats until queue empty)
-                selected_prompt = prompt_queue.popleft()
-                
-                # Refill queue when empty (start new cycle)
+        def get_next_prompt():
+            """Thread-safe prompt selection from the cycling queue"""
+            nonlocal prompt_queue
+            with prompt_queue_lock:
+                selected = prompt_queue.popleft()
                 if not prompt_queue:
                     prompt_queue = create_prompt_queue()
                     if q and len(caption_prompts) > 1:
                         q.put(("log", f"♻️  Cycled through all {len(caption_prompts)} prompts, reshuffling..."))
-                
+                return selected
+        
+        def process_single_image(task_info: Tuple[int, str, int]) -> Tuple[int, str, bool, str, Optional[dict]]:
+            """
+            Process a single image - designed to run in a thread pool.
+            
+            Args:
+                task_info: Tuple of (original_idx, image_path, assigned_index)
+            
+            Returns:
+                Tuple of (original_idx, original_filename, success, message, prompt_meta)
+            """
+            original_idx, image_path, assigned_index = task_info
+            original_filename = os.path.basename(image_path)
+            
+            try:
+                # Get prompt (thread-safe)
+                selected_prompt = get_next_prompt()
                 prompt_name = selected_prompt.get("name", "Unknown")
                 caption_prompt_text = selected_prompt.get("prompt", "")
-                
-                # Get per-prompt temperature range
                 prompt_temp_min = selected_prompt.get("temp_min", 0.7)
                 prompt_temp_max = selected_prompt.get("temp_max", 1.0)
                 
-                # Randomly select temperature within this prompt's range
+                # Random temperature within range
                 if prompt_temp_min == prompt_temp_max:
                     temperature = prompt_temp_min
                 else:
                     temperature = round(random.uniform(prompt_temp_min, prompt_temp_max), 2)
                 
-                if q:
-                    q.put(("log", f"Processing image {idx+1}/{total_images}: {os.path.basename(image_path)}"))
-                    if len(caption_prompts) > 1:
-                        q.put(("log", f"   Using prompt: {prompt_name}"))
-                    if prompt_temp_min != prompt_temp_max:
-                        q.put(("log", f"   Temperature: {temperature} (range: {prompt_temp_min}-{prompt_temp_max})"))
-                
+                # Call the API
                 caption = caption_func(
                     image_path,
                     api_key,
@@ -955,25 +941,19 @@ def image_captioning_worker(
                     caption_prompt_text,
                     max_tokens,
                     temperature,
-                    q
+                    None  # Don't pass queue to avoid log spam from threads
                 )
                 
-                # Get image for saving
-                if use_hf_images and idx < len(hf_images):
-                    img = hf_images[idx].copy()
+                # Load image for saving
+                if use_hf_images and original_idx < len(hf_images):
+                    img = hf_images[original_idx].copy()
                 else:
-                    try:
-                        with Image.open(image_path) as opened_img:
-                            if opened_img.mode != 'RGB':
-                                opened_img = opened_img.convert('RGB')
-                            img = opened_img.copy()
-                    except Exception as img_e:
-                        if q:
-                            q.put(("log", f"Warning: Could not load image {image_path}: {str(img_e)}"))
-                        failed += 1
-                        continue
+                    with Image.open(image_path) as opened_img:
+                        if opened_img.mode != 'RGB':
+                            opened_img = opened_img.convert('RGB')
+                        img = opened_img.copy()
                 
-                # Build prompt metadata for this image
+                # Build prompt metadata
                 prompt_meta = {
                     "prompt_name": prompt_name,
                     "prompt_text": caption_prompt_text,
@@ -983,32 +963,89 @@ def image_captioning_worker(
                     "temperature": temperature
                 }
                 
-                # Save image and caption directly to output folder
-                saved_path = save_image_caption_streaming(image_path, img, caption, output_folder, images_dir, current_index, q, prompt_meta)
+                # Save image and caption
+                saved_path = save_image_caption_streaming(
+                    image_path, img, caption, output_folder, images_dir, 
+                    assigned_index, None, prompt_meta
+                )
+                
                 if saved_path:
-                    processed += 1
-                    current_index += 1
-                    processed_filenames.add(original_filename)
-                    if q:
-                        q.put(("log", f"✅ Captioned and saved image {idx+1}/{total_images}: {original_filename}"))
+                    return (original_idx, original_filename, True, f"✅ {original_filename} (prompt: {prompt_name})", prompt_meta)
                 else:
-                    failed += 1
-                    if q:
-                        q.put(("log", f"⚠️  Captioned but failed to save image {idx+1}/{total_images}: {os.path.basename(image_path)}"))
-            
+                    return (original_idx, original_filename, False, f"⚠️  Captioned but failed to save: {original_filename}", None)
+                    
             except Exception as e:
-                failed += 1
-                if q:
-                    q.put(("log", f"❌ Failed to caption {os.path.basename(image_path)}: {str(e)}"))
-                continue
+                return (original_idx, original_filename, False, f"❌ {original_filename}: {str(e)}", None)
         
-        # Log any remaining skipped images at the end
+        # Filter out already processed images first
+        images_to_process: List[Tuple[int, str]] = []
+        for idx, image_path in enumerate(image_paths):
+            original_filename = os.path.basename(image_path)
+            if original_filename in processed_filenames:
+                if skipped_start_idx is None:
+                    skipped_start_idx = idx + 1
+                skipped_count += 1
+            else:
+                # Log skipped range before this image
+                if skipped_count > 0 and skipped_start_idx is not None:
+                    if q:
+                        if skipped_count == 1:
+                            q.put(("log", f"⏭️  Skipped image {skipped_start_idx}/{total_images} (already processed)"))
+                        else:
+                            q.put(("log", f"⏭️  Skipped images {skipped_start_idx}-{skipped_start_idx + skipped_count - 1}/{total_images} ({skipped_count} images, already processed)"))
+                    skipped_start_idx = None
+                    skipped_count = 0
+                images_to_process.append((idx, image_path))
+        
+        # Log any remaining skipped images
         if skipped_count > 0 and skipped_start_idx is not None:
             if q:
                 if skipped_count == 1:
                     q.put(("log", f"⏭️  Skipped image {skipped_start_idx}/{total_images} (already processed)"))
                 else:
                     q.put(("log", f"⏭️  Skipped images {skipped_start_idx}-{skipped_start_idx + skipped_count - 1}/{total_images} ({skipped_count} images, already processed)"))
+        
+        if q:
+            q.put(("log", f"🚀 Processing {len(images_to_process)} images with {batch_size} parallel workers..."))
+        
+        # Process images in parallel batches
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            # Prepare tasks with pre-assigned indices for deterministic output ordering
+            tasks = []
+            for i, (original_idx, image_path) in enumerate(images_to_process):
+                assigned_index = current_index + i
+                tasks.append((original_idx, image_path, assigned_index))
+            
+            # Submit all tasks
+            future_to_task = {executor.submit(process_single_image, task): task for task in tasks}
+            
+            # Process results as they complete
+            completed_count = 0
+            for future in as_completed(future_to_task):
+                if stop_flag and stop_flag.is_set():
+                    if q:
+                        q.put(("log", "Captioning stopped by user"))
+                        q.put(("stopped", "Stopped by user"))
+                    # Cancel pending futures
+                    for f in future_to_task:
+                        f.cancel()
+                    return
+                
+                original_idx, original_filename, success, message, prompt_meta = future.result()
+                completed_count += 1
+                
+                if success:
+                    processed += 1
+                    processed_filenames.add(original_filename)
+                else:
+                    failed += 1
+                
+                if q:
+                    progress_pct = (completed_count / len(images_to_process)) * 100
+                    q.put(("log", f"[{completed_count}/{len(images_to_process)} {progress_pct:.0f}%] {message}"))
+        
+        # Update current_index after batch
+        current_index += len(images_to_process)
         
         # Check if we have any processed images
         if processed == 0:

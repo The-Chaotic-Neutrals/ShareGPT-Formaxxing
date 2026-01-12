@@ -69,6 +69,13 @@ class BehaviorMancerConfig:
     # Layer selection
     start_layer_ratio: float = 0.2  # Start from 20% of layers
     end_layer_ratio: float = 0.9  # End at 90% of layers
+    
+    # Multimodal protection
+    protect_vision_components: bool = True  # Auto-protect vision encoder/projector
+    freeze_protected_components: bool = True  # Actually freeze (requires_grad=False) protected components
+    protected_component_patterns: list = None  # Custom patterns to protect (e.g., ["vision", "visual", "mm_proj"])
+    only_modify_components: list = None  # If set, ONLY modify these (e.g., ["mlp", "self_attn"])
+    skip_layers: list = None  # Specific layer indices to skip entirely
 
 
 class BehaviorMancer:
@@ -653,6 +660,174 @@ class BehaviorMancer:
             return modified * (original_norm / modified_norm)
         return modified
     
+    def _is_protected_component(self, full_name: str) -> bool:
+        """
+        Check if a component should be protected from modification.
+        
+        Args:
+            full_name: Full parameter name including module path
+            
+        Returns:
+            True if component should be protected
+        """
+        name_lower = full_name.lower()
+        
+        # Default vision-related patterns to protect
+        default_vision_patterns = [
+            'vision', 'visual', 'image', 'img', 'vit',
+            'mm_proj', 'mm_projector', 'multi_modal_projector',
+            'vision_tower', 'vision_model', 'vision_encoder',
+            'image_encoder', 'image_projection', 'visual_projection',
+            'patch_embed', 'cls_token', 'pos_embed',
+            'cross_attn', 'cross_attention', 'xattn',
+            'encoder_attn', 'encod_attn',
+            'aligner', 'connector', 'adapter',
+        ]
+        
+        # Check default vision patterns if protection is enabled
+        if self.config.protect_vision_components:
+            for pattern in default_vision_patterns:
+                if pattern in name_lower:
+                    return True
+        
+        # Check custom protected patterns
+        if self.config.protected_component_patterns:
+            for pattern in self.config.protected_component_patterns:
+                if pattern.lower() in name_lower:
+                    return True
+        
+        return False
+    
+    def _is_allowed_component(self, name: str) -> bool:
+        """
+        Check if a component is in the allowed modification list.
+        
+        Args:
+            name: Parameter name
+            
+        Returns:
+            True if component can be modified
+        """
+        # If no filter specified, allow all standard targets
+        if not self.config.only_modify_components:
+            return True
+        
+        name_lower = name.lower()
+        for allowed in self.config.only_modify_components:
+            if allowed.lower() in name_lower:
+                return True
+        
+        return False
+    
+    def _detect_multimodal_architecture(self) -> dict:
+        """
+        Detect if model is multimodal and identify protected components.
+        
+        Returns:
+            Dict with architecture info and protected component names
+        """
+        info = {
+            "is_multimodal": False,
+            "vision_components": [],
+            "cross_attention_layers": [],
+        }
+        
+        # Check for common multimodal model attributes
+        multimodal_indicators = [
+            'vision_tower', 'vision_model', 'visual', 'image_encoder',
+            'mm_projector', 'multi_modal_projector', 'vision_encoder',
+            'aligner', 'connector',
+        ]
+        
+        for name, module in self.model.named_modules():
+            name_lower = name.lower()
+            for indicator in multimodal_indicators:
+                if indicator in name_lower:
+                    info["is_multimodal"] = True
+                    info["vision_components"].append(name)
+                    break
+            
+            # Check for cross-attention
+            if any(x in name_lower for x in ['cross_attn', 'cross_attention', 'xattn', 'encoder_attn']):
+                info["cross_attention_layers"].append(name)
+        
+        return info
+    
+    def freeze_protected_components(self) -> int:
+        """
+        Freeze (set requires_grad=False) all protected components.
+        
+        This provides extra safety during abliteration and is required
+        if you plan to do any gradient-based training afterwards.
+        
+        Returns:
+            Number of parameters frozen
+        """
+        frozen_count = 0
+        frozen_modules = set()
+        
+        for name, param in self.model.named_parameters():
+            if self._is_protected_component(name):
+                if param.requires_grad:
+                    param.requires_grad = False
+                    frozen_count += 1
+                    # Track module name (without param suffix)
+                    module_name = '.'.join(name.split('.')[:-1])
+                    frozen_modules.add(module_name)
+        
+        if frozen_count > 0:
+            self.log(f"Frozen {frozen_count} parameters across {len(frozen_modules)} protected modules")
+        
+        return frozen_count
+    
+    def freeze_layers(self, layer_indices: list[int]) -> int:
+        """
+        Freeze specific layers by index.
+        
+        Args:
+            layer_indices: List of layer indices to freeze
+            
+        Returns:
+            Number of parameters frozen
+        """
+        if not layer_indices:
+            return 0
+        
+        frozen_count = 0
+        layer_set = set(layer_indices)
+        
+        # Get the model's layer modules
+        if hasattr(self.model, 'model') and hasattr(self.model.model, 'layers'):
+            layers = self.model.model.layers
+        elif hasattr(self.model, 'transformer') and hasattr(self.model.transformer, 'h'):
+            layers = self.model.transformer.h
+        elif hasattr(self.model, 'gpt_neox') and hasattr(self.model.gpt_neox, 'layers'):
+            layers = self.model.gpt_neox.layers
+        else:
+            self.log("Warning: Could not find layers to freeze")
+            return 0
+        
+        for idx in layer_set:
+            if 0 <= idx < len(layers):
+                for param in layers[idx].parameters():
+                    if param.requires_grad:
+                        param.requires_grad = False
+                        frozen_count += 1
+        
+        if frozen_count > 0:
+            self.log(f"Frozen {frozen_count} parameters in layers {sorted(layer_set)}")
+        
+        return frozen_count
+    
+    def unfreeze_all(self):
+        """Unfreeze all parameters (restore requires_grad=True)."""
+        unfrozen = 0
+        for param in self.model.parameters():
+            if not param.requires_grad:
+                param.requires_grad = True
+                unfrozen += 1
+        self.log(f"Unfrozen {unfrozen} parameters")
+    
     def remove_behavior(self, null_space_projector: Optional[torch.Tensor] = None) -> bool:
         """
         Perform the behavior removal process.
@@ -673,6 +848,23 @@ class BehaviorMancer:
         
         self.log("Starting behavior removal process...")
         
+        # Detect multimodal architecture
+        mm_info = self._detect_multimodal_architecture()
+        if mm_info["is_multimodal"]:
+            self.log(f"Detected multimodal model with {len(mm_info['vision_components'])} vision components")
+            if self.config.protect_vision_components:
+                self.log("Vision component protection ENABLED")
+            else:
+                self.log("WARNING: Vision component protection is DISABLED")
+        
+        # Freeze protected components if enabled
+        if self.config.freeze_protected_components and self.config.protect_vision_components:
+            self.freeze_protected_components()
+        
+        # Freeze specific layers if specified
+        if self.config.skip_layers:
+            self.freeze_layers(self.config.skip_layers)
+        
         n_layers = self.model.config.num_hidden_layers
         direction = self.behavior_direction
         strength = self.config.direction_multiplier
@@ -681,10 +873,18 @@ class BehaviorMancer:
         start_layer = int(n_layers * self.config.start_layer_ratio)
         end_layer = int(n_layers * self.config.end_layer_ratio)
         
+        # Handle skip_layers
+        skip_layers = set(self.config.skip_layers or [])
+        
         self.log(f"Modifying layers {start_layer} to {end_layer} with strength {strength}")
+        if skip_layers:
+            self.log(f"Skipping layers: {sorted(skip_layers)}")
         
         if null_space_projector is not None:
             self.log("Applying null-space constraints for capability preservation")
+        
+        if self.config.only_modify_components:
+            self.log(f"Only modifying components matching: {self.config.only_modify_components}")
         
         # Get the model's layer modules
         # This works for most transformer architectures
@@ -699,11 +899,17 @@ class BehaviorMancer:
             return False
         
         modified_count = 0
+        skipped_protected = 0
+        skipped_not_allowed = 0
         
         for layer_idx in tqdm(range(start_layer, end_layer + 1), desc="Removing behavior pattern"):
             if self.stop_requested:
                 self.log("Process stopped by user")
                 return False
+            
+            # Skip specified layers
+            if layer_idx in skip_layers:
+                continue
             
             layer = layers[layer_idx]
             layer_weight = self._get_layer_weight(layer_idx, n_layers)
@@ -712,6 +918,19 @@ class BehaviorMancer:
             # Find and modify attention and MLP weights
             for name, param in layer.named_parameters():
                 if not param.requires_grad:
+                    continue
+                
+                # Build full name for protection checking
+                full_name = f"layers.{layer_idx}.{name}"
+                
+                # Check if component is protected (vision, cross-attention, etc.)
+                if self._is_protected_component(full_name):
+                    skipped_protected += 1
+                    continue
+                
+                # Check if component is in allowed list (if specified)
+                if not self._is_allowed_component(name):
+                    skipped_not_allowed += 1
                     continue
                 
                 # Target projection layers (q, k, v, o projections and MLP)
@@ -756,6 +975,10 @@ class BehaviorMancer:
                         modified_count += 1
         
         self.log(f"Behavior removal complete. Modified {modified_count} weight matrices.")
+        if skipped_protected > 0:
+            self.log(f"Protected {skipped_protected} vision/multimodal components from modification.")
+        if skipped_not_allowed > 0:
+            self.log(f"Skipped {skipped_not_allowed} components not in allowed list.")
         return True
     
     def save_model(self) -> bool:

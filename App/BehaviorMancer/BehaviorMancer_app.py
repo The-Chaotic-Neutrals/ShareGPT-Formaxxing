@@ -717,6 +717,59 @@ class BehaviorMancerApp(QMainWindow):
         
         right_col.addWidget(advanced_group)
         
+        # Multimodal Protection Group
+        mm_group = QGroupBox("🖼️ Multimodal Protection")
+        mm_layout = QVBoxLayout()
+        mm_layout.setSpacing(10)
+        mm_group.setLayout(mm_layout)
+        
+        self.protect_vision_check = QCheckBox("Protect Vision Components")
+        self.protect_vision_check.setChecked(True)
+        self.protect_vision_check.setToolTip("Auto-detect and skip vision encoder, projector, cross-attention layers")
+        mm_layout.addWidget(self.protect_vision_check)
+        
+        vision_info = QLabel("Auto-protects: vision_tower, mm_projector, cross_attn, etc.")
+        vision_info.setStyleSheet("color: #6B7280; font-size: 10pt; margin-left: 20px;")
+        mm_layout.addWidget(vision_info)
+        
+        self.freeze_protected_check = QCheckBox("Freeze Protected (requires_grad=False)")
+        self.freeze_protected_check.setChecked(True)
+        self.freeze_protected_check.setToolTip("Actually freeze protected params - useful if chaining with fine-tuning")
+        mm_layout.addWidget(self.freeze_protected_check)
+        
+        freeze_info = QLabel("Extra safety + memory savings for training pipelines")
+        freeze_info.setStyleSheet("color: #6B7280; font-size: 10pt; margin-left: 20px;")
+        mm_layout.addWidget(freeze_info)
+        
+        # Custom protected patterns
+        protect_row = QHBoxLayout()
+        protect_row.addWidget(QLabel("Extra patterns:"))
+        self.protected_patterns_edit = QLineEdit()
+        self.protected_patterns_edit.setPlaceholderText("comma-separated, e.g.: audio,speech,encoder")
+        self.protected_patterns_edit.setToolTip("Additional component name patterns to protect from modification")
+        protect_row.addWidget(self.protected_patterns_edit)
+        mm_layout.addLayout(protect_row)
+        
+        # Only modify components filter
+        only_row = QHBoxLayout()
+        only_row.addWidget(QLabel("Only modify:"))
+        self.only_modify_edit = QLineEdit()
+        self.only_modify_edit.setPlaceholderText("leave empty for all, or: mlp,self_attn")
+        self.only_modify_edit.setToolTip("If set, ONLY modify components matching these patterns")
+        only_row.addWidget(self.only_modify_edit)
+        mm_layout.addLayout(only_row)
+        
+        # Skip specific layers
+        skip_row = QHBoxLayout()
+        skip_row.addWidget(QLabel("Skip layers:"))
+        self.skip_layers_edit = QLineEdit()
+        self.skip_layers_edit.setPlaceholderText("comma-separated indices, e.g.: 0,1,2,31")
+        self.skip_layers_edit.setToolTip("Specific layer indices to skip entirely")
+        skip_row.addWidget(self.skip_layers_edit)
+        mm_layout.addLayout(skip_row)
+        
+        right_col.addWidget(mm_group)
+        
         left_col.addStretch()
         right_col.addStretch()
         
@@ -967,6 +1020,34 @@ class BehaviorMancerApp(QMainWindow):
         config.winsorization = self.winsorization_check.isChecked()
         config.null_space_constraints = self.null_space_check.isChecked()
         config.adaptive_layer_weighting = self.adaptive_layers_check.isChecked()
+        
+        # Multimodal protection
+        config.protect_vision_components = self.protect_vision_check.isChecked()
+        config.freeze_protected_components = self.freeze_protected_check.isChecked()
+        
+        # Parse protected patterns
+        patterns_text = self.protected_patterns_edit.text().strip()
+        if patterns_text:
+            config.protected_component_patterns = [p.strip() for p in patterns_text.split(',') if p.strip()]
+        else:
+            config.protected_component_patterns = None
+        
+        # Parse only_modify components
+        only_text = self.only_modify_edit.text().strip()
+        if only_text:
+            config.only_modify_components = [p.strip() for p in only_text.split(',') if p.strip()]
+        else:
+            config.only_modify_components = None
+        
+        # Parse skip layers
+        skip_text = self.skip_layers_edit.text().strip()
+        if skip_text:
+            try:
+                config.skip_layers = [int(x.strip()) for x in skip_text.split(',') if x.strip()]
+            except ValueError:
+                config.skip_layers = None
+        else:
+            config.skip_layers = None
         
         return config
     
@@ -1240,6 +1321,12 @@ class BehaviorMancerApp(QMainWindow):
                 "winsorization": self.winsorization_check.isChecked(),
                 "null_space": self.null_space_check.isChecked(),
                 "adaptive_layers": self.adaptive_layers_check.isChecked(),
+                # Multimodal protection
+                "protect_vision": self.protect_vision_check.isChecked(),
+                "freeze_protected": self.freeze_protected_check.isChecked(),
+                "protected_patterns": self.protected_patterns_edit.text(),
+                "only_modify": self.only_modify_edit.text(),
+                "skip_layers": self.skip_layers_edit.text(),
             }
 
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -1318,6 +1405,13 @@ class BehaviorMancerApp(QMainWindow):
             self.winsorization_check.setChecked(config.get("winsorization", False))
             self.null_space_check.setChecked(config.get("null_space", False))
             self.adaptive_layers_check.setChecked(config.get("adaptive_layers", False))
+            
+            # Multimodal protection
+            self.protect_vision_check.setChecked(config.get("protect_vision", True))
+            self.freeze_protected_check.setChecked(config.get("freeze_protected", True))
+            self.protected_patterns_edit.setText(config.get("protected_patterns", ""))
+            self.only_modify_edit.setText(config.get("only_modify", ""))
+            self.skip_layers_edit.setText(config.get("skip_layers", ""))
             
             # Update UI state
             self._on_model_source_changed(True)

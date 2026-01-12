@@ -399,125 +399,174 @@ class BehaviorMancerApp(QMainWindow):
         layout.setSpacing(12)
         tab.setLayout(layout)
         
-        # Behavior Dataset Group
-        behavior_group = QGroupBox("📊 Behavior Dataset")
-        behavior_layout = QVBoxLayout()
-        behavior_layout.setSpacing(10)
-        behavior_group.setLayout(behavior_layout)
+        # File filter for browse dialogs
+        self._dataset_filter = "All Supported (*.txt *.jsonl *.json *.parquet *.csv);;Text files (*.txt);;JSONL files (*.jsonl);;JSON files (*.json);;Parquet files (*.parquet);;CSV files (*.csv);;All files (*)"
         
-        # Info
-        info_label = QLabel("Provide contrastive examples: target behavior (to exhibit) vs baseline behavior (to remove)")
+        # Info header
+        info_label = QLabel("Provide contrastive datasets for behavior direction extraction. Supports: txt, jsonl, json, parquet, csv")
         info_label.setStyleSheet("color: #9CA3AF; font-size: 11pt;")
         info_label.setWordWrap(True)
-        behavior_layout.addWidget(info_label)
+        layout.addWidget(info_label)
+        
+        # ===== TARGET BEHAVIOR DATASET =====
+        target_group = QGroupBox("✅ Target Behavior (to EXHIBIT)")
+        target_layout = QVBoxLayout()
+        target_layout.setSpacing(10)
+        target_group.setLayout(target_layout)
+        
+        target_info = QLabel("Samples showing the behavior you want the model to exhibit after modification")
+        target_info.setStyleSheet("color: #6B7280; font-size: 10pt;")
+        target_layout.addWidget(target_info)
         
         # Source selection
-        source_row = QHBoxLayout()
-        self.dataset_source_group = QButtonGroup(self)
-        
-        self.dataset_local_radio = QRadioButton("Local File")
-        self.dataset_hf_radio = QRadioButton("HuggingFace")
-        self.dataset_local_radio.setChecked(True)
-        
-        self.dataset_source_group.addButton(self.dataset_local_radio, 0)
-        self.dataset_source_group.addButton(self.dataset_hf_radio, 1)
-        
-        source_row.addWidget(self.dataset_local_radio)
-        source_row.addWidget(self.dataset_hf_radio)
-        source_row.addStretch()
-        behavior_layout.addLayout(source_row)
+        target_source_row = QHBoxLayout()
+        self.target_source_group = QButtonGroup(self)
+        self.target_local_radio = QRadioButton("Local File")
+        self.target_hf_radio = QRadioButton("HuggingFace")
+        self.target_local_radio.setChecked(True)
+        self.target_source_group.addButton(self.target_local_radio, 0)
+        self.target_source_group.addButton(self.target_hf_radio, 1)
+        target_source_row.addWidget(self.target_local_radio)
+        target_source_row.addWidget(self.target_hf_radio)
+        target_source_row.addStretch()
+        target_layout.addLayout(target_source_row)
         
         # Local file input
-        self.dataset_local_widget = QWidget()
-        local_layout = QFormLayout()
-        local_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        local_layout.setHorizontalSpacing(10)
-        self.dataset_local_widget.setLayout(local_layout)
+        self.target_local_widget = QWidget()
+        target_local_layout = QFormLayout()
+        target_local_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        target_local_layout.setHorizontalSpacing(10)
+        self.target_local_widget.setLayout(target_local_layout)
         
-        file_row = QHBoxLayout()
-        self.dataset_path_edit = QLineEdit()
-        self.dataset_path_edit.setPlaceholderText("JSONL file with behavior examples...")
-        dataset_browse_btn = QPushButton("Browse")
-        dataset_browse_btn.setFixedWidth(80)
-        dataset_browse_btn.clicked.connect(self._browse_dataset)
-        file_row.addWidget(self.dataset_path_edit)
-        file_row.addWidget(dataset_browse_btn)
-        local_layout.addRow("File:", self._wrap_row(file_row))
+        target_file_row = QHBoxLayout()
+        self.target_path_edit = QLineEdit()
+        self.target_path_edit.setPlaceholderText("txt, jsonl, json, parquet, or csv file...")
+        target_browse_btn = QPushButton("Browse")
+        target_browse_btn.setFixedWidth(80)
+        target_browse_btn.clicked.connect(self._browse_target)
+        target_file_row.addWidget(self.target_path_edit)
+        target_file_row.addWidget(target_browse_btn)
+        target_local_layout.addRow("File:", self._wrap_row(target_file_row))
         
-        col_row = QHBoxLayout()
-        col_row.addWidget(QLabel("Target:"))
-        self.local_target_col_edit = QLineEdit("target")
-        self.local_target_col_edit.setFixedWidth(100)
-        self.local_target_col_edit.setToolTip("Column containing behavior to exhibit")
-        col_row.addWidget(self.local_target_col_edit)
-        col_row.addSpacing(20)
-        col_row.addWidget(QLabel("Baseline:"))
-        self.local_baseline_col_edit = QLineEdit("baseline")
-        self.local_baseline_col_edit.setFixedWidth(100)
-        self.local_baseline_col_edit.setToolTip("Column containing behavior to remove")
-        col_row.addWidget(self.local_baseline_col_edit)
-        col_row.addStretch()
-        local_layout.addRow("Columns:", self._wrap_row(col_row))
-        
-        behavior_layout.addWidget(self.dataset_local_widget)
+        target_col_row = QHBoxLayout()
+        self.target_col_edit = QLineEdit("text")
+        self.target_col_edit.setFixedWidth(120)
+        self.target_col_edit.setToolTip("Column name for structured formats (ignored for plain txt)")
+        target_col_row.addWidget(self.target_col_edit)
+        target_col_row.addStretch()
+        target_local_layout.addRow("Column:", self._wrap_row(target_col_row))
+        target_layout.addWidget(self.target_local_widget)
         
         # HuggingFace input
-        self.dataset_hf_widget = QWidget()
-        hf_layout = QFormLayout()
-        hf_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        hf_layout.setHorizontalSpacing(10)
-        self.dataset_hf_widget.setLayout(hf_layout)
+        self.target_hf_widget = QWidget()
+        target_hf_layout = QFormLayout()
+        target_hf_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        target_hf_layout.setHorizontalSpacing(10)
+        self.target_hf_widget.setLayout(target_hf_layout)
+        self.target_hf_edit = QLineEdit()
+        self.target_hf_edit.setPlaceholderText("e.g., username/target-dataset")
+        target_hf_layout.addRow("Dataset ID:", self.target_hf_edit)
+        target_hf_col_row = QHBoxLayout()
+        self.target_hf_col_edit = QLineEdit("text")
+        self.target_hf_col_edit.setFixedWidth(120)
+        target_hf_col_row.addWidget(self.target_hf_col_edit)
+        target_hf_col_row.addStretch()
+        target_hf_layout.addRow("Column:", self._wrap_row(target_hf_col_row))
+        target_layout.addWidget(self.target_hf_widget)
+        self.target_hf_widget.hide()
         
-        self.dataset_hf_edit = QLineEdit()
-        self.dataset_hf_edit.setPlaceholderText("e.g., username/behavior-dataset")
-        hf_layout.addRow("Dataset ID:", self.dataset_hf_edit)
+        self.target_local_radio.toggled.connect(self._on_target_source_changed)
+        layout.addWidget(target_group)
         
-        hf_col_row = QHBoxLayout()
-        hf_col_row.addWidget(QLabel("Target:"))
-        self.hf_target_col_edit = QLineEdit("target")
-        self.hf_target_col_edit.setFixedWidth(100)
-        self.hf_target_col_edit.setToolTip("Column containing behavior to exhibit")
-        hf_col_row.addWidget(self.hf_target_col_edit)
-        hf_col_row.addSpacing(20)
-        hf_col_row.addWidget(QLabel("Baseline:"))
-        self.hf_baseline_col_edit = QLineEdit("baseline")
-        self.hf_baseline_col_edit.setFixedWidth(100)
-        self.hf_baseline_col_edit.setToolTip("Column containing behavior to remove")
-        hf_col_row.addWidget(self.hf_baseline_col_edit)
-        hf_col_row.addStretch()
-        hf_layout.addRow("Columns:", self._wrap_row(hf_col_row))
+        # ===== BASELINE BEHAVIOR DATASET =====
+        baseline_group = QGroupBox("❌ Baseline Behavior (to REMOVE)")
+        baseline_layout = QVBoxLayout()
+        baseline_layout.setSpacing(10)
+        baseline_group.setLayout(baseline_layout)
         
-        behavior_layout.addWidget(self.dataset_hf_widget)
-        self.dataset_hf_widget.hide()
+        baseline_info = QLabel("Samples showing the behavior you want to remove/ablate from the model")
+        baseline_info.setStyleSheet("color: #6B7280; font-size: 10pt;")
+        baseline_layout.addWidget(baseline_info)
         
-        # Connect radio buttons
-        self.dataset_local_radio.toggled.connect(self._on_dataset_source_changed)
+        # Source selection
+        baseline_source_row = QHBoxLayout()
+        self.baseline_source_group = QButtonGroup(self)
+        self.baseline_local_radio = QRadioButton("Local File")
+        self.baseline_hf_radio = QRadioButton("HuggingFace")
+        self.baseline_local_radio.setChecked(True)
+        self.baseline_source_group.addButton(self.baseline_local_radio, 0)
+        self.baseline_source_group.addButton(self.baseline_hf_radio, 1)
+        baseline_source_row.addWidget(self.baseline_local_radio)
+        baseline_source_row.addWidget(self.baseline_hf_radio)
+        baseline_source_row.addStretch()
+        baseline_layout.addLayout(baseline_source_row)
         
-        layout.addWidget(behavior_group)
+        # Local file input
+        self.baseline_local_widget = QWidget()
+        baseline_local_layout = QFormLayout()
+        baseline_local_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        baseline_local_layout.setHorizontalSpacing(10)
+        self.baseline_local_widget.setLayout(baseline_local_layout)
         
-        # Preservation Dataset Group
+        baseline_file_row = QHBoxLayout()
+        self.baseline_path_edit = QLineEdit()
+        self.baseline_path_edit.setPlaceholderText("txt, jsonl, json, parquet, or csv file...")
+        baseline_browse_btn = QPushButton("Browse")
+        baseline_browse_btn.setFixedWidth(80)
+        baseline_browse_btn.clicked.connect(self._browse_baseline)
+        baseline_file_row.addWidget(self.baseline_path_edit)
+        baseline_file_row.addWidget(baseline_browse_btn)
+        baseline_local_layout.addRow("File:", self._wrap_row(baseline_file_row))
+        
+        baseline_col_row = QHBoxLayout()
+        self.baseline_col_edit = QLineEdit("text")
+        self.baseline_col_edit.setFixedWidth(120)
+        self.baseline_col_edit.setToolTip("Column name for structured formats (ignored for plain txt)")
+        baseline_col_row.addWidget(self.baseline_col_edit)
+        baseline_col_row.addStretch()
+        baseline_local_layout.addRow("Column:", self._wrap_row(baseline_col_row))
+        baseline_layout.addWidget(self.baseline_local_widget)
+        
+        # HuggingFace input
+        self.baseline_hf_widget = QWidget()
+        baseline_hf_layout = QFormLayout()
+        baseline_hf_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        baseline_hf_layout.setHorizontalSpacing(10)
+        self.baseline_hf_widget.setLayout(baseline_hf_layout)
+        self.baseline_hf_edit = QLineEdit()
+        self.baseline_hf_edit.setPlaceholderText("e.g., username/baseline-dataset")
+        baseline_hf_layout.addRow("Dataset ID:", self.baseline_hf_edit)
+        baseline_hf_col_row = QHBoxLayout()
+        self.baseline_hf_col_edit = QLineEdit("text")
+        self.baseline_hf_col_edit.setFixedWidth(120)
+        baseline_hf_col_row.addWidget(self.baseline_hf_col_edit)
+        baseline_hf_col_row.addStretch()
+        baseline_hf_layout.addRow("Column:", self._wrap_row(baseline_hf_col_row))
+        baseline_layout.addWidget(self.baseline_hf_widget)
+        self.baseline_hf_widget.hide()
+        
+        self.baseline_local_radio.toggled.connect(self._on_baseline_source_changed)
+        layout.addWidget(baseline_group)
+        
+        # ===== PRESERVATION DATASET =====
         preservation_group = QGroupBox("🛡️ Preservation Dataset (Optional)")
         preservation_layout = QVBoxLayout()
         preservation_layout.setSpacing(10)
         preservation_group.setLayout(preservation_layout)
         
-        # Info
         pres_info = QLabel("Prompts testing capabilities to preserve (math, coding, reasoning). Required for null-space constraints.")
-        pres_info.setStyleSheet("color: #9CA3AF; font-size: 11pt;")
+        pres_info.setStyleSheet("color: #6B7280; font-size: 10pt;")
         pres_info.setWordWrap(True)
         preservation_layout.addWidget(pres_info)
         
         # Source selection
         pres_source_row = QHBoxLayout()
         self.preservation_source_group = QButtonGroup(self)
-        
         self.preservation_local_radio = QRadioButton("Local File")
         self.preservation_hf_radio = QRadioButton("HuggingFace")
         self.preservation_local_radio.setChecked(True)
-        
         self.preservation_source_group.addButton(self.preservation_local_radio, 0)
         self.preservation_source_group.addButton(self.preservation_hf_radio, 1)
-        
         pres_source_row.addWidget(self.preservation_local_radio)
         pres_source_row.addWidget(self.preservation_hf_radio)
         pres_source_row.addStretch()
@@ -532,7 +581,7 @@ class BehaviorMancerApp(QMainWindow):
         
         pres_file_row = QHBoxLayout()
         self.preservation_path_edit = QLineEdit()
-        self.preservation_path_edit.setPlaceholderText("JSONL/TXT file with preservation prompts...")
+        self.preservation_path_edit.setPlaceholderText("txt, jsonl, json, parquet, or csv file...")
         preservation_browse_btn = QPushButton("Browse")
         preservation_browse_btn.setFixedWidth(80)
         preservation_browse_btn.clicked.connect(self._browse_preservation)
@@ -541,14 +590,12 @@ class BehaviorMancerApp(QMainWindow):
         pres_local_layout.addRow("File:", self._wrap_row(pres_file_row))
         
         pres_col_row = QHBoxLayout()
-        pres_col_row.addWidget(QLabel("Prompt column:"))
-        self.local_preservation_col_edit = QLineEdit("prompt")
-        self.local_preservation_col_edit.setFixedWidth(100)
-        self.local_preservation_col_edit.setToolTip("Column containing prompts (leave blank for plain text)")
-        pres_col_row.addWidget(self.local_preservation_col_edit)
+        self.preservation_col_edit = QLineEdit("text")
+        self.preservation_col_edit.setFixedWidth(120)
+        self.preservation_col_edit.setToolTip("Column name for structured formats (ignored for plain txt)")
+        pres_col_row.addWidget(self.preservation_col_edit)
         pres_col_row.addStretch()
         pres_local_layout.addRow("Column:", self._wrap_row(pres_col_row))
-        
         preservation_layout.addWidget(self.preservation_local_widget)
         
         # HuggingFace input
@@ -557,28 +604,22 @@ class BehaviorMancerApp(QMainWindow):
         pres_hf_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         pres_hf_layout.setHorizontalSpacing(10)
         self.preservation_hf_widget.setLayout(pres_hf_layout)
-        
         self.preservation_hf_edit = QLineEdit()
         self.preservation_hf_edit.setPlaceholderText("e.g., username/preservation-prompts")
         pres_hf_layout.addRow("Dataset ID:", self.preservation_hf_edit)
-        
         pres_hf_col_row = QHBoxLayout()
-        pres_hf_col_row.addWidget(QLabel("Prompt column:"))
-        self.hf_preservation_col_edit = QLineEdit("prompt")
-        self.hf_preservation_col_edit.setFixedWidth(100)
-        pres_hf_col_row.addWidget(self.hf_preservation_col_edit)
+        self.preservation_hf_col_edit = QLineEdit("text")
+        self.preservation_hf_col_edit.setFixedWidth(120)
+        pres_hf_col_row.addWidget(self.preservation_hf_col_edit)
         pres_hf_col_row.addStretch()
         pres_hf_layout.addRow("Column:", self._wrap_row(pres_hf_col_row))
-        
         preservation_layout.addWidget(self.preservation_hf_widget)
         self.preservation_hf_widget.hide()
         
-        # Connect radio buttons
         self.preservation_local_radio.toggled.connect(self._on_preservation_source_changed)
-        
         layout.addWidget(preservation_group)
-        layout.addStretch()
         
+        layout.addStretch()
         self.tabs.addTab(tab, "📊 Dataset")
     
     def _build_settings_tab(self):
@@ -805,14 +846,23 @@ class BehaviorMancerApp(QMainWindow):
             self.model_local_widget.hide()
             self.model_hf_widget.show()
     
-    def _on_dataset_source_changed(self, checked):
-        """Handle dataset source radio button change."""
-        if self.dataset_local_radio.isChecked():
-            self.dataset_local_widget.show()
-            self.dataset_hf_widget.hide()
+    def _on_target_source_changed(self, checked):
+        """Handle target source radio button change."""
+        if self.target_local_radio.isChecked():
+            self.target_local_widget.show()
+            self.target_hf_widget.hide()
         else:
-            self.dataset_local_widget.hide()
-            self.dataset_hf_widget.show()
+            self.target_local_widget.hide()
+            self.target_hf_widget.show()
+    
+    def _on_baseline_source_changed(self, checked):
+        """Handle baseline source radio button change."""
+        if self.baseline_local_radio.isChecked():
+            self.baseline_local_widget.show()
+            self.baseline_hf_widget.hide()
+        else:
+            self.baseline_local_widget.hide()
+            self.baseline_hf_widget.show()
     
     def _on_preservation_source_changed(self, checked):
         """Handle preservation source radio button change."""
@@ -833,18 +883,26 @@ class BehaviorMancerApp(QMainWindow):
         if folder:
             self.model_path_edit.setText(folder)
     
-    def _browse_dataset(self):
-        """Browse for dataset file."""
+    def _browse_target(self):
+        """Browse for target behavior file."""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Dataset File", "", "JSONL files (*.jsonl);;JSON files (*.json);;All files (*)"
+            self, "Select Target Behavior File", "", self._dataset_filter
         )
         if file_path:
-            self.dataset_path_edit.setText(file_path)
+            self.target_path_edit.setText(file_path)
+    
+    def _browse_baseline(self):
+        """Browse for baseline behavior file."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Baseline Behavior File", "", self._dataset_filter
+        )
+        if file_path:
+            self.baseline_path_edit.setText(file_path)
     
     def _browse_preservation(self):
         """Browse for preservation prompts file."""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Preservation File", "", "JSONL files (*.jsonl);;Text files (*.txt);;All files (*)"
+            self, "Select Preservation File", "", self._dataset_filter
         )
         if file_path:
             self.preservation_path_edit.setText(file_path)
@@ -868,27 +926,35 @@ class BehaviorMancerApp(QMainWindow):
             config.model_path = self.model_hf_edit.text().strip()
             config.hf_token = self.hf_token_edit.text().strip() or None
         
-        # Dataset source
-        if self.dataset_local_radio.isChecked():
-            config.dataset_source = "local"
-            config.dataset_path = self.dataset_path_edit.text().strip()
-            config.target_behavior_column = self.local_target_col_edit.text().strip()
-            config.baseline_behavior_column = self.local_baseline_col_edit.text().strip()
+        # Target behavior source (to EXHIBIT)
+        if self.target_local_radio.isChecked():
+            config.target_source = "local"
+            config.target_path = self.target_path_edit.text().strip()
+            config.target_column = self.target_col_edit.text().strip() or "text"
         else:
-            config.dataset_source = "huggingface"
-            config.dataset_path = self.dataset_hf_edit.text().strip()
-            config.target_behavior_column = self.hf_target_col_edit.text().strip()
-            config.baseline_behavior_column = self.hf_baseline_col_edit.text().strip()
+            config.target_source = "huggingface"
+            config.target_path = self.target_hf_edit.text().strip()
+            config.target_column = self.target_hf_col_edit.text().strip() or "text"
+        
+        # Baseline behavior source (to REMOVE)
+        if self.baseline_local_radio.isChecked():
+            config.baseline_source = "local"
+            config.baseline_path = self.baseline_path_edit.text().strip()
+            config.baseline_column = self.baseline_col_edit.text().strip() or "text"
+        else:
+            config.baseline_source = "huggingface"
+            config.baseline_path = self.baseline_hf_edit.text().strip()
+            config.baseline_column = self.baseline_hf_col_edit.text().strip() or "text"
         
         # Preservation dataset source
         if self.preservation_local_radio.isChecked():
             config.preservation_source = "local"
             config.preservation_path = self.preservation_path_edit.text().strip()
-            config.preservation_column = self.local_preservation_col_edit.text().strip()
+            config.preservation_column = self.preservation_col_edit.text().strip() or "text"
         else:
             config.preservation_source = "huggingface"
             config.preservation_path = self.preservation_hf_edit.text().strip()
-            config.preservation_column = self.hf_preservation_col_edit.text().strip()
+            config.preservation_column = self.preservation_hf_col_edit.text().strip() or "text"
 
         # Settings
         config.n_samples = self.n_samples_spin.value()
@@ -912,14 +978,19 @@ class BehaviorMancerApp(QMainWindow):
         if config.model_source == "local" and not os.path.isdir(config.model_path):
             return False, f"Model folder does not exist: {config.model_path}"
 
-        if not config.dataset_path:
-            return False, "Please specify a behavior dataset"
+        # Validate target behavior dataset
+        if not config.target_path:
+            return False, "Please specify a target behavior dataset (behavior to exhibit)"
 
-        if config.dataset_source == "local" and not os.path.isfile(config.dataset_path):
-            return False, f"Dataset file does not exist: {config.dataset_path}"
+        if config.target_source == "local" and not os.path.isfile(config.target_path):
+            return False, f"Target behavior file does not exist: {config.target_path}"
 
-        if not config.target_behavior_column or not config.baseline_behavior_column:
-            return False, "Please specify both target and baseline column names"
+        # Validate baseline behavior dataset
+        if not config.baseline_path:
+            return False, "Please specify a baseline behavior dataset (behavior to remove)"
+
+        if config.baseline_source == "local" and not os.path.isfile(config.baseline_path):
+            return False, f"Baseline behavior file does not exist: {config.baseline_path}"
         
         # Validate preservation dataset if null-space constraints enabled
         if config.null_space_constraints:
@@ -1137,22 +1208,30 @@ class BehaviorMancerApp(QMainWindow):
         """Save current configuration to file."""
         try:
             config = {
+                # Model
                 "model_source": "local" if self.model_local_radio.isChecked() else "huggingface",
                 "model_local_path": self.model_path_edit.text(),
                 "model_hf_id": self.model_hf_edit.text(),
                 "hf_token": self.hf_token_edit.text(),
-                "dataset_source": "local" if self.dataset_local_radio.isChecked() else "huggingface",
-                "dataset_local_path": self.dataset_path_edit.text(),
-                "dataset_hf_id": self.dataset_hf_edit.text(),
-                "local_target_col": self.local_target_col_edit.text(),
-                "local_baseline_col": self.local_baseline_col_edit.text(),
-                "hf_target_col": self.hf_target_col_edit.text(),
-                "hf_baseline_col": self.hf_baseline_col_edit.text(),
+                # Target behavior
+                "target_source": "local" if self.target_local_radio.isChecked() else "huggingface",
+                "target_local_path": self.target_path_edit.text(),
+                "target_hf_id": self.target_hf_edit.text(),
+                "target_col": self.target_col_edit.text(),
+                "target_hf_col": self.target_hf_col_edit.text(),
+                # Baseline behavior
+                "baseline_source": "local" if self.baseline_local_radio.isChecked() else "huggingface",
+                "baseline_local_path": self.baseline_path_edit.text(),
+                "baseline_hf_id": self.baseline_hf_edit.text(),
+                "baseline_col": self.baseline_col_edit.text(),
+                "baseline_hf_col": self.baseline_hf_col_edit.text(),
+                # Preservation
                 "preservation_source": "local" if self.preservation_local_radio.isChecked() else "huggingface",
                 "preservation_local_path": self.preservation_path_edit.text(),
                 "preservation_hf_id": self.preservation_hf_edit.text(),
-                "local_preservation_col": self.local_preservation_col_edit.text(),
-                "hf_preservation_col": self.hf_preservation_col_edit.text(),
+                "preservation_col": self.preservation_col_edit.text(),
+                "preservation_hf_col": self.preservation_hf_col_edit.text(),
+                # Settings
                 "n_samples": self.n_samples_spin.value(),
                 "strength": self.strength_spin.value(),
                 "precision": self.precision_combo.currentText(),
@@ -1191,18 +1270,27 @@ class BehaviorMancerApp(QMainWindow):
             self.model_hf_edit.setText(config.get("model_hf_id", ""))
             self.hf_token_edit.setText(config.get("hf_token", ""))
             
-            # Dataset source
-            if config.get("dataset_source") == "huggingface":
-                self.dataset_hf_radio.setChecked(True)
+            # Target behavior source
+            if config.get("target_source") == "huggingface":
+                self.target_hf_radio.setChecked(True)
             else:
-                self.dataset_local_radio.setChecked(True)
+                self.target_local_radio.setChecked(True)
             
-            self.dataset_path_edit.setText(config.get("dataset_local_path", ""))
-            self.dataset_hf_edit.setText(config.get("dataset_hf_id", ""))
-            self.local_target_col_edit.setText(config.get("local_target_col", "target"))
-            self.local_baseline_col_edit.setText(config.get("local_baseline_col", "baseline"))
-            self.hf_target_col_edit.setText(config.get("hf_target_col", "target"))
-            self.hf_baseline_col_edit.setText(config.get("hf_baseline_col", "baseline"))
+            self.target_path_edit.setText(config.get("target_local_path", ""))
+            self.target_hf_edit.setText(config.get("target_hf_id", ""))
+            self.target_col_edit.setText(config.get("target_col", "text"))
+            self.target_hf_col_edit.setText(config.get("target_hf_col", "text"))
+            
+            # Baseline behavior source
+            if config.get("baseline_source") == "huggingface":
+                self.baseline_hf_radio.setChecked(True)
+            else:
+                self.baseline_local_radio.setChecked(True)
+            
+            self.baseline_path_edit.setText(config.get("baseline_local_path", ""))
+            self.baseline_hf_edit.setText(config.get("baseline_hf_id", ""))
+            self.baseline_col_edit.setText(config.get("baseline_col", "text"))
+            self.baseline_hf_col_edit.setText(config.get("baseline_hf_col", "text"))
             
             # Preservation source
             if config.get("preservation_source") == "huggingface":
@@ -1212,8 +1300,8 @@ class BehaviorMancerApp(QMainWindow):
             
             self.preservation_path_edit.setText(config.get("preservation_local_path", ""))
             self.preservation_hf_edit.setText(config.get("preservation_hf_id", ""))
-            self.local_preservation_col_edit.setText(config.get("local_preservation_col", "prompt"))
-            self.hf_preservation_col_edit.setText(config.get("hf_preservation_col", "prompt"))
+            self.preservation_col_edit.setText(config.get("preservation_col", "text"))
+            self.preservation_hf_col_edit.setText(config.get("preservation_hf_col", "text"))
 
             # Settings
             self.n_samples_spin.setValue(config.get("n_samples", 30))
@@ -1233,7 +1321,8 @@ class BehaviorMancerApp(QMainWindow):
             
             # Update UI state
             self._on_model_source_changed(True)
-            self._on_dataset_source_changed(True)
+            self._on_target_source_changed(True)
+            self._on_baseline_source_changed(True)
             self._on_preservation_source_changed(True)
 
         except Exception as e:

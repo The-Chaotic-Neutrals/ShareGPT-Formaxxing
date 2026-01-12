@@ -36,16 +36,20 @@ class BehaviorMancerConfig:
     model_path: str = ""  # Local path or HF model ID
     hf_token: Optional[str] = None  # HuggingFace token for gated models
     
-    # Behavior dataset source (target vs baseline)
-    dataset_source: str = "local"  # "local" or "huggingface"
-    dataset_path: str = ""  # Local path or HF dataset ID
-    target_behavior_column: str = "target"  # Column with behavior to exhibit
-    baseline_behavior_column: str = "baseline"  # Column with behavior to remove
+    # Target behavior dataset (behavior to EXHIBIT)
+    target_source: str = "local"  # "local" or "huggingface"
+    target_path: str = ""  # Local path or HF dataset ID
+    target_column: str = "text"  # Column name for structured formats (jsonl, parquet, csv)
+    
+    # Baseline behavior dataset (behavior to REMOVE)
+    baseline_source: str = "local"  # "local" or "huggingface"
+    baseline_path: str = ""  # Local path or HF dataset ID
+    baseline_column: str = "text"  # Column name for structured formats (jsonl, parquet, csv)
     
     # Preservation dataset source (for null-space constraints)
     preservation_source: str = "local"  # "local" or "huggingface"
     preservation_path: str = ""  # Local path or HF dataset ID
-    preservation_column: str = "prompt"  # Column with preservation prompts
+    preservation_column: str = "text"  # Column name for structured formats (jsonl, parquet, csv)
     
     # Abliteration settings
     n_samples: int = 30  # Number of sample pairs to use
@@ -107,6 +111,130 @@ class BehaviorMancer:
         }
         return dtype_map.get(self.config.precision, torch.float16)
     
+    def _load_local_dataset(self, file_path: str, column: str = "text") -> list[str]:
+        """
+        Load a dataset from a local file. Supports multiple formats:
+        - .txt: Plain text, one sample per line (lines starting with # are ignored)
+        - .jsonl: JSON Lines, extracts specified column
+        - .json: JSON array, extracts specified column
+        - .parquet: Parquet file, extracts specified column
+        - .csv: CSV file, extracts specified column
+        
+        Args:
+            file_path: Path to the file
+            column: Column name for structured formats (ignored for .txt)
+            
+        Returns:
+            List of text samples
+        """
+        samples = []
+        ext = Path(file_path).suffix.lower()
+        
+        if ext == ".txt":
+            # Plain text: one sample per line, ignore comments
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        samples.append(line)
+        
+        elif ext == ".jsonl":
+            # JSON Lines format
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        data = json.loads(line.strip())
+                        if isinstance(data, dict) and column in data:
+                            samples.append(str(data[column]))
+                        elif isinstance(data, str):
+                            samples.append(data)
+                    except json.JSONDecodeError:
+                        continue
+        
+        elif ext == ".json":
+            # JSON array format
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and column in item:
+                            samples.append(str(item[column]))
+                        elif isinstance(item, str):
+                            samples.append(item)
+        
+        elif ext == ".parquet":
+            # Parquet format
+            try:
+                import pandas as pd
+                df = pd.read_parquet(file_path)
+                if column in df.columns:
+                    samples = df[column].dropna().astype(str).tolist()
+                elif len(df.columns) == 1:
+                    # Single column, use it
+                    samples = df.iloc[:, 0].dropna().astype(str).tolist()
+                else:
+                    self.log(f"Warning: Column '{column}' not found in parquet. Available: {list(df.columns)}")
+            except ImportError:
+                self.log("Error: pandas/pyarrow required for parquet files. Install with: pip install pandas pyarrow")
+        
+        elif ext == ".csv":
+            # CSV format
+            try:
+                import pandas as pd
+                df = pd.read_csv(file_path)
+                if column in df.columns:
+                    samples = df[column].dropna().astype(str).tolist()
+                elif len(df.columns) == 1:
+                    # Single column, use it
+                    samples = df.iloc[:, 0].dropna().astype(str).tolist()
+                else:
+                    self.log(f"Warning: Column '{column}' not found in CSV. Available: {list(df.columns)}")
+            except ImportError:
+                self.log("Error: pandas required for CSV files. Install with: pip install pandas")
+        
+        else:
+            self.log(f"Warning: Unknown file format '{ext}'. Trying to read as plain text.")
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        samples.append(line)
+        
+        return samples
+    
+    def _load_hf_dataset(self, dataset_id: str, column: str = "text") -> list[str]:
+        """
+        Load a dataset from HuggingFace Hub.
+        
+        Args:
+            dataset_id: HuggingFace dataset ID
+            column: Column name to extract
+            
+        Returns:
+            List of text samples
+        """
+        from datasets import load_dataset
+        
+        kwargs = {}
+        if self.config.hf_token:
+            kwargs["token"] = self.config.hf_token
+        
+        dataset = load_dataset(dataset_id, **kwargs)
+        
+        # Get the train split or first available split
+        if "train" in dataset:
+            data = dataset["train"]
+        else:
+            data = dataset[list(dataset.keys())[0]]
+        
+        if column in data.column_names:
+            return list(data[column])
+        elif len(data.column_names) == 1:
+            return list(data[data.column_names[0]])
+        else:
+            self.log(f"Warning: Column '{column}' not found. Available: {data.column_names}")
+            return []
+    
     def load_model(self) -> bool:
         """
         Load the model from local path or HuggingFace.
@@ -163,54 +291,40 @@ class BehaviorMancer:
     
     def load_behavior_dataset(self) -> tuple[list[str], list[str]]:
         """
-        Load behavior dataset from configured source.
+        Load behavior datasets from configured sources.
+        
+        Target and baseline datasets are loaded separately, supporting multiple formats:
+        - .txt: Plain text, one sample per line
+        - .jsonl: JSON Lines format
+        - .json: JSON array format
+        - .parquet: Parquet format
+        - .csv: CSV format
         
         Returns:
             Tuple of (target_behavior_samples, baseline_behavior_samples)
         """
-        if self.config.dataset_source == "local":
-            self.log(f"Loading behavior dataset from local file: {self.config.dataset_path}")
-            target_samples, baseline_samples = [], []
-            
-            with open(self.config.dataset_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        data = json.loads(line.strip())
-                        if self.config.target_behavior_column in data:
-                            target_samples.append(data[self.config.target_behavior_column])
-                        if self.config.baseline_behavior_column in data:
-                            baseline_samples.append(data[self.config.baseline_behavior_column])
-                    except json.JSONDecodeError:
-                        continue
-            
-            self.log(f"Loaded {len(target_samples)} target and {len(baseline_samples)} baseline samples")
-            return target_samples, baseline_samples
-        
-        elif self.config.dataset_source == "huggingface":
-            from datasets import load_dataset
-            
-            self.log(f"Loading behavior dataset from HuggingFace: {self.config.dataset_path}")
-            
-            kwargs = {}
-            if self.config.hf_token:
-                kwargs["token"] = self.config.hf_token
-            
-            dataset = load_dataset(self.config.dataset_path, **kwargs)
-            
-            # Get the train split or first available split
-            if "train" in dataset:
-                data = dataset["train"]
-            else:
-                data = dataset[list(dataset.keys())[0]]
-            
-            target_samples = list(data[self.config.target_behavior_column])
-            baseline_samples = list(data[self.config.baseline_behavior_column])
-            
-            self.log(f"Loaded {len(target_samples)} target and {len(baseline_samples)} baseline samples")
-            return target_samples, baseline_samples
-        
+        # Load target behavior dataset (behavior to EXHIBIT)
+        if self.config.target_source == "local":
+            self.log(f"Loading target behavior from local file: {self.config.target_path}")
+            target_samples = self._load_local_dataset(self.config.target_path, self.config.target_column)
+        elif self.config.target_source == "huggingface":
+            self.log(f"Loading target behavior from HuggingFace: {self.config.target_path}")
+            target_samples = self._load_hf_dataset(self.config.target_path, self.config.target_column)
         else:
-            raise ValueError(f"Unknown dataset source: {self.config.dataset_source}")
+            raise ValueError(f"Unknown target source: {self.config.target_source}")
+        
+        # Load baseline behavior dataset (behavior to REMOVE)
+        if self.config.baseline_source == "local":
+            self.log(f"Loading baseline behavior from local file: {self.config.baseline_path}")
+            baseline_samples = self._load_local_dataset(self.config.baseline_path, self.config.baseline_column)
+        elif self.config.baseline_source == "huggingface":
+            self.log(f"Loading baseline behavior from HuggingFace: {self.config.baseline_path}")
+            baseline_samples = self._load_hf_dataset(self.config.baseline_path, self.config.baseline_column)
+        else:
+            raise ValueError(f"Unknown baseline source: {self.config.baseline_source}")
+        
+        self.log(f"Loaded {len(target_samples)} target and {len(baseline_samples)} baseline samples")
+        return target_samples, baseline_samples
     
     def load_preservation_dataset(self) -> list[str]:
         """
@@ -218,6 +332,13 @@ class BehaviorMancer:
         
         These are prompts that test capabilities you want to preserve
         (e.g., math, coding, reasoning, general knowledge).
+        
+        Supports multiple formats:
+        - .txt: Plain text, one sample per line
+        - .jsonl: JSON Lines format
+        - .json: JSON array format
+        - .parquet: Parquet format
+        - .csv: CSV format
         
         Returns:
             List of preservation prompts
@@ -228,47 +349,15 @@ class BehaviorMancer:
         
         if self.config.preservation_source == "local":
             self.log(f"Loading preservation dataset from local file: {self.config.preservation_path}")
-            prompts = []
-            
-            with open(self.config.preservation_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        data = json.loads(line.strip())
-                        if self.config.preservation_column in data:
-                            prompts.append(data[self.config.preservation_column])
-                    except json.JSONDecodeError:
-                        # Try as plain text
-                        line = line.strip()
-                        if line:
-                            prompts.append(line)
-            
-            self.log(f"Loaded {len(prompts)} preservation prompts")
-            return prompts
-        
+            prompts = self._load_local_dataset(self.config.preservation_path, self.config.preservation_column)
         elif self.config.preservation_source == "huggingface":
-            from datasets import load_dataset
-            
             self.log(f"Loading preservation dataset from HuggingFace: {self.config.preservation_path}")
-            
-            kwargs = {}
-            if self.config.hf_token:
-                kwargs["token"] = self.config.hf_token
-            
-            dataset = load_dataset(self.config.preservation_path, **kwargs)
-            
-            # Get the train split or first available split
-            if "train" in dataset:
-                data = dataset["train"]
-            else:
-                data = dataset[list(dataset.keys())[0]]
-            
-            prompts = list(data[self.config.preservation_column])
-            
-            self.log(f"Loaded {len(prompts)} preservation prompts")
-            return prompts
-        
+            prompts = self._load_hf_dataset(self.config.preservation_path, self.config.preservation_column)
         else:
             raise ValueError(f"Unknown preservation source: {self.config.preservation_source}")
+        
+        self.log(f"Loaded {len(prompts)} preservation prompts")
+        return prompts
     
     def _get_hidden_states(self, prompts: list[str], layer_indices: list[int]) -> dict[int, torch.Tensor]:
         """
@@ -702,10 +791,12 @@ class BehaviorMancer:
                 config_dict = {
                     "model_source": self.config.model_source,
                     "model_path": self.config.model_path,
-                    "dataset_source": self.config.dataset_source,
-                    "dataset_path": self.config.dataset_path,
-                    "target_behavior_column": self.config.target_behavior_column,
-                    "baseline_behavior_column": self.config.baseline_behavior_column,
+                    "target_source": self.config.target_source,
+                    "target_path": self.config.target_path,
+                    "target_column": self.config.target_column,
+                    "baseline_source": self.config.baseline_source,
+                    "baseline_path": self.config.baseline_path,
+                    "baseline_column": self.config.baseline_column,
                     "preservation_source": self.config.preservation_source,
                     "preservation_path": self.config.preservation_path,
                     "preservation_column": self.config.preservation_column,

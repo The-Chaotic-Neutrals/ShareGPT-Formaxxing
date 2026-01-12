@@ -38,3 +38,4 @@ App/SynthMaxxer/grok_tool_config.json
 /Outputs
 /App/MergeMaxxer/__pycache__
 /App/BehaviorMancer/__pycache__
+App/BehaviorMancer/behaviormancer_config.json

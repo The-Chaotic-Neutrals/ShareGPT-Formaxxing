@@ -382,6 +382,12 @@ def _build_multimodal_ui(main_window, left_panel, right_panel):
     # Initialize state
     main_window.mm_hf_dataset_edit.setEnabled(False)
     hf_dataset_layout.addRow("", main_window.mm_use_hf_dataset_check)
+
+    main_window.mm_visual_grounding_check = QCheckBox("Use existing captions as visual grounding")
+    main_window.mm_visual_grounding_check.setChecked(False)
+    main_window.mm_visual_grounding_check.setEnabled(False)
+    main_window.mm_visual_grounding_check.setToolTip("Prepend existing dataset captions to prompts as context (stripped from output metadata)")
+    hf_dataset_layout.addRow("", main_window.mm_visual_grounding_check)
     left_panel.addWidget(hf_dataset_group)
 
     # Caption Settings with Multiple Prompts
@@ -568,9 +574,12 @@ def _toggle_hf_dataset_mode(main_window, checked):
     if checked:
         main_window.mm_image_dir_edit.setEnabled(False)
         main_window.mm_hf_dataset_edit.setEnabled(True)
+        main_window.mm_visual_grounding_check.setEnabled(True)
     else:
         main_window.mm_image_dir_edit.setEnabled(True)
         main_window.mm_hf_dataset_edit.setEnabled(False)
+        main_window.mm_visual_grounding_check.setEnabled(False)
+        main_window.mm_visual_grounding_check.setChecked(False)
 
 
 def _init_default_prompts(main_window):
@@ -727,6 +736,7 @@ def start_image_captioning(main_window):
     use_hf_dataset = main_window.mm_use_hf_dataset_check.isChecked()
     hf_dataset = main_window.mm_hf_dataset_edit.text().strip() if use_hf_dataset else None
     hf_token = main_window.hf_token_edit.text().strip() if use_hf_dataset else None
+    use_visual_grounding = main_window.mm_visual_grounding_check.isChecked() if use_hf_dataset else False
     image_dir = main_window.mm_image_dir_edit.text().strip() if not use_hf_dataset else None
     output_folder = main_window.mm_output_edit.text().strip()
     api_key = main_window.mm_api_key_edit.text().strip()
@@ -822,6 +832,7 @@ def start_image_captioning(main_window):
             hf_dataset,
             hf_token,
             main_window.mm_queue,
+            use_visual_grounding,
         ),
         daemon=True,
     )

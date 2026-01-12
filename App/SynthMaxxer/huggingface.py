@@ -1,6 +1,7 @@
 """
 HuggingFace module - HuggingFace dataset/model downloader and uploader tab functionality
 Handles HuggingFace dataset/model downloading and caption dataset uploading UI and logic
+Includes parquet packing for efficient dataset uploads
 """
 import os
 import json
@@ -10,11 +11,13 @@ import tempfile
 import threading
 import queue
 from pathlib import Path
+from typing import List, Tuple, Dict, Any, Optional
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QGroupBox, QScrollArea,
-    QFrame, QSpinBox, QCheckBox
+    QFrame, QSpinBox, QCheckBox, QListWidget, QComboBox,
+    QFileDialog
 )
 from PyQt5.QtCore import Qt
 
@@ -126,23 +129,37 @@ def build_huggingface_tab(main_window):
     
     hf_left_panel.addWidget(hf_model_group)
     
-    # HuggingFace Caption Dataset Upload
-    hf_upload_group = QGroupBox("🚀 Caption Dataset Upload")
+    # HuggingFace Caption Dataset Upload (Parquet Packing)
+    hf_upload_group = QGroupBox("🚀 Caption Dataset Upload (Parquet)")
+    hf_upload_main_layout = QVBoxLayout()
+    hf_upload_group.setLayout(hf_upload_main_layout)
+
+    # Parent directories list
+    parent_dirs_label = QLabel("Source Directories (folders containing images/ + metadata.jsonl):")
+    hf_upload_main_layout.addWidget(parent_dirs_label)
+    
+    main_window.hf_parent_dirs_list = QListWidget()
+    main_window.hf_parent_dirs_list.setMinimumHeight(80)
+    main_window.hf_parent_dirs_list.setToolTip("Add folders containing captioned datasets. Subfolders will be scanned automatically.")
+    hf_upload_main_layout.addWidget(main_window.hf_parent_dirs_list)
+    
+    # Add/Remove buttons for parent dirs
+    parent_dirs_btn_row = QHBoxLayout()
+    main_window.hf_add_dir_btn = QPushButton("+ Add Directory")
+    main_window.hf_add_dir_btn.clicked.connect(lambda: add_parent_directory(main_window))
+    main_window.hf_remove_dir_btn = QPushButton("- Remove Selected")
+    main_window.hf_remove_dir_btn.clicked.connect(lambda: remove_parent_directory(main_window))
+    parent_dirs_btn_row.addWidget(main_window.hf_add_dir_btn)
+    parent_dirs_btn_row.addWidget(main_window.hf_remove_dir_btn)
+    parent_dirs_btn_row.addStretch()
+    hf_upload_main_layout.addLayout(parent_dirs_btn_row)
+
+    # Upload settings form
     hf_upload_layout = QFormLayout()
     hf_upload_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
     hf_upload_layout.setHorizontalSpacing(10)
     hf_upload_layout.setVerticalSpacing(6)
     hf_upload_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-    hf_upload_group.setLayout(hf_upload_layout)
-
-    # Source folder (captioned output folder)
-    source_row, _ = create_file_browse_row(
-        line_edit_name="hf_upload_source_edit",
-        placeholder_text="Folder containing images/ + metadata.jsonl",
-        on_browse_clicked=lambda: browse_hf_upload_source(main_window)
-    )
-    main_window.hf_upload_source_edit = source_row.itemAt(0).widget()
-    hf_upload_layout.addRow(QLabel("Source Folder:"), _wrap_row(source_row))
 
     main_window.hf_upload_repo_edit = QLineEdit()
     main_window.hf_upload_repo_edit.setPlaceholderText("e.g., username/dataset_name")
@@ -154,43 +171,45 @@ def build_huggingface_tab(main_window):
     main_window.hf_private_repo_check.setToolTip("Create repository as private")
     hf_upload_layout.addRow("", main_window.hf_private_repo_check)
 
-    main_window.hf_shard_size_spin = QSpinBox()
-    main_window.hf_shard_size_spin.setRange(100, 9000)
-    main_window.hf_shard_size_spin.setValue(1000)
-    main_window.hf_shard_size_spin.setMaximumWidth(100)
-    main_window.hf_shard_size_spin.setToolTip("Images per subfolder (HF limit: <10000 files per folder)")
+    # Parquet settings
+    main_window.hf_shard_rows_spin = QSpinBox()
+    main_window.hf_shard_rows_spin.setRange(500, 50000)
+    main_window.hf_shard_rows_spin.setValue(5000)
+    main_window.hf_shard_rows_spin.setMaximumWidth(100)
+    main_window.hf_shard_rows_spin.setToolTip("Rows per parquet shard (5000 recommended)")
     shard_row = QHBoxLayout()
-    shard_row.addWidget(main_window.hf_shard_size_spin)
+    shard_row.addWidget(main_window.hf_shard_rows_spin)
     shard_row.addStretch()
-    hf_upload_layout.addRow(QLabel("Shard Size:"), _wrap_row(shard_row))
+    hf_upload_layout.addRow(QLabel("Rows/Shard:"), _wrap_row(shard_row))
 
-    main_window.hf_upload_batch_spin = QSpinBox()
-    main_window.hf_upload_batch_spin.setRange(50, 20000)
-    main_window.hf_upload_batch_spin.setValue(2000)
-    main_window.hf_upload_batch_spin.setMaximumWidth(100)
-    main_window.hf_upload_batch_spin.setToolTip("Images per commit (larger = fewer commits, but larger individual uploads)")
-    batch_row = QHBoxLayout()
-    batch_row.addWidget(main_window.hf_upload_batch_spin)
-    batch_row.addStretch()
-    hf_upload_layout.addRow(QLabel("Batch Size:"), _wrap_row(batch_row))
+    main_window.hf_compression_combo = QComboBox()
+    main_window.hf_compression_combo.addItems(["zstd", "snappy", "gzip", "none"])
+    main_window.hf_compression_combo.setCurrentText("zstd")
+    main_window.hf_compression_combo.setMaximumWidth(100)
+    main_window.hf_compression_combo.setToolTip("Parquet compression (zstd recommended for best ratio)")
+    compression_row = QHBoxLayout()
+    compression_row.addWidget(main_window.hf_compression_combo)
+    compression_row.addStretch()
+    hf_upload_layout.addRow(QLabel("Compression:"), _wrap_row(compression_row))
 
-    main_window.hf_resume_upload_check = QCheckBox("Resume (skip already-uploaded images)")
-    main_window.hf_resume_upload_check.setChecked(True)
-    main_window.hf_resume_upload_check.setToolTip("Check remote repo and skip images that already exist")
-    hf_upload_layout.addRow("", main_window.hf_resume_upload_check)
+    hf_upload_main_layout.addLayout(hf_upload_layout)
 
     # Upload buttons
     upload_btn_row = QHBoxLayout()
-    main_window.hf_upload_button = QPushButton("Upload to HuggingFace")
+    main_window.hf_pack_button = QPushButton("Pack to Parquet")
+    main_window.hf_pack_button.clicked.connect(lambda: start_parquet_pack(main_window))
+    main_window.hf_pack_button.setToolTip("Pack datasets into parquet shards (local only)")
+    main_window.hf_upload_button = QPushButton("Pack && Upload")
     main_window.hf_upload_button.clicked.connect(lambda: start_hf_upload(main_window))
-    main_window.hf_upload_button.setToolTip("Upload the caption dataset to HuggingFace")
-    main_window.hf_stop_upload_button = QPushButton("Stop Upload")
+    main_window.hf_upload_button.setToolTip("Pack datasets and upload to HuggingFace")
+    main_window.hf_stop_upload_button = QPushButton("Stop")
     main_window.hf_stop_upload_button.clicked.connect(lambda: stop_hf_upload(main_window))
     main_window.hf_stop_upload_button.setEnabled(False)
+    upload_btn_row.addWidget(main_window.hf_pack_button)
     upload_btn_row.addWidget(main_window.hf_upload_button)
     upload_btn_row.addWidget(main_window.hf_stop_upload_button)
     upload_btn_row.addStretch()
-    hf_upload_layout.addRow("", _wrap_row(upload_btn_row))
+    hf_upload_main_layout.addLayout(upload_btn_row)
 
     hf_left_panel.addWidget(hf_upload_group)
     hf_left_panel.addStretch(1)
@@ -516,40 +535,106 @@ def browse_hf_model_output(main_window):
         main_window.hf_model_output_edit.setText(directory)
 
 
-def browse_hf_upload_source(main_window):
-    """Browse for caption dataset source folder to upload"""
-    from PyQt5.QtWidgets import QFileDialog
+def add_parent_directory(main_window):
+    """Add a parent directory to the upload list"""
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     default_path = os.path.join(repo_root, "Outputs")
     
-    current_path = main_window.hf_upload_source_edit.text().strip()
-    if current_path and os.path.exists(current_path):
-        start_dir = current_path
-    else:
-        start_dir = default_path
-    
     directory = QFileDialog.getExistingDirectory(
         main_window,
-        "Select caption dataset folder (contains images/ + metadata.jsonl)",
-        start_dir,
+        "Select folder containing captioned datasets (images/ + metadata.jsonl)",
+        default_path,
     )
     if directory:
-        main_window.hf_upload_source_edit.setText(directory)
+        # Check if already in list
+        existing = [main_window.hf_parent_dirs_list.item(i).text() 
+                   for i in range(main_window.hf_parent_dirs_list.count())]
+        if directory not in existing:
+            main_window.hf_parent_dirs_list.addItem(directory)
+
+
+def remove_parent_directory(main_window):
+    """Remove selected directory from the upload list"""
+    current_row = main_window.hf_parent_dirs_list.currentRow()
+    if current_row >= 0:
+        main_window.hf_parent_dirs_list.takeItem(current_row)
+
+
+def browse_hf_upload_source(main_window):
+    """Browse for caption dataset source folder to upload (legacy, kept for compatibility)"""
+    add_parent_directory(main_window)
+
+
+def get_parent_dirs_from_ui(main_window) -> List[str]:
+    """Get list of parent directories from the UI"""
+    return [main_window.hf_parent_dirs_list.item(i).text() 
+            for i in range(main_window.hf_parent_dirs_list.count())]
+
+
+def start_parquet_pack(main_window):
+    """Start parquet packing without upload"""
+    parent_dirs = get_parent_dirs_from_ui(main_window)
+    
+    if not parent_dirs:
+        main_window._show_error("Please add at least one source directory.")
+        return
+    
+    # Get output directory
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    default_out = os.path.join(repo_root, "Outputs", "parquet_packed")
+    
+    out_dir = QFileDialog.getExistingDirectory(
+        main_window,
+        "Select output directory for parquet files",
+        default_out,
+    )
+    if not out_dir:
+        return
+    
+    shard_rows = main_window.hf_shard_rows_spin.value()
+    compression = main_window.hf_compression_combo.currentText()
+    
+    # Reset UI state
+    from App.SynthMaxxer.synthmaxxer_app import APP_TITLE
+    main_window._append_hf_log("")
+    main_window._append_hf_log("=== Parquet Packing started ===")
+    main_window.setWindowTitle(f"{APP_TITLE} - Packing...")
+    main_window.hf_pack_button.setEnabled(False)
+    main_window.hf_upload_button.setEnabled(False)
+    main_window.hf_stop_upload_button.setEnabled(True)
+    main_window.hf_upload_stop_flag = threading.Event()
+    
+    if not hasattr(main_window, 'hf_queue') or main_window.hf_queue is None:
+        main_window.hf_queue = queue.Queue()
+    
+    main_window.hf_upload_thread = threading.Thread(
+        target=parquet_pack_worker,
+        args=(
+            parent_dirs,
+            out_dir,
+            shard_rows,
+            compression,
+            main_window.hf_upload_stop_flag,
+            main_window.hf_queue,
+        ),
+        daemon=True,
+    )
+    main_window.hf_upload_thread.start()
+    main_window.timer.start()
 
 
 def start_hf_upload(main_window):
-    """Start the HuggingFace upload process"""
-    output_folder = main_window.hf_upload_source_edit.text().strip()
+    """Start the HuggingFace upload process (pack + upload)"""
+    parent_dirs = get_parent_dirs_from_ui(main_window)
     repo_id = main_window.hf_upload_repo_edit.text().strip()
     hf_token = main_window.hf_token_edit.text().strip() if hasattr(main_window, 'hf_token_edit') else None
     is_private = main_window.hf_private_repo_check.isChecked()
-    shard_size = main_window.hf_shard_size_spin.value()
-    batch_size = main_window.hf_upload_batch_spin.value()
-    resume = main_window.hf_resume_upload_check.isChecked()
+    shard_rows = main_window.hf_shard_rows_spin.value()
+    compression = main_window.hf_compression_combo.currentText()
 
     # Validate inputs
-    if not output_folder:
-        main_window._show_error("Please specify a source folder containing captioned images.")
+    if not parent_dirs:
+        main_window._show_error("Please add at least one source directory.")
         return
     
     if not repo_id:
@@ -560,37 +645,15 @@ def start_hf_upload(main_window):
         main_window._show_error("Repo ID must be in format 'username/dataset_name'.")
         return
 
-    # Source folder should contain images/ + metadata.jsonl
-    images_dir = os.path.join(output_folder, "images")
-    metadata_path = os.path.join(output_folder, "metadata.jsonl")
-
-    if not os.path.exists(output_folder):
-        main_window._show_error(f"Source folder not found: {output_folder}\nRun captioning first to generate images and metadata.")
-        return
-
-    if not os.path.exists(images_dir):
-        main_window._show_error(f"Images directory not found: {images_dir}\nRun captioning first.")
-        return
-
-    if not os.path.exists(metadata_path):
-        main_window._show_error(f"metadata.jsonl not found: {metadata_path}\nRun captioning first.")
-        return
-
-    # Check for images
-    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
-    local_files = [p for p in Path(images_dir).iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
-    if not local_files:
-        main_window._show_error("No images found in images directory.")
-        return
-
     # Save config
     main_window._save_config()
 
     # Reset UI state
     from App.SynthMaxxer.synthmaxxer_app import APP_TITLE
     main_window._append_hf_log("")
-    main_window._append_hf_log("=== HuggingFace Upload started ===")
-    main_window.setWindowTitle(f"{APP_TITLE} - Uploading...")
+    main_window._append_hf_log("=== HuggingFace Pack & Upload started ===")
+    main_window.setWindowTitle(f"{APP_TITLE} - Packing & Uploading...")
+    main_window.hf_pack_button.setEnabled(False)
     main_window.hf_upload_button.setEnabled(False)
     main_window.hf_stop_upload_button.setEnabled(True)
     main_window.hf_upload_stop_flag = threading.Event()
@@ -601,15 +664,14 @@ def start_hf_upload(main_window):
 
     # Start worker thread
     main_window.hf_upload_thread = threading.Thread(
-        target=hf_upload_worker,
+        target=hf_parquet_upload_worker,
         args=(
-            output_folder,
+            parent_dirs,
             repo_id,
             hf_token,
             is_private,
-            shard_size,
-            batch_size,
-            resume,
+            shard_rows,
+            compression,
             main_window.hf_upload_stop_flag,
             main_window.hf_queue,
         ),
@@ -623,12 +685,467 @@ def stop_hf_upload(main_window):
     """Stop the HuggingFace upload process"""
     if hasattr(main_window, 'hf_upload_stop_flag'):
         main_window.hf_upload_stop_flag.set()
-    main_window._append_hf_log("Stopping upload...")
+    main_window._append_hf_log("Stopping...")
     main_window.hf_stop_upload_button.setEnabled(False)
+    main_window.hf_pack_button.setEnabled(True)
+    main_window.hf_upload_button.setEnabled(True)
 
 
+# ==============================
+# PARQUET PACKING HELPERS
+# ==============================
+
+IGNORE_DIRS = {"venv", ".venv", "__pycache__", ".git", ".idea", ".vscode", "node_modules"}
+DEFAULT_PROMPT = "Describe the image accurately and in detail."
+FRAGMENT_KEYS_HINT = ('"model":', '"api_type":', '"max_tokens":', '"temperature":')
+MAX_WARNINGS_PER_FILE = 25
+
+
+def is_dataset_root(d: str) -> bool:
+    """Check if directory is a valid dataset root (has images/ + metadata.jsonl)"""
+    return (
+        os.path.isdir(d)
+        and os.path.isfile(os.path.join(d, "metadata.jsonl"))
+        and os.path.isdir(os.path.join(d, "images"))
+    )
+
+
+def find_dataset_roots(parents: List[str], q=None) -> List[str]:
+    """Find all dataset roots under the given parent directories"""
+    roots = []
+    for parent in parents:
+        if not os.path.isdir(parent):
+            if q:
+                q.put(("log", f"⚠️  Parent dir does not exist: {parent}"))
+            continue
+
+        if is_dataset_root(parent):
+            roots.append(parent)
+            continue
+
+        for dirpath, dirnames, filenames in os.walk(parent):
+            dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+            if "metadata.jsonl" in filenames and "images" in dirnames:
+                roots.append(dirpath)
+
+    # Deduplicate while preserving order
+    seen = set()
+    uniq = []
+    for r in roots:
+        if r not in seen:
+            uniq.append(r)
+            seen.add(r)
+    return uniq
+
+
+def dataset_id_from_root(root: str) -> str:
+    """Get dataset identifier from root path"""
+    return os.path.basename(os.path.normpath(root))
+
+
+def looks_like_stray_fragment(line: str) -> bool:
+    """Check if line looks like a stray JSON fragment"""
+    s = line.strip()
+    if not s:
+        return True
+    if s.startswith("{") or s.startswith("["):
+        return False
+    hit = sum(1 for k in FRAGMENT_KEYS_HINT if k in s)
+    if hit >= 2:
+        return True
+    return False
+
+
+def parse_json_line_salvage(line: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Parse JSON line with salvage attempt for trailing junk"""
+    try:
+        return json.loads(line), "ok"
+    except json.JSONDecodeError:
+        pass
+
+    try:
+        dec = json.JSONDecoder()
+        obj, _end = dec.raw_decode(line)
+        return obj, "salvaged"
+    except Exception:
+        return None, "fail"
+
+
+def load_meta(meta_path: str, q=None) -> List[Dict[str, Any]]:
+    """Load metadata from JSONL file with error handling"""
+    meta: List[Dict[str, Any]] = []
+    warnings = 0
+
+    with open(meta_path, "r", encoding="utf-8") as f:
+        for line_num, raw in enumerate(f, start=1):
+            line = raw.strip()
+            if not line:
+                continue
+
+            if looks_like_stray_fragment(line):
+                warnings += 1
+                continue
+
+            if not (line.startswith("{") or line.startswith("[")):
+                warnings += 1
+                continue
+
+            obj, mode = parse_json_line_salvage(line)
+
+            if obj is None:
+                warnings += 1
+                continue
+
+            if mode == "salvaged":
+                warnings += 1
+
+            if not isinstance(obj, dict):
+                warnings += 1
+                continue
+
+            if "file_name" not in obj or "text" not in obj:
+                warnings += 1
+                continue
+
+            meta.append(obj)
+
+    if warnings > 0 and q:
+        q.put(("log", f"   ⚠️  {warnings} warnings in {os.path.basename(meta_path)}"))
+    return meta
+
+
+def parquet_pack_worker(parent_dirs, out_dir, shard_rows, compression, stop_flag, q):
+    """Worker function to pack datasets into parquet shards"""
+    try:
+        from datasets import Dataset, Features, Value, Image as HFImage
+    except ImportError:
+        if q:
+            q.put(("error", "datasets library is required. Install with: pip install datasets"))
+        return
+
+    try:
+        if q:
+            q.put(("log", f"📁 Output directory: {out_dir}"))
+            q.put(("log", f"⚙️  Shard rows: {shard_rows}, Compression: {compression}"))
+
+        os.makedirs(out_dir, exist_ok=True)
+
+        # Find all dataset roots
+        if q:
+            q.put(("log", "🔍 Scanning for datasets..."))
+        dataset_roots = find_dataset_roots(parent_dirs, q)
+        
+        if not dataset_roots:
+            if q:
+                q.put(("error", f"No dataset roots found under: {parent_dirs}"))
+            return
+
+        if q:
+            q.put(("log", f"📂 Found {len(dataset_roots)} dataset(s):"))
+            for r in dataset_roots:
+                q.put(("log", f"   - {r}"))
+
+        # Build features: image, text, prompt (always included)
+        features = Features({
+            "image": HFImage(),
+            "text": Value("string"),
+            "prompt": Value("string"),
+        })
+
+        # Load all metadata
+        if q:
+            q.put(("log", "📝 Loading metadata..."))
+        
+        combined_rows: List[Tuple[str, str, str, str, str]] = []
+        # tuple = (dataset_root, dataset_id, file_name, text, prompt_text)
+
+        for root in dataset_roots:
+            if stop_flag and stop_flag.is_set():
+                if q:
+                    q.put(("stopped", "Stopped by user"))
+                return
+                
+            ds_id = dataset_id_from_root(root)
+            meta_path = os.path.join(root, "metadata.jsonl")
+            
+            if q:
+                q.put(("log", f"   Loading {ds_id}..."))
+            
+            meta = load_meta(meta_path, q)
+
+            for r in meta:
+                rel = r["file_name"]
+                txt = r["text"]
+                pm = r.get("prompt_metadata", {}) or {}
+                prompt_text = pm.get("prompt_text", DEFAULT_PROMPT)
+
+                if not isinstance(rel, str) or not isinstance(txt, str):
+                    continue
+                if not isinstance(prompt_text, str):
+                    prompt_text = DEFAULT_PROMPT
+
+                combined_rows.append((root, ds_id, rel, txt, prompt_text))
+
+        if q:
+            q.put(("log", f"📊 Total rows: {len(combined_rows)}"))
+
+        num_shards = math.ceil(len(combined_rows) / shard_rows)
+        if q:
+            q.put(("log", f"📦 Creating {num_shards} shard(s)..."))
+
+        # Build shards
+        written = 0
+        skipped_missing = 0
+
+        for shard_idx in range(num_shards):
+            if stop_flag and stop_flag.is_set():
+                if q:
+                    q.put(("stopped", "Stopped by user"))
+                return
+
+            start = shard_idx * shard_rows
+            end = min((shard_idx + 1) * shard_rows, len(combined_rows))
+
+            image_items = []
+            text_list = []
+            prompt_list = []
+
+            for j in range(start, end):
+                if stop_flag and stop_flag.is_set():
+                    break
+                    
+                root, ds_id, rel, txt, prompt_text = combined_rows[j]
+                images_dir = os.path.join(root, "images")
+                rel_norm = rel.replace("\\", "/")
+                img_path = os.path.join(images_dir, rel)
+
+                if not os.path.exists(img_path):
+                    skipped_missing += 1
+                    continue
+
+                with open(img_path, "rb") as f:
+                    img_bytes = f.read()
+
+                if isinstance(img_bytes, (bytearray, memoryview)):
+                    img_bytes = bytes(img_bytes)
+
+                rel_out = f"{ds_id}/{rel_norm}"
+
+                image_items.append({"bytes": img_bytes, "path": rel_out})
+                text_list.append(txt)
+                prompt_list.append(prompt_text)
+
+            out_path = os.path.join(out_dir, f"train-{shard_idx:05d}-of-{num_shards:05d}.parquet")
+
+            data = {"image": image_items, "text": text_list, "prompt": prompt_list}
+
+            ds = Dataset.from_dict(data)
+            ds = ds.cast(features)
+            
+            compression_arg = None if compression == "none" else compression
+            ds.to_parquet(out_path, compression=compression_arg)
+
+            wrote_rows = len(text_list)
+            written += wrote_rows
+            if q:
+                q.put(("log", f"✅ Shard {shard_idx+1}/{num_shards}: {wrote_rows} rows"))
+
+        if skipped_missing > 0 and q:
+            q.put(("log", f"⚠️  Skipped {skipped_missing} missing images"))
+
+        success_msg = f"✅ Packing complete! {written} rows in {num_shards} shards → {out_dir}"
+        if q:
+            q.put(("log", success_msg))
+            q.put(("success", success_msg))
+
+    except Exception as e:
+        error_msg = f"Packing failed: {str(e)}"
+        if q:
+            q.put(("error", error_msg))
+        import traceback
+        print(f"PARQUET_PACK_WORKER_ERROR: {error_msg}")
+        print(traceback.format_exc())
+
+
+def hf_parquet_upload_worker(parent_dirs, repo_id, token, is_private, shard_rows, compression, stop_flag, q):
+    """Worker function to pack datasets into parquet and upload to HuggingFace"""
+    try:
+        from datasets import Dataset, Features, Value, Image as HFImage
+        from huggingface_hub import create_repo, upload_folder, HfApi
+    except ImportError as e:
+        if q:
+            q.put(("error", f"Required library missing: {e}. Install with: pip install datasets huggingface_hub"))
+        return
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_dir = os.path.join(tmp_dir, "data")
+            os.makedirs(out_dir, exist_ok=True)
+
+            if q:
+                q.put(("log", f"📦 Repo: {repo_id} (private={is_private})"))
+                q.put(("log", f"⚙️  Shard rows: {shard_rows}, Compression: {compression}"))
+
+            # Find all dataset roots
+            if q:
+                q.put(("log", "🔍 Scanning for datasets..."))
+            dataset_roots = find_dataset_roots(parent_dirs, q)
+            
+            if not dataset_roots:
+                if q:
+                    q.put(("error", f"No dataset roots found under: {parent_dirs}"))
+                return
+
+            if q:
+                q.put(("log", f"📂 Found {len(dataset_roots)} dataset(s):"))
+                for r in dataset_roots:
+                    q.put(("log", f"   - {r}"))
+
+            # Build features: image, text, prompt (always included)
+            features = Features({
+                "image": HFImage(),
+                "text": Value("string"),
+                "prompt": Value("string"),
+            })
+
+            # Load all metadata
+            if q:
+                q.put(("log", "📝 Loading metadata..."))
+            
+            combined_rows: List[Tuple[str, str, str, str, str]] = []
+
+            for root in dataset_roots:
+                if stop_flag and stop_flag.is_set():
+                    if q:
+                        q.put(("stopped", "Stopped by user"))
+                    return
+                    
+                ds_id = dataset_id_from_root(root)
+                meta_path = os.path.join(root, "metadata.jsonl")
+                
+                if q:
+                    q.put(("log", f"   Loading {ds_id}..."))
+                
+                meta = load_meta(meta_path, q)
+
+                for r in meta:
+                    rel = r["file_name"]
+                    txt = r["text"]
+                    pm = r.get("prompt_metadata", {}) or {}
+                    prompt_text = pm.get("prompt_text", DEFAULT_PROMPT)
+
+                    if not isinstance(rel, str) or not isinstance(txt, str):
+                        continue
+                    if not isinstance(prompt_text, str):
+                        prompt_text = DEFAULT_PROMPT
+
+                    combined_rows.append((root, ds_id, rel, txt, prompt_text))
+
+            if q:
+                q.put(("log", f"📊 Total rows: {len(combined_rows)}"))
+
+            num_shards = math.ceil(len(combined_rows) / shard_rows)
+            if q:
+                q.put(("log", f"📦 Creating {num_shards} shard(s)..."))
+
+            # Build shards
+            written = 0
+            skipped_missing = 0
+
+            for shard_idx in range(num_shards):
+                if stop_flag and stop_flag.is_set():
+                    if q:
+                        q.put(("stopped", "Stopped by user"))
+                    return
+
+                start = shard_idx * shard_rows
+                end = min((shard_idx + 1) * shard_rows, len(combined_rows))
+
+                image_items = []
+                text_list = []
+                prompt_list = []
+
+                for j in range(start, end):
+                    if stop_flag and stop_flag.is_set():
+                        break
+                        
+                    root, ds_id, rel, txt, prompt_text = combined_rows[j]
+                    images_dir = os.path.join(root, "images")
+                    rel_norm = rel.replace("\\", "/")
+                    img_path = os.path.join(images_dir, rel)
+
+                    if not os.path.exists(img_path):
+                        skipped_missing += 1
+                        continue
+
+                    with open(img_path, "rb") as f:
+                        img_bytes = f.read()
+
+                    if isinstance(img_bytes, (bytearray, memoryview)):
+                        img_bytes = bytes(img_bytes)
+
+                    rel_out = f"{ds_id}/{rel_norm}"
+
+                    image_items.append({"bytes": img_bytes, "path": rel_out})
+                    text_list.append(txt)
+                    prompt_list.append(prompt_text)
+
+                out_path = os.path.join(out_dir, f"train-{shard_idx:05d}-of-{num_shards:05d}.parquet")
+
+                data = {"image": image_items, "text": text_list, "prompt": prompt_list}
+
+                ds = Dataset.from_dict(data)
+                ds = ds.cast(features)
+                
+                compression_arg = None if compression == "none" else compression
+                ds.to_parquet(out_path, compression=compression_arg)
+
+                wrote_rows = len(text_list)
+                written += wrote_rows
+                if q:
+                    q.put(("log", f"✅ Shard {shard_idx+1}/{num_shards}: {wrote_rows} rows"))
+
+            if skipped_missing > 0 and q:
+                q.put(("log", f"⚠️  Skipped {skipped_missing} missing images"))
+
+            if q:
+                q.put(("log", f"📊 Packed {written} rows total"))
+
+            # Create repo
+            if q:
+                q.put(("log", "🔧 Creating repository..."))
+            create_repo(repo_id, repo_type="dataset", private=is_private, exist_ok=True, token=token)
+
+            # Upload
+            if q:
+                q.put(("log", "📤 Uploading to HuggingFace..."))
+
+            upload_folder(
+                repo_id=repo_id,
+                repo_type="dataset",
+                folder_path=tmp_dir,
+                path_in_repo=".",
+                token=token,
+                commit_message=f"Upload parquet dataset ({written} rows, {num_shards} shards)",
+            )
+
+            success_msg = f"✅ Upload complete! https://huggingface.co/datasets/{repo_id}"
+            if q:
+                q.put(("log", success_msg))
+                q.put(("success", success_msg))
+
+    except Exception as e:
+        error_msg = f"Upload failed: {str(e)}"
+        if q:
+            q.put(("error", error_msg))
+        import traceback
+        print(f"HF_PARQUET_UPLOAD_WORKER_ERROR: {error_msg}")
+        print(traceback.format_exc())
+
+
+# Legacy upload worker (kept for compatibility)
 def hf_upload_worker(work_dir, repo_id, token, is_private, shard_size, batch_size, resume, stop_flag, q):
-    """Worker function to upload caption dataset to HuggingFace"""
+    """Legacy worker function to upload caption dataset to HuggingFace (non-parquet)"""
     try:
         from huggingface_hub import create_repo, upload_file, upload_folder, HfApi
     except ImportError:

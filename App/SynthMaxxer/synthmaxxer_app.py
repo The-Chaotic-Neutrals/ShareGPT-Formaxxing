@@ -942,35 +942,29 @@ class MainWindow(QMainWindow):
                 self._toggle_hf_dataset_mode(use_hf)
             if cfg.get("hf_token"):
                 self.hf_token_edit.setText(cfg.get("hf_token", ""))
-            # Load HuggingFace upload settings (optional section)
-            # Load HuggingFace upload settings (now in HuggingFace tab)
-            if hasattr(self, 'hf_upload_source_edit') and cfg.get("hf_upload_source"):
-                self.hf_upload_source_edit.setText(cfg.get("hf_upload_source", ""))
+            # Load HuggingFace upload settings (parquet-based)
+            if hasattr(self, 'hf_parent_dirs_list') and cfg.get("hf_parent_dirs"):
+                self.hf_parent_dirs_list.clear()
+                for d in cfg.get("hf_parent_dirs", []):
+                    if d:
+                        self.hf_parent_dirs_list.addItem(d)
+            # Migrate from old single source folder if no parent dirs
+            elif hasattr(self, 'hf_parent_dirs_list') and cfg.get("hf_upload_source"):
+                self.hf_parent_dirs_list.clear()
+                self.hf_parent_dirs_list.addItem(cfg.get("hf_upload_source", ""))
             if hasattr(self, 'hf_upload_repo_edit') and cfg.get("hf_upload_repo"):
                 self.hf_upload_repo_edit.setText(cfg.get("hf_upload_repo", ""))
-            # Migrate from old mm_hf_repo if exists
             elif hasattr(self, 'hf_upload_repo_edit') and cfg.get("mm_hf_repo"):
                 self.hf_upload_repo_edit.setText(cfg.get("mm_hf_repo", ""))
             if hasattr(self, 'hf_private_repo_check') and "hf_private_repo" in cfg:
                 self.hf_private_repo_check.setChecked(bool(cfg.get("hf_private_repo", True)))
-            # Migrate from old mm_private_repo if exists
             elif hasattr(self, 'hf_private_repo_check') and "mm_private_repo" in cfg:
                 self.hf_private_repo_check.setChecked(bool(cfg.get("mm_private_repo", True)))
-            if hasattr(self, 'hf_shard_size_spin') and "hf_shard_size" in cfg:
-                self.hf_shard_size_spin.setValue(int(cfg.get("hf_shard_size", 1000)))
-            # Migrate from old mm_shard_size if exists
-            elif hasattr(self, 'hf_shard_size_spin') and "mm_shard_size" in cfg:
-                self.hf_shard_size_spin.setValue(int(cfg.get("mm_shard_size", 1000)))
-            if hasattr(self, 'hf_upload_batch_spin') and "hf_upload_batch_size" in cfg:
-                self.hf_upload_batch_spin.setValue(int(cfg.get("hf_upload_batch_size", 2000)))
-            # Migrate from old mm_upload_batch_size if exists
-            elif hasattr(self, 'hf_upload_batch_spin') and "mm_upload_batch_size" in cfg:
-                self.hf_upload_batch_spin.setValue(int(cfg.get("mm_upload_batch_size", 2000)))
-            if hasattr(self, 'hf_resume_upload_check') and "hf_resume_upload" in cfg:
-                self.hf_resume_upload_check.setChecked(bool(cfg.get("hf_resume_upload", True)))
-            # Migrate from old mm_resume_upload if exists
-            elif hasattr(self, 'hf_resume_upload_check') and "mm_resume_upload" in cfg:
-                self.hf_resume_upload_check.setChecked(bool(cfg.get("mm_resume_upload", True)))
+            # Load new parquet settings
+            if hasattr(self, 'hf_shard_rows_spin') and "hf_shard_rows" in cfg:
+                self.hf_shard_rows_spin.setValue(int(cfg.get("hf_shard_rows", 5000)))
+            if hasattr(self, 'hf_compression_combo') and "hf_compression" in cfg:
+                self.hf_compression_combo.setCurrentText(cfg.get("hf_compression", "zstd"))
         
         # Load Civitai config
         if hasattr(self, 'civitai_api_key_edit'):
@@ -1101,14 +1095,12 @@ class MainWindow(QMainWindow):
             "mm_hf_dataset": self.mm_hf_dataset_edit.text().strip() if hasattr(self, 'mm_hf_dataset_edit') else "",
             "mm_use_hf_dataset": self.mm_use_hf_dataset_check.isChecked() if hasattr(self, 'mm_use_hf_dataset_check') else False,
             "hf_token": self.hf_token_edit.text().strip() if hasattr(self, 'hf_token_edit') else "",
-            # HuggingFace Upload settings (optional section)
-            # HuggingFace upload settings (now in HuggingFace tab)
-            "hf_upload_source": self.hf_upload_source_edit.text().strip() if hasattr(self, 'hf_upload_source_edit') else "",
+            # HuggingFace Upload settings (parquet-based)
+            "hf_parent_dirs": [self.hf_parent_dirs_list.item(i).text() for i in range(self.hf_parent_dirs_list.count())] if hasattr(self, 'hf_parent_dirs_list') else [],
             "hf_upload_repo": self.hf_upload_repo_edit.text().strip() if hasattr(self, 'hf_upload_repo_edit') else "",
             "hf_private_repo": self.hf_private_repo_check.isChecked() if hasattr(self, 'hf_private_repo_check') else True,
-            "hf_shard_size": self.hf_shard_size_spin.value() if hasattr(self, 'hf_shard_size_spin') else 1000,
-            "hf_upload_batch_size": self.hf_upload_batch_spin.value() if hasattr(self, 'hf_upload_batch_spin') else 2000,
-            "hf_resume_upload": self.hf_resume_upload_check.isChecked() if hasattr(self, 'hf_resume_upload_check') else True,
+            "hf_shard_rows": self.hf_shard_rows_spin.value() if hasattr(self, 'hf_shard_rows_spin') else 5000,
+            "hf_compression": self.hf_compression_combo.currentText() if hasattr(self, 'hf_compression_combo') else "zstd",
         }
         
         # Save multimodal API key if it exists

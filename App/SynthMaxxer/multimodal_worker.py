@@ -506,17 +506,13 @@ def load_hf_dataset(dataset_name, split=None, token=None, q=None):
                 # Fallback if len() fails for any reason
                 q.put(("log", f"✅ Loaded dataset (size unknown)"))
         
-        # Check for existing captions/text
+        # Check for existing captions/text (informational only)
         sample_text, caption_columns = check_dataset_for_existing_captions(dataset, q)
         if caption_columns:
             if q:
-                q.put(("log", f"⚠️  Dataset already has text/caption columns: {', '.join(caption_columns)}"))
+                q.put(("log", f"ℹ️  Dataset has existing text/caption columns: {', '.join(caption_columns)}"))
                 if sample_text:
-                    q.put(("log", f"   Sample text: {sample_text}..."))
-                q.put(("log", f"   Will generate new captions and add to 'text' column (existing columns preserved)"))
-        else:
-            if q:
-                q.put(("log", f"✓ No existing captions found - will generate new captions"))
+                    q.put(("log", f"   Sample: {sample_text[:100]}..."))
         
         return dataset
     except Exception as e:
@@ -525,17 +521,40 @@ def load_hf_dataset(dataset_name, split=None, token=None, q=None):
         raise
 
 
-def extract_images_from_hf_dataset(dataset, image_column="image", q=None):
-    """Extract images from a HuggingFace dataset and return as list of PIL Images"""
+def extract_images_from_hf_dataset(dataset, image_column="image", q=None, extract_captions=False):
+    """Extract images from a HuggingFace dataset and return as list of PIL Images
+    
+    Args:
+        dataset: HuggingFace dataset
+        image_column: Column name for images
+        q: Queue for logging
+        extract_captions: If True, also extract existing captions from 'text' column
+    
+    Returns:
+        Tuple of (images, image_paths, temp_dir, existing_captions)
+        existing_captions is a list of strings (or None if extract_captions=False)
+    """
     import tempfile
     
     temp_dir = tempfile.mkdtemp(prefix="synthmaxxer_hf_images_")
     
+    # Get dataset size for progress tracking
+    try:
+        dataset_size = len(dataset)
+    except (TypeError, AttributeError):
+        dataset_size = None
+    
     if q:
-        q.put(("log", f"Extracting images from dataset to temporary directory..."))
+        if dataset_size:
+            q.put(("log", f"Extracting {dataset_size} images from dataset to temporary directory..."))
+        else:
+            q.put(("log", f"Extracting images from dataset to temporary directory..."))
+        if extract_captions:
+            q.put(("log", f"   Also extracting existing captions for visual grounding"))
     
     images = []
     image_paths = []
+    existing_captions = [] if extract_captions else None
     
     # Try to get images using dataset's built-in image loading if available
     # This handles relative paths and various formats automatically
@@ -550,7 +569,16 @@ def extract_images_from_hf_dataset(dataset, image_column="image", q=None):
     except Exception:
         pass
     
+    last_progress_log = 0
     for idx, example in enumerate(dataset):
+        # Log progress every 1000 images
+        if q and idx > 0 and idx % 1000 == 0:
+            if dataset_size:
+                pct = (idx / dataset_size) * 100
+                q.put(("log", f"   Extracting... {idx}/{dataset_size} ({pct:.1f}%)"))
+            else:
+                q.put(("log", f"   Extracting... {idx} images"))
+            last_progress_log = idx
         try:
             if image_column not in example:
                 continue
@@ -628,6 +656,19 @@ def extract_images_from_hf_dataset(dataset, image_column="image", q=None):
                 img_copy = img.copy()
                 images.append(img_copy)
                 image_paths.append(image_path)
+                
+                # Extract existing caption if requested
+                if extract_captions:
+                    caption = ""
+                    # Try common caption column names
+                    for col in ['text', 'caption', 'description']:
+                        if col in example:
+                            val = example[col]
+                            if isinstance(val, str) and val.strip():
+                                caption = val.strip()
+                                break
+                    existing_captions.append(caption)
+                
                 # Close the original image if it has a file handle
                 if hasattr(img, 'fp') and img.fp:
                     try:
@@ -649,8 +690,11 @@ def extract_images_from_hf_dataset(dataset, image_column="image", q=None):
         if len(images) == 0:
             q.put(("log", f"⚠️  No images could be extracted - check image column format"))
             q.put(("log", f"   Try checking dataset.features to see available columns"))
+        if extract_captions:
+            captions_with_text = sum(1 for c in existing_captions if c)
+            q.put(("log", f"✓ Extracted {captions_with_text}/{len(existing_captions)} existing captions for grounding"))
     
-    return images, image_paths, temp_dir
+    return images, image_paths, temp_dir, existing_captions
 
 
 def ensure_output_directory(output_folder, q=None):
@@ -766,6 +810,7 @@ def image_captioning_worker(
     hf_dataset=None,
     hf_token=None,
     q=None,
+    use_visual_grounding=False,
 ):
     """Main worker function for image captioning
     
@@ -776,6 +821,7 @@ def image_captioning_worker(
     Args:
         caption_prompts: List of prompt dicts with 'name', 'prompt', 'temp_min', 'temp_max' keys
                         Each prompt has its own temperature range for varied generation
+        use_visual_grounding: If True, prepend existing captions from HF dataset as context
     """
     import random
     from collections import deque
@@ -798,6 +844,7 @@ def image_captioning_worker(
         q.put(("log", f"Caption prompts: {len(caption_prompts)} available"))
     
     temp_dir_to_cleanup = None
+    existing_captions = None  # For visual grounding
     
     try:
         # Handle HuggingFace dataset input
@@ -807,8 +854,12 @@ def image_captioning_worker(
                     q.put(("log", f"Loading HuggingFace dataset: {hf_dataset} (with token)"))
                 else:
                     q.put(("log", f"Loading HuggingFace dataset: {hf_dataset}"))
+                if use_visual_grounding:
+                    q.put(("log", f"Visual grounding: ENABLED (existing captions will be used as context)"))
             dataset = load_hf_dataset(hf_dataset, token=hf_token, q=q)
-            hf_images, image_paths, temp_dir_to_cleanup = extract_images_from_hf_dataset(dataset, q=q)
+            hf_images, image_paths, temp_dir_to_cleanup, existing_captions = extract_images_from_hf_dataset(
+                dataset, q=q, extract_captions=use_visual_grounding
+            )
             if not image_paths:
                 error_msg = "No images found in HuggingFace dataset"
                 if q:
@@ -922,7 +973,7 @@ def image_captioning_worker(
                 # Get prompt (thread-safe)
                 selected_prompt = get_next_prompt()
                 prompt_name = selected_prompt.get("name", "Unknown")
-                caption_prompt_text = selected_prompt.get("prompt", "")
+                caption_prompt_text = selected_prompt.get("prompt", "")  # Original prompt for metadata
                 prompt_temp_min = selected_prompt.get("temp_min", 0.7)
                 prompt_temp_max = selected_prompt.get("temp_max", 1.0)
                 
@@ -932,13 +983,22 @@ def image_captioning_worker(
                 else:
                     temperature = round(random.uniform(prompt_temp_min, prompt_temp_max), 2)
                 
-                # Call the API
+                # Build the actual prompt to send to the API
+                api_prompt = caption_prompt_text
+                
+                # Apply visual grounding if enabled and we have existing captions
+                if use_visual_grounding and existing_captions and original_idx < len(existing_captions):
+                    grounding_text = existing_captions[original_idx]
+                    if grounding_text:
+                        api_prompt = f"Here is an existing description of this image for context:\n\n\"{grounding_text}\"\n\nNow, using the above as reference, {caption_prompt_text}"
+                
+                # Call the API with potentially grounded prompt
                 caption = caption_func(
                     image_path,
                     api_key,
                     endpoint,
                     model,
-                    caption_prompt_text,
+                    api_prompt,  # Use grounded prompt for API
                     max_tokens,
                     temperature,
                     None  # Don't pass queue to avoid log spam from threads

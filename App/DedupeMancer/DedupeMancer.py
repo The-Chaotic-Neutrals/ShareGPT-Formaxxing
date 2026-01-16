@@ -61,7 +61,8 @@ class Deduplication:
 
     # ---------- SHA-256 DEDUP (single pass, byte-based progress, no tell()) ----------
 
-    def perform_sha256_deduplication(self, input_file, output_file, update_status, update_progress):
+    def perform_sha256_deduplication(self, input_file, output_file, update_status, update_progress, randomize=False):
+        import random
         try:
             file_size = os.path.getsize(input_file)
             if file_size == 0:
@@ -72,9 +73,9 @@ class Deduplication:
             self.duplicate_count = 0
 
             bytes_read = 0
+            unique_conversations_list = []
 
-            with open(input_file, 'r', encoding='utf-8') as f_in, \
-                 open(output_file, 'w', encoding='utf-8') as f_out:
+            with open(input_file, 'r', encoding='utf-8') as f_in:
 
                 for i, line in enumerate(f_in):
                     # Track bytes read for progress (avoid tell())
@@ -95,11 +96,21 @@ class Deduplication:
                         continue
 
                     self.unique_conversations.add(conversation_id)
-                    f_out.write(json.dumps(conversation, ensure_ascii=False) + '\n')
+                    unique_conversations_list.append(conversation)
 
                     # Byte-based progress
                     if i % 10 == 0:
                         update_progress(bytes_read, file_size)
+
+            # Randomize if requested
+            if randomize:
+                random.shuffle(unique_conversations_list)
+                update_status("Shuffled output order")
+
+            # Write output
+            with open(output_file, 'w', encoding='utf-8') as f_out:
+                for conversation in unique_conversations_list:
+                    f_out.write(json.dumps(conversation, ensure_ascii=False) + '\n')
 
             # ensure final 100%
             update_progress(file_size, file_size)
@@ -112,7 +123,8 @@ class Deduplication:
 
     # ---------- MINHASH + SIMHASH BUCKETING + SEMANTIC COSINE ----------
 
-    def perform_min_hash_deduplication(self, input_file, output_file, update_status, update_progress):
+    def perform_min_hash_deduplication(self, input_file, output_file, update_status, update_progress, randomize=False):
+        import random
         try:
             # Load conversations
             with open(input_file, 'r', encoding='utf-8') as f_in:
@@ -182,56 +194,65 @@ class Deduplication:
             duplicate_count = 0
             visited = set()
             processed = 0  # number of items we've decided on in phase 2
+            unique_conversations = []  # Collect unique conversations for optional shuffling
 
-            # Stream write unique conversations as we finalize them
-            with open(output_file, 'w', encoding='utf-8') as f_out:
-                # Near-duplicate detection within each SimHash bucket
-                for key, idxs in buckets.items():
-                    if len(idxs) == 1:
-                        # Single-item bucket: if not visited, it's unique
-                        i = idxs[0]
-                        if i not in visited:
-                            visited.add(i)
-                            f_out.write(json.dumps(conversations[i], ensure_ascii=False) + '\n')
+            # Near-duplicate detection within each SimHash bucket
+            for key, idxs in buckets.items():
+                if len(idxs) == 1:
+                    # Single-item bucket: if not visited, it's unique
+                    i = idxs[0]
+                    if i not in visited:
+                        visited.add(i)
+                        unique_conversations.append(conversations[i])
+                    processed += 1
+
+                    if processed % 100 == 0:
+                        # Phase 2 progress: offset by num_items
+                        update_progress(num_items + processed, total_steps)
+                    continue
+
+                for local_pos, i in enumerate(idxs):
+                    if i in visited:
+                        # Already decided as duplicate or unique
                         processed += 1
-
                         if processed % 100 == 0:
-                            # Phase 2 progress: offset by num_items
                             update_progress(num_items + processed, total_steps)
                         continue
 
-                    for local_pos, i in enumerate(idxs):
-                        if i in visited:
-                            # Already decided as duplicate or unique
-                            processed += 1
-                            if processed % 100 == 0:
-                                update_progress(num_items + processed, total_steps)
+                    m_i = minhashes[i]
+                    # MinHash Jaccard candidates within this bucket
+                    candidates = []
+                    for j in idxs[local_pos + 1:]:
+                        if j in visited:
                             continue
+                        if m_i.jaccard(minhashes[j]) >= self.threshold:
+                            candidates.append(j)
 
-                        m_i = minhashes[i]
-                        # MinHash Jaccard candidates within this bucket
-                        candidates = []
-                        for j in idxs[local_pos + 1:]:
-                            if j in visited:
-                                continue
-                            if m_i.jaccard(minhashes[j]) >= self.threshold:
-                                candidates.append(j)
+                    if candidates:
+                        # Semantic cosine filter over MinHash candidates
+                        D, I = index.search(embeddings[i:i+1], len(candidates))
+                        for idx_found, sim in zip(I[0], D[0]):
+                            if idx_found in candidates and sim >= self.semantic_threshold:
+                                visited.add(idx_found)
+                                duplicate_count += 1
 
-                        if candidates:
-                            # Semantic cosine filter over MinHash candidates
-                            D, I = index.search(embeddings[i:i+1], len(candidates))
-                            for idx_found, sim in zip(I[0], D[0]):
-                                if idx_found in candidates and sim >= self.semantic_threshold:
-                                    visited.add(idx_found)
-                                    duplicate_count += 1
+                    # i is now finalized as unique
+                    visited.add(i)
+                    unique_conversations.append(conversations[i])
 
-                        # i is now finalized as unique
-                        visited.add(i)
-                        f_out.write(json.dumps(conversations[i], ensure_ascii=False) + '\n')
+                    processed += 1
+                    if processed % 100 == 0:
+                        update_progress(num_items + processed, total_steps)
 
-                        processed += 1
-                        if processed % 100 == 0:
-                            update_progress(num_items + processed, total_steps)
+            # Randomize if requested
+            if randomize:
+                random.shuffle(unique_conversations)
+                update_status("Shuffled output order")
+
+            # Write output
+            with open(output_file, 'w', encoding='utf-8') as f_out:
+                for conversation in unique_conversations:
+                    f_out.write(json.dumps(conversation, ensure_ascii=False) + '\n')
 
             # Push progress to 100% at the end of phase 2
             update_progress(total_steps, total_steps)

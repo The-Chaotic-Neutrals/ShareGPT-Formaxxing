@@ -34,6 +34,61 @@ except ImportError:
 # Supported image formats
 SUPPORTED_IMAGE_FORMATS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
 
+# Rate limiting configuration
+MAX_RETRIES = 5
+INITIAL_BACKOFF = 2.0  # seconds
+MAX_BACKOFF = 60.0  # seconds
+
+
+def retry_with_backoff(func, *args, max_retries=MAX_RETRIES, initial_backoff=INITIAL_BACKOFF, max_backoff=MAX_BACKOFF, q=None, image_name="", **kwargs):
+    """
+    Retry a function with exponential backoff on rate limit (429) errors.
+    
+    Args:
+        func: Function to call
+        *args: Positional arguments for func
+        max_retries: Maximum number of retries
+        initial_backoff: Initial backoff time in seconds
+        max_backoff: Maximum backoff time in seconds
+        q: Queue for logging
+        image_name: Name of image for logging
+        **kwargs: Keyword arguments for func
+    
+    Returns:
+        Result from func
+    
+    Raises:
+        Last exception if all retries exhausted
+    """
+    last_exception = None
+    backoff = initial_backoff
+    
+    for attempt in range(max_retries + 1):
+        try:
+            return func(*args, **kwargs)
+        except (requests.exceptions.HTTPError, ValueError) as e:
+            last_exception = e
+            error_str = str(e)
+            
+            # Check if it's a rate limit error (429)
+            is_rate_limit = "429" in error_str or "Too Many Requests" in error_str or "rate limit" in error_str.lower()
+            
+            if not is_rate_limit or attempt >= max_retries:
+                raise  # Not a rate limit error or exhausted retries
+            
+            # Calculate backoff with jitter
+            import random
+            jitter = random.uniform(0.5, 1.5)
+            sleep_time = min(backoff * jitter, max_backoff)
+            
+            if q:
+                q.put(("log", f"⏳ Rate limited on {image_name}, retrying in {sleep_time:.1f}s (attempt {attempt + 1}/{max_retries})..."))
+            
+            time.sleep(sleep_time)
+            backoff = min(backoff * 2, max_backoff)  # Exponential backoff
+    
+    raise last_exception
+
 
 def encode_image_to_base64(image_path):
     """Encode an image file to base64 string"""
@@ -521,7 +576,7 @@ def load_hf_dataset(dataset_name, split=None, token=None, q=None):
         raise
 
 
-def extract_images_from_hf_dataset(dataset, image_column="image", q=None, extract_captions=False):
+def extract_images_from_hf_dataset(dataset, image_column="image", q=None, extract_captions=False, output_folder=None):
     """Extract images from a HuggingFace dataset and return as list of PIL Images
     
     Args:
@@ -529,14 +584,24 @@ def extract_images_from_hf_dataset(dataset, image_column="image", q=None, extrac
         image_column: Column name for images
         q: Queue for logging
         extract_captions: If True, also extract existing captions from 'text' column
+        output_folder: If provided, cache images in output_folder/.hf_cache instead of temp dir
     
     Returns:
         Tuple of (images, image_paths, temp_dir, existing_captions)
         existing_captions is a list of strings (or None if extract_captions=False)
+        temp_dir will be None if using persistent cache (output_folder provided)
     """
     import tempfile
     
-    temp_dir = tempfile.mkdtemp(prefix="synthmaxxer_hf_images_")
+    # Use persistent cache in output folder if provided, otherwise use temp dir
+    if output_folder:
+        cache_dir = os.path.join(output_folder, ".hf_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        temp_dir = None  # Signal that we don't need cleanup
+        extract_dir = cache_dir
+    else:
+        temp_dir = tempfile.mkdtemp(prefix="synthmaxxer_hf_images_")
+        extract_dir = temp_dir
     
     # Get dataset size for progress tracking
     try:
@@ -544,17 +609,30 @@ def extract_images_from_hf_dataset(dataset, image_column="image", q=None, extrac
     except (TypeError, AttributeError):
         dataset_size = None
     
+    # Check for existing cached images
+    existing_cached = set()
+    if output_folder and os.path.exists(extract_dir):
+        for f in os.listdir(extract_dir):
+            if f.startswith("image_") and f.endswith(".png"):
+                existing_cached.add(f)
+    
     if q:
+        cache_type = "cache directory" if output_folder else "temporary directory"
         if dataset_size:
-            q.put(("log", f"Extracting {dataset_size} images from dataset to temporary directory..."))
+            if existing_cached:
+                q.put(("log", f"Found {len(existing_cached)} cached images in {cache_type}"))
+                q.put(("log", f"Checking {dataset_size} images from dataset (will skip already cached)..."))
+            else:
+                q.put(("log", f"Extracting {dataset_size} images from dataset to {cache_type}..."))
         else:
-            q.put(("log", f"Extracting images from dataset to temporary directory..."))
+            q.put(("log", f"Extracting images from dataset to {cache_type}..."))
         if extract_captions:
             q.put(("log", f"   Also extracting existing captions for visual grounding"))
     
     images = []
     image_paths = []
     existing_captions = [] if extract_captions else None
+    skipped_cached = 0
     
     # Try to get images using dataset's built-in image loading if available
     # This handles relative paths and various formats automatically
@@ -575,13 +653,44 @@ def extract_images_from_hf_dataset(dataset, image_column="image", q=None, extrac
         if q and idx > 0 and idx % 1000 == 0:
             if dataset_size:
                 pct = (idx / dataset_size) * 100
-                q.put(("log", f"   Extracting... {idx}/{dataset_size} ({pct:.1f}%)"))
+                cached_info = f", {skipped_cached} cached" if skipped_cached else ""
+                q.put(("log", f"   Processing... {idx}/{dataset_size} ({pct:.1f}%{cached_info})"))
             else:
-                q.put(("log", f"   Extracting... {idx} images"))
+                q.put(("log", f"   Processing... {idx} images"))
             last_progress_log = idx
         try:
             if image_column not in example:
                 continue
+            
+            # Check if this image is already cached
+            expected_filename = f"image_{idx:06d}.png"
+            expected_path = os.path.join(extract_dir, expected_filename)
+            
+            if expected_filename in existing_cached and os.path.exists(expected_path):
+                # Image already cached - just load metadata, don't re-extract
+                skipped_cached += 1
+                try:
+                    with Image.open(expected_path) as cached_img:
+                        img_copy = cached_img.copy()
+                        if img_copy.mode != 'RGB':
+                            img_copy = img_copy.convert('RGB')
+                        images.append(img_copy)
+                        image_paths.append(expected_path)
+                        
+                        # Extract existing caption if requested
+                        if extract_captions:
+                            caption = ""
+                            for col in ['text', 'caption', 'description']:
+                                if col in example:
+                                    val = example[col]
+                                    if isinstance(val, str) and val.strip():
+                                        caption = val.strip()
+                                        break
+                            existing_captions.append(caption)
+                    continue
+                except Exception:
+                    # If loading cached image fails, re-extract it
+                    pass
                 
             image = example[image_column]
             img = None
@@ -649,8 +758,8 @@ def extract_images_from_hf_dataset(dataset, image_column="image", q=None, extrac
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
                 
-                # Always save to temp directory for captioning API (ensures valid file path)
-                image_path = os.path.join(temp_dir, f"image_{idx:06d}.png")
+                # Save to extract directory for captioning API (ensures valid file path)
+                image_path = os.path.join(extract_dir, f"image_{idx:06d}.png")
                 img.save(image_path)
                 # Create a copy to avoid keeping file handles open
                 img_copy = img.copy()
@@ -686,7 +795,11 @@ def extract_images_from_hf_dataset(dataset, image_column="image", q=None, extrac
             continue
     
     if q:
-        q.put(("log", f"✓ Extracted {len(images)}/{len(dataset)} images to temporary directory"))
+        cache_type = "cache" if output_folder else "temporary directory"
+        if skipped_cached > 0:
+            q.put(("log", f"✓ Ready: {len(images)} images ({skipped_cached} from cache, {len(images) - skipped_cached} newly extracted)"))
+        else:
+            q.put(("log", f"✓ Extracted {len(images)}/{len(dataset)} images to {cache_type}"))
         if len(images) == 0:
             q.put(("log", f"⚠️  No images could be extracted - check image column format"))
             q.put(("log", f"   Try checking dataset.features to see available columns"))
@@ -858,7 +971,7 @@ def image_captioning_worker(
                     q.put(("log", f"Visual grounding: ENABLED (existing captions will be used as context)"))
             dataset = load_hf_dataset(hf_dataset, token=hf_token, q=q)
             hf_images, image_paths, temp_dir_to_cleanup, existing_captions = extract_images_from_hf_dataset(
-                dataset, q=q, extract_captions=use_visual_grounding
+                dataset, q=q, extract_captions=use_visual_grounding, output_folder=output_folder
             )
             if not image_paths:
                 error_msg = "No images found in HuggingFace dataset"
@@ -992,8 +1105,9 @@ def image_captioning_worker(
                     if grounding_text:
                         api_prompt = f"Here is an existing description of this image for context:\n\n\"{grounding_text}\"\n\nNow, using the above as reference, {caption_prompt_text}"
                 
-                # Call the API with potentially grounded prompt
-                caption = caption_func(
+                # Call the API with potentially grounded prompt, using retry with backoff
+                caption = retry_with_backoff(
+                    caption_func,
                     image_path,
                     api_key,
                     endpoint,
@@ -1001,7 +1115,9 @@ def image_captioning_worker(
                     api_prompt,  # Use grounded prompt for API
                     max_tokens,
                     temperature,
-                    None  # Don't pass queue to avoid log spam from threads
+                    None,  # Don't pass queue to avoid log spam from threads
+                    q=q,
+                    image_name=original_filename
                 )
                 
                 # Load image for saving

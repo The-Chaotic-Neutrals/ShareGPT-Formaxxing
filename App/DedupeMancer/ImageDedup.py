@@ -4,10 +4,13 @@ import json
 import hashlib
 import logging
 import contextlib
+import tempfile
+import shutil
+import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple, Optional
+from typing import Callable, Dict, List, Tuple, Optional, Any
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -89,6 +92,458 @@ class ImageDeduplication:
                         seen.add(full)
                         paths.append(full)
         return paths
+
+    def load_parquet_images(
+        self,
+        parquet_paths: List[str],
+        output_dir: str,
+        update_status: Callable[[str], None] = default_update_status,
+        update_progress: Callable[[int, int], None] = default_update_progress,
+        image_column: str = "image",
+        text_column: str = "text",
+        prompt_column: str = "prompt",
+    ) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
+        """
+        Load images from parquet files and extract them to a directory.
+        
+        Parquet format expected (HuggingFace image dataset style):
+            - image: {"bytes": <image bytes>, "path": <relative path>}
+            - text: caption/description string
+            - prompt: prompt string (optional)
+        
+        Args:
+            parquet_paths: List of parquet file paths to load
+            output_dir: Directory to extract images to
+            image_column: Column name containing image data (default: "image")
+            text_column: Column name containing text/caption (default: "text")
+            prompt_column: Column name containing prompt (default: "prompt")
+        
+        Returns:
+            Tuple of:
+                - List of extracted image paths
+                - Dict mapping image path -> metadata dict (text, prompt, source_parquet, row_idx)
+        """
+        try:
+            import pyarrow.parquet as pq
+        except ImportError:
+            update_status("❌ pyarrow is required. Install with: pip install pyarrow")
+            return [], {}
+        
+        self._ensure_dir(output_dir)
+        
+        image_paths: List[str] = []
+        metadata_map: Dict[str, Dict[str, Any]] = {}
+        total_rows = 0
+        processed_rows = 0
+        
+        # First pass: count total rows
+        update_status(f"Scanning {len(parquet_paths)} parquet file(s)...")
+        for pq_path in parquet_paths:
+            try:
+                pf = pq.ParquetFile(pq_path)
+                total_rows += pf.metadata.num_rows
+            except Exception as e:
+                update_status(f"⚠️ Error reading {os.path.basename(pq_path)}: {e}")
+        
+        if total_rows == 0:
+            update_status("❌ No rows found in parquet files.")
+            return [], {}
+        
+        update_status(f"Extracting {total_rows} images from parquet files...")
+        update_progress(0, total_rows)
+        
+        # Second pass: extract images
+        global_idx = 0
+        for pq_path in parquet_paths:
+            try:
+                pq_name = os.path.basename(pq_path)
+                table = pq.read_table(pq_path)
+                
+                # Get column data
+                if image_column not in table.column_names:
+                    update_status(f"⚠️ No '{image_column}' column in {pq_name}, skipping...")
+                    continue
+                
+                num_rows = table.num_rows
+                
+                for row_idx in range(num_rows):
+                    try:
+                        # Extract image data
+                        img_data = table[image_column][row_idx].as_py()
+                        
+                        if img_data is None:
+                            processed_rows += 1
+                            global_idx += 1
+                            continue
+                        
+                        # Handle different image formats in parquet
+                        img_bytes = None
+                        img_rel_path = None
+                        
+                        if isinstance(img_data, dict):
+                            # Standard HuggingFace format: {"bytes": ..., "path": ...}
+                            img_bytes = img_data.get("bytes")
+                            img_rel_path = img_data.get("path", "")
+                        elif isinstance(img_data, bytes):
+                            # Direct bytes storage
+                            img_bytes = img_data
+                            img_rel_path = ""
+                        elif hasattr(img_data, 'tobytes'):
+                            # PIL Image or similar
+                            img_bytes = img_data.tobytes()
+                            img_rel_path = ""
+                        
+                        if img_bytes is None:
+                            processed_rows += 1
+                            global_idx += 1
+                            continue
+                        
+                        # Determine output filename
+                        if img_rel_path:
+                            # Use path from parquet, but flatten subdirs with underscores
+                            safe_name = img_rel_path.replace("/", "_").replace("\\", "_")
+                        else:
+                            # Generate filename based on index
+                            safe_name = f"parquet_{global_idx:08d}.png"
+                        
+                        # Ensure unique filename
+                        out_path = os.path.join(output_dir, safe_name)
+                        if os.path.exists(out_path):
+                            stem, ext = os.path.splitext(safe_name)
+                            k = 1
+                            while os.path.exists(out_path):
+                                out_path = os.path.join(output_dir, f"{stem}_{k}{ext}")
+                                k += 1
+                        
+                        # Detect image format and save
+                        try:
+                            img = Image.open(io.BytesIO(img_bytes))
+                            img = ImageOps.exif_transpose(img)
+                            
+                            # Ensure we have a proper extension
+                            if not out_path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')):
+                                fmt = img.format or "PNG"
+                                ext = f".{fmt.lower()}"
+                                if ext == ".jpeg":
+                                    ext = ".jpg"
+                                out_path = out_path + ext
+                            
+                            # Save image
+                            img.save(out_path)
+                            img.close()
+                        except Exception:
+                            # Fallback: write raw bytes
+                            with open(out_path, 'wb') as f:
+                                f.write(img_bytes)
+                        
+                        # Collect metadata
+                        text_val = ""
+                        if text_column in table.column_names:
+                            try:
+                                text_val = table[text_column][row_idx].as_py() or ""
+                            except Exception:
+                                pass
+                        
+                        prompt_val = ""
+                        if prompt_column in table.column_names:
+                            try:
+                                prompt_val = table[prompt_column][row_idx].as_py() or ""
+                            except Exception:
+                                pass
+                        
+                        image_paths.append(out_path)
+                        metadata_map[out_path] = {
+                            "text": text_val,
+                            "prompt": prompt_val,
+                            "source_parquet": pq_name,
+                            "row_idx": row_idx,
+                            "original_path": img_rel_path,
+                        }
+                        
+                    except Exception as e:
+                        logging.error(f"Error extracting row {row_idx} from {pq_name}: {e}")
+                    
+                    processed_rows += 1
+                    global_idx += 1
+                    
+                    if processed_rows % 100 == 0:
+                        update_progress(processed_rows, total_rows)
+                
+            except Exception as e:
+                logging.error(f"Error processing parquet {pq_path}: {e}", exc_info=True)
+                update_status(f"⚠️ Error processing {os.path.basename(pq_path)}: {e}")
+        
+        update_progress(total_rows, total_rows)
+        update_status(f"✅ Extracted {len(image_paths)} images from {len(parquet_paths)} parquet file(s)")
+        
+        return image_paths, metadata_map
+
+    def write_deduplicated_parquet(
+        self,
+        kept_paths: List[str],
+        metadata_map: Dict[str, Dict[str, Any]],
+        output_path: str,
+        update_status: Callable[[str], None] = default_update_status,
+        update_progress: Callable[[int, int], None] = default_update_progress,
+        compression: str = "zstd",
+        randomize: bool = False,
+    ) -> int:
+        """
+        Write deduplicated images back to a parquet file in HuggingFace format.
+        
+        Args:
+            kept_paths: List of image paths to keep (after deduplication)
+            metadata_map: Dict mapping image path -> metadata dict
+            output_path: Output parquet file path
+            compression: Parquet compression (zstd, snappy, gzip, none)
+            randomize: If True, shuffle the output order
+        
+        Returns:
+            Number of rows written
+        """
+        import random
+        
+        try:
+            from datasets import Dataset, Features, Value, Image as HFImage
+        except ImportError:
+            update_status("❌ datasets library required. Install with: pip install datasets")
+            return 0
+        
+        # Randomize order if requested
+        if randomize:
+            kept_paths = kept_paths.copy()
+            random.shuffle(kept_paths)
+            update_status("Shuffled output order")
+        
+        update_status(f"Writing {len(kept_paths)} images to parquet...")
+        update_progress(0, len(kept_paths))
+        
+        image_items = []
+        text_list = []
+        prompt_list = []
+        
+        for i, img_path in enumerate(kept_paths):
+            try:
+                with open(img_path, 'rb') as f:
+                    img_bytes = f.read()
+                
+                # Get original path from metadata if available
+                meta = metadata_map.get(img_path, {})
+                rel_path = meta.get("original_path") or os.path.basename(img_path)
+                
+                image_items.append({"bytes": img_bytes, "path": rel_path})
+                text_list.append(meta.get("text", ""))
+                prompt_list.append(meta.get("prompt", ""))
+                
+            except Exception as e:
+                logging.error(f"Error reading {img_path}: {e}")
+            
+            if i % 100 == 0:
+                update_progress(i, len(kept_paths))
+        
+        features = Features({
+            "image": HFImage(),
+            "text": Value("string"),
+            "prompt": Value("string"),
+        })
+        
+        data = {"image": image_items, "text": text_list, "prompt": prompt_list}
+        ds = Dataset.from_dict(data)
+        ds = ds.cast(features)
+        
+        compression_arg = None if compression == "none" else compression
+        ds.to_parquet(output_path, compression=compression_arg)
+        
+        update_progress(len(kept_paths), len(kept_paths))
+        update_status(f"✅ Wrote {len(kept_paths)} images to {os.path.basename(output_path)}")
+        
+        return len(kept_paths)
+
+    def load_hf_dataset_images(
+        self,
+        dataset_name: str,
+        output_dir: str,
+        update_status: Callable[[str], None] = default_update_status,
+        update_progress: Callable[[int, int], None] = default_update_progress,
+        image_column: str = "image",
+        text_column: str = "text",
+        split: Optional[str] = None,
+        token: Optional[str] = None,
+        max_samples: Optional[int] = None,
+    ) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
+        """
+        Load images from a HuggingFace dataset and extract them to a directory.
+        
+        Supports various dataset formats:
+            - Image datasets with 'image' column (PIL images)
+            - Text-image pairs with 'image' and 'text'/'caption' columns
+            - Multimodal datasets
+        
+        Args:
+            dataset_name: HuggingFace dataset name (e.g., 'org/dataset_name')
+            output_dir: Directory to extract images to
+            image_column: Column name containing images (default: 'image')
+            text_column: Column name containing text/captions (default: 'text')
+            split: Dataset split to use (default: first available split)
+            token: HuggingFace token for private datasets
+            max_samples: Maximum number of samples to load (None = all)
+        
+        Returns:
+            Tuple of:
+                - List of extracted image paths
+                - Dict mapping image path -> metadata dict (text, source, row_idx)
+        """
+        try:
+            from datasets import load_dataset, DatasetDict, IterableDataset
+        except ImportError:
+            update_status("❌ datasets library required. Install with: pip install datasets")
+            return [], {}
+        
+        self._ensure_dir(output_dir)
+        
+        image_paths: List[str] = []
+        metadata_map: Dict[str, Dict[str, Any]] = {}
+        
+        # Load dataset
+        update_status(f"🤗 Loading HuggingFace dataset: {dataset_name}...")
+        
+        try:
+            token_param = token if token else None
+            
+            if split:
+                dataset = load_dataset(dataset_name, split=split, token=token_param)
+                update_status(f"Using split: {split}")
+            else:
+                dataset_dict = load_dataset(dataset_name, token=token_param)
+                if isinstance(dataset_dict, DatasetDict):
+                    # Use first available split
+                    split_name = list(dataset_dict.keys())[0]
+                    dataset = dataset_dict[split_name]
+                    update_status(f"Using split: {split_name}")
+                else:
+                    dataset = dataset_dict
+        except Exception as e:
+            update_status(f"❌ Failed to load dataset: {e}")
+            return [], {}
+        
+        # Get dataset size
+        try:
+            if isinstance(dataset, IterableDataset):
+                total_samples = max_samples if max_samples else 100000  # Estimate for iterable
+                update_status(f"Dataset is iterable (streaming mode)")
+            else:
+                total_samples = len(dataset)
+                if max_samples:
+                    total_samples = min(total_samples, max_samples)
+                update_status(f"Dataset has {len(dataset)} samples" + (f" (loading {total_samples})" if max_samples else ""))
+        except (TypeError, AttributeError):
+            total_samples = max_samples if max_samples else 10000
+        
+        # Check available columns
+        try:
+            if hasattr(dataset, 'column_names'):
+                columns = dataset.column_names
+                update_status(f"Available columns: {', '.join(columns)}")
+                
+                # Auto-detect image column
+                if image_column not in columns:
+                    for col in ['image', 'img', 'picture', 'photo']:
+                        if col in columns:
+                            image_column = col
+                            update_status(f"Using image column: {image_column}")
+                            break
+                
+                # Auto-detect text column
+                if text_column not in columns:
+                    for col in ['text', 'caption', 'description', 'prompt', 'label']:
+                        if col in columns:
+                            text_column = col
+                            update_status(f"Using text column: {text_column}")
+                            break
+        except Exception:
+            pass
+        
+        update_status(f"Extracting images to {output_dir}...")
+        update_progress(0, total_samples)
+        
+        # Extract images
+        extracted = 0
+        for idx, sample in enumerate(dataset):
+            if max_samples and idx >= max_samples:
+                break
+            
+            try:
+                # Get image
+                img_data = sample.get(image_column)
+                if img_data is None:
+                    continue
+                
+                # Handle different image formats
+                img = None
+                if hasattr(img_data, 'save'):
+                    # PIL Image
+                    img = img_data
+                elif isinstance(img_data, dict) and 'bytes' in img_data:
+                    # HuggingFace Image format with bytes
+                    img = Image.open(io.BytesIO(img_data['bytes']))
+                elif isinstance(img_data, bytes):
+                    img = Image.open(io.BytesIO(img_data))
+                elif isinstance(img_data, str) and os.path.exists(img_data):
+                    # File path
+                    img = Image.open(img_data)
+                
+                if img is None:
+                    continue
+                
+                # Determine output filename
+                out_name = f"hf_{idx:08d}.png"
+                out_path = os.path.join(output_dir, out_name)
+                
+                # Handle collisions
+                if os.path.exists(out_path):
+                    k = 1
+                    while os.path.exists(out_path):
+                        out_path = os.path.join(output_dir, f"hf_{idx:08d}_{k}.png")
+                        k += 1
+                
+                # Save image
+                img = ImageOps.exif_transpose(img)
+                img.save(out_path)
+                if hasattr(img, 'close'):
+                    img.close()
+                
+                # Get text/caption
+                text_val = ""
+                if text_column:
+                    text_val = sample.get(text_column, "") or ""
+                    if not isinstance(text_val, str):
+                        text_val = str(text_val)
+                
+                # Store additional metadata columns
+                extra_meta = {}
+                for key, val in sample.items():
+                    if key not in [image_column, text_column] and isinstance(val, (str, int, float, bool)):
+                        extra_meta[key] = val
+                
+                image_paths.append(out_path)
+                metadata_map[out_path] = {
+                    "text": text_val,
+                    "source_dataset": dataset_name,
+                    "row_idx": idx,
+                    **extra_meta,
+                }
+                extracted += 1
+                
+            except Exception as e:
+                logging.error(f"Error extracting sample {idx}: {e}")
+            
+            if idx % 100 == 0:
+                update_progress(idx, total_samples)
+        
+        update_progress(total_samples, total_samples)
+        update_status(f"✅ Extracted {extracted} images from HuggingFace dataset")
+        
+        return image_paths, metadata_map
 
     @staticmethod
     def _safe_stat_size(path: str) -> int:
@@ -221,11 +676,13 @@ class ImageDeduplication:
         output_dir: str,
         update_status: Callable[[str], None] = default_update_status,
         update_progress: Callable[[int, int], None] = default_update_progress,
+        randomize: bool = False,
     ):
         """
         Copy unique images (non-duplicates + best from each duplicate group) to output_dir.
         """
         import shutil
+        import random
         self._ensure_dir(output_dir)
 
         # Build set of all duplicate paths (excluding the "keep" from each group)
@@ -241,6 +698,11 @@ class ImageDeduplication:
         # Unique images = all images that are NOT duplicates
         # This includes: images not in any group + the "keep" image from each group
         unique_paths = [p for p in all_paths if p not in duplicates_set]
+        
+        # Randomize order if requested
+        if randomize:
+            random.shuffle(unique_paths)
+            update_status("Shuffled output order")
 
         total = len(unique_paths)
         dup_count = len(duplicates_set)

@@ -9,8 +9,8 @@ from App.SynthMaxxer.config import ACTIVE_CONFIG as config
 
 # Get the directory of the current script
 SCRIPT_DIR = pathlib.Path(__file__).parent.absolute()
-REPO_ROOT = SCRIPT_DIR.parent.absolute()
-OUTPUTS_DIR = REPO_ROOT / "outputs"
+REPO_ROOT = SCRIPT_DIR.parent.parent.absolute()
+OUTPUTS_DIR = REPO_ROOT / "Outputs"
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")

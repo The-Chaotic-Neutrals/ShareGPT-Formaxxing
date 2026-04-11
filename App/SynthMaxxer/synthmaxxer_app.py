@@ -696,7 +696,7 @@ class MainWindow(QMainWindow):
                 self.api_key_edit.setText(api_key)
                 
                 self.endpoint_edit.setText(cfg.get("endpoint", ""))
-                output_dir = cfg.get("output_dir", "outputs")
+                output_dir = cfg.get("output_dir", "Outputs")
                 self.output_dir_edit.setText(output_dir)  # type: ignore
                 model_name = cfg.get("model", "")
                 if model_name:
@@ -729,7 +729,7 @@ class MainWindow(QMainWindow):
                 self._append_log(f"Error loading config: {e}")
         else:
             # Set defaults
-            self.output_dir_edit.setText("outputs")  # type: ignore
+            self.output_dir_edit.setText("Outputs")  # type: ignore
             self.user_start_tag_edit.setText("<human_turn>")
             self.user_end_tag_edit.setText("</human_turn>")
             self.assistant_start_tag_edit.setText("<claude_turn>")
@@ -800,8 +800,8 @@ class MainWindow(QMainWindow):
                     self.proc_output_edit.setText(saved_output)  # type: ignore
                 else:
                     # Set default to outputs folder
-                    repo_root = os.path.dirname(os.path.dirname(__file__))
-                    outputs_dir = os.path.join(repo_root, "outputs")
+                    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                    outputs_dir = os.path.join(repo_root, "Outputs")
                     default_output = os.path.join(outputs_dir, "processed_output.jsonl")
                     self.proc_output_edit.setText(default_output)  # type: ignore
             if proc_cfg.get("system_prompt"):
@@ -832,7 +832,7 @@ class MainWindow(QMainWindow):
                 if "App\\outputs" in saved_output or "App/outputs" in saved_output:
                     # Replace with correct repo root outputs
                     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-                    outputs_dir = os.path.join(repo_root, "outputs")
+                    outputs_dir = os.path.join(repo_root, "Outputs")
                     filename = os.path.basename(saved_output)
                     saved_output = os.path.join(outputs_dir, filename)
                 self.mm_output_edit.setText(saved_output)  # type: ignore
@@ -983,13 +983,13 @@ class MainWindow(QMainWindow):
                 # Fix old paths
                 if "App\\outputs" in saved_output or "App/outputs" in saved_output:
                     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-                    outputs_dir = os.path.join(repo_root, "Outputs", "images")
+                    outputs_dir = os.path.join(repo_root, "Outputs")
                     saved_output = outputs_dir
                 self.civitai_output_edit.setText(saved_output)
             else:
                 # Set default
                 repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-                default_output = os.path.join(repo_root, "Outputs", "images")
+                default_output = os.path.join(repo_root, "Outputs")
                 self.civitai_output_edit.setText(default_output)
             
             if "civitai_max_images" in cfg:

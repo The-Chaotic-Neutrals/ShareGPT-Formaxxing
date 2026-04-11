@@ -142,8 +142,8 @@ def filter_dataset(
 
     # Default to outputs folder in repo root
     script_dir = Path(__file__).parent.absolute()
-    repo_root = script_dir.parent.absolute()
-    output_folder = repo_root / "outputs" / "deslopped"
+    repo_root = script_dir.parent.parent.absolute()
+    output_folder = repo_root / "Outputs"
     output_folder.mkdir(parents=True, exist_ok=True)
 
     dataset_name = Path(dataset_file).stem

@@ -106,7 +106,7 @@ class MergeKitGUI(QMainWindow):
         
         # Get repo root for output path
         repo_root = Path(__file__).parent.parent.parent
-        self.default_output_dir = repo_root / "Outputs" / "models"
+        self.default_output_dir = repo_root / "Outputs"
         
         self.setWindowTitle("Chaotic Neutral's MergeKit GUI")
         self.setGeometry(100, 100, 900, 700)

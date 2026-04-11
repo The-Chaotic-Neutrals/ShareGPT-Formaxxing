@@ -1339,7 +1339,7 @@ class BehaviorMancerApp(QMainWindow):
         """Load configuration from file."""
         if not os.path.exists(CONFIG_FILE):
             # Set default output path
-            default_output = str(Path(__file__).parent.parent.parent / "outputs" / "behavior_manced_models")
+            default_output = str(Path(__file__).parent.parent.parent / "Outputs")
             self.output_path_edit.setText(default_output)
             return
         

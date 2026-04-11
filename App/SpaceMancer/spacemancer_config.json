@@ -1,0 +1,18 @@
+{
+  "source_mode": "hf",
+  "local_path": "",
+  "dataset_id": "ChaoticNeutrals/MSR-7.7k-smoll_sharegpt",
+  "config_name": "",
+  "split": "train",
+  "output_name": "",
+  "write_audit": true,
+  "dry_run": true,
+  "preview_limit": 20,
+  "model_profile": "spell_conservative",
+  "enable_llm_refine": true,
+  "llm_model_id": "Qwen/Qwen3.5-0.8B",
+  "role_human": true,
+  "role_gpt": true,
+  "role_system": true,
+  "has_saved_hf_token": false
+}

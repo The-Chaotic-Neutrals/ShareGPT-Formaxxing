@@ -7,17 +7,11 @@ class LineMancerCore:
     def __init__(self):
         # Base directory of this script
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        # Repo root (parent of script directory)
-        self.repo_root = os.path.dirname(self.base_dir)
-        # Output folders in repo outputs directory
-        outputs_dir = os.path.join(self.repo_root, "outputs")
-        self.split_dir = os.path.join(outputs_dir, "linemancer", "split")
-        self.merge_dir = os.path.join(outputs_dir, "linemancer", "merge")
-        self.shuffle_dir = os.path.join(outputs_dir, "linemancer", "shuffled")
-
-        # Create them if missing
-        for d in [self.split_dir, self.merge_dir, self.shuffle_dir]:
-            os.makedirs(d, exist_ok=True)
+        # Repo root (parent of App directory)
+        self.repo_root = os.path.dirname(os.path.dirname(self.base_dir))
+        # Unified output directory
+        self.outputs_dir = os.path.join(self.repo_root, "Outputs")
+        os.makedirs(self.outputs_dir, exist_ok=True)
 
     def split_jsonl(self, input_path, lines_per_file):
         if not os.path.isfile(input_path):
@@ -40,17 +34,17 @@ class LineMancerCore:
                 except json.JSONDecodeError:
                     print(f"[Warning] Skipping invalid JSON line {i}")
                 if len(buffer) >= lines_per_file:
-                    self._write_split_file(self.split_dir, prefix, index, buffer)
+                    self._write_split_file(self.outputs_dir, prefix, index, buffer)
                     index += 1
                     buffer = []
             if buffer:
-                self._write_split_file(self.split_dir, prefix, index, buffer)
+                self._write_split_file(self.outputs_dir, prefix, index, buffer)
 
-        print(f"[LineMancer] Split into {index} files with prefix '{prefix}' in '{self.split_dir}'")
+        print(f"[LineMancer] Split into {index} files with prefix '{prefix}' in '{self.outputs_dir}'")
         return index
 
     def _write_split_file(self, directory, prefix, index, buffer):
-        out_path = os.path.join(directory, f"{prefix}_{index}.jsonl")
+        out_path = os.path.join(directory, f"{prefix}_split_{index}.jsonl")
         with open(out_path, 'w', encoding='utf-8') as outfile:
             outfile.write("\n".join(buffer) + "\n")
         print(f"[LineMancer] Wrote {len(buffer)} lines to {out_path}")
@@ -81,7 +75,7 @@ class LineMancerCore:
             # Sort files by extracted index if possible, else lex order
             def extract_index(filepath):
                 fname = os.path.basename(filepath)
-                m = re.search(r"_(\d+)\.jsonl$", fname)
+                m = re.search(r"_split_(\d+)\.jsonl$", fname)
                 return int(m.group(1)) if m else 0
             files.sort(key=extract_index)
             input_paths = files
@@ -89,23 +83,23 @@ class LineMancerCore:
             if prefix is None and len(files) > 0:
                 prefix = os.path.splitext(os.path.basename(files[0]))[0].rsplit('_', 1)[0]
         else:
-            input_dir = input_dir or self.split_dir
+            input_dir = input_dir or self.outputs_dir
 
             if prefix is None and output_filename:
                 prefix = os.path.splitext(output_filename)[0]
 
             if prefix:
-                pattern = re.compile(re.escape(prefix) + r"_\d+\.jsonl$")
+                pattern = re.compile(re.escape(prefix) + r"_split_\d+\.jsonl$")
                 files = [f for f in os.listdir(input_dir) if pattern.match(f)]
                 if not files:
-                    raise FileNotFoundError(f"No files with prefix '{prefix}' found in {input_dir}")
+                    raise FileNotFoundError(f"No split files with prefix '{prefix}' found in {input_dir}")
             else:
                 files = [f for f in os.listdir(input_dir) if f.endswith(".jsonl")]
                 if not files:
                     raise FileNotFoundError(f"No .jsonl files found in {input_dir}")
 
             def extract_index(filename):
-                m = re.search(r"_(\d+)\.jsonl$", filename)
+                m = re.search(r"_split_(\d+)\.jsonl$", filename)
                 return int(m.group(1)) if m else 0
 
             files.sort(key=extract_index)
@@ -115,7 +109,7 @@ class LineMancerCore:
             output_filename = f"{prefix}_merged.jsonl" if prefix else "merged.jsonl"
         if not output_filename.endswith(".jsonl"):
             output_filename += ".jsonl"
-        output_path = os.path.join(self.merge_dir, output_filename)
+        output_path = os.path.join(self.outputs_dir, output_filename)
 
         total_lines = 0
         with open(output_path, 'w', encoding='utf-8') as outfile:
@@ -143,7 +137,7 @@ class LineMancerCore:
             raise FileNotFoundError(f"Input file not found: {input_path}")
 
         prefix = os.path.splitext(os.path.basename(input_path))[0]
-        output_path = os.path.join(self.shuffle_dir, f"{prefix}_shuffled.jsonl")
+        output_path = os.path.join(self.outputs_dir, f"{prefix}_shuffled.jsonl")
 
         with open(input_path, 'r', encoding='utf-8') as infile:
             lines = infile.readlines()

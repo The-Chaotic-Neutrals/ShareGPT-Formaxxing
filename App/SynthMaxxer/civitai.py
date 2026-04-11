@@ -369,7 +369,7 @@ def build_civitai_tab(main_window):
     
     # Get repo root for default output directory
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    default_civitai_output = os.path.join(repo_root, "Outputs", "images")
+    default_civitai_output = os.path.join(repo_root, "Outputs")
     
     civitai_output_row = QHBoxLayout()
     main_window.civitai_output_edit = QLineEdit()
@@ -493,7 +493,7 @@ def browse_civitai_output(main_window):
     """Browse for Civitai output directory"""
     from PyQt5.QtWidgets import QFileDialog
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    default_path = os.path.join(repo_root, "Outputs", "images")
+    default_path = os.path.join(repo_root, "Outputs")
     if not os.path.exists(default_path):
         os.makedirs(default_path, exist_ok=True)
     
@@ -549,7 +549,7 @@ def start_civitai_download(main_window):
     if not output_dir:
         # Use default if empty
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        output_dir = os.path.join(repo_root, "Outputs", "images")
+        output_dir = os.path.join(repo_root, "Outputs")
         main_window.civitai_output_edit.setText(output_dir)
     
     # Ensure output directory exists

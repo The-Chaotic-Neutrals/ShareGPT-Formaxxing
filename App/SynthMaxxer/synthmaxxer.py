@@ -126,12 +126,12 @@ def _build_files_section(main_window, parent_layout):
     files_layout.addRow(QLabel("Input JSONL:"), _wrap_row(input_row))
 
     # Output directory/file
-    repo_root = os.path.dirname(os.path.dirname(__file__))
-    outputs_dir = os.path.join(repo_root, "outputs")
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    outputs_dir = os.path.join(repo_root, "Outputs")
     
     output_row, _ = create_file_browse_row(
         line_edit_name="output_dir_edit",
-        placeholder_text="outputs",
+        placeholder_text="Outputs",
         default_text=outputs_dir,
         on_browse_clicked=lambda: _browse_output(main_window)
     )
@@ -551,8 +551,8 @@ def _start_processing(main_window):
 
     # Auto-generate output filename if not provided or is directory
     if not output_file or os.path.isdir(output_file):
-        repo_root = os.path.dirname(os.path.dirname(__file__))
-        outputs_dir = output_file if output_file and os.path.isdir(output_file) else os.path.join(repo_root, "outputs")
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        outputs_dir = output_file if output_file and os.path.isdir(output_file) else os.path.join(repo_root, "Outputs")
         os.makedirs(outputs_dir, exist_ok=True)
         
         if input_file:

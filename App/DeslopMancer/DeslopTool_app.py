@@ -688,8 +688,8 @@ class DeslopToolApp(QWidget):
                 return
 
             script_dir = Path(__file__).parent.absolute()
-            repo_root = script_dir.parent.absolute()
-            output_dir = repo_root / "outputs" / "deslopped"
+            repo_root = script_dir.parent.parent.absolute()
+            output_dir = repo_root / "Outputs"
             output_dir.mkdir(parents=True, exist_ok=True)
             output_jsonl_filepath = output_dir / (Path(dataset_file).stem + "_deslopped.jsonl")
 

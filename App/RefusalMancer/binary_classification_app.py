@@ -2,25 +2,45 @@
 RefusalMancer - Binary classification tool for filtering refusals from conversation datasets.
 """
 
+import os
+
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QFileDialog, QRadioButton, QButtonGroup, QProgressBar, QGroupBox, QListWidget,
+    QComboBox, QSlider,
     QListWidgetItem, QSizePolicy, QAbstractItemView
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QDropEvent
 
-from App.RefusalMancer.binary_classification import (
-    initialize_models,
-    filter_conversations,
-    set_filter_mode,
-    FILTER_MODE_RP,
-    FILTER_MODE_NORMAL
-)
 from App.Other.BG import GalaxyBackgroundWidget
 
 
 APP_TITLE = "RefusalMancer"
+FILTER_MODE_RP = "rp"
+FILTER_MODE_NORMAL = "normal"
+FILTER_MODE_GARAK = "garak"
+
+BACKEND_UI_INFO = {
+    FILTER_MODE_RP: {
+        "max_tokens": 512,
+        "default_split_tokens": 512,
+        "name": "RP Classifier",
+        "strategy": "Sentence-first",
+    },
+    FILTER_MODE_NORMAL: {
+        "max_tokens": 512,
+        "default_split_tokens": 512,
+        "name": "Instruct Classifier",
+        "strategy": "Sentence-first",
+    },
+    FILTER_MODE_GARAK: {
+        "max_tokens": 8192,
+        "default_split_tokens": 8192,
+        "name": "Garak Classifier",
+        "strategy": "Entry-level + sentence fallback",
+    },
+}
 
 
 class FileListWidget(QListWidget):
@@ -78,30 +98,85 @@ class FilterThread(QThread):
     status_update = pyqtSignal(str)
     counts_update = pyqtSignal(int, int)
     progress_update = pyqtSignal(int)
-    finished_signal = pyqtSignal()
+    finished_signal = pyqtSignal(bool)
 
-    def __init__(self, input_files, threshold, batch_size):
+    def __init__(self, input_files, threshold, batch_size, conversation_batch_size, precision_mode, split_token_limit, mode):
         super().__init__()
         self.input_files = input_files
         self.threshold = threshold
         self.batch_size = batch_size
+        self.conversation_batch_size = conversation_batch_size
+        self.precision_mode = precision_mode
+        self.split_token_limit = split_token_limit
+        self.mode = mode
+        self._stop_requested = False
+
+    def request_stop(self):
+        self._stop_requested = True
+
+    def should_stop(self):
+        return self._stop_requested
 
     def run(self):
-        from App.RefusalMancer.binary_classification import filter_conversations as fc
+        self.status_update.emit("Preparing classifier runtime...")
 
-        def status_callback(msg):
-            if "%" in msg:
-                try:
-                    percent = int(float(msg.split("(")[-1].split("%")[0]))
-                    self.progress_update.emit(percent)
-                except ValueError:
-                    pass
-            self.status_update.emit(msg)
+        from App.RefusalMancer.binary_classification import (
+            filter_conversations as fc,
+            initialize_models as init_models,
+            set_filter_mode as sfm,
+        )
 
-        def counts_callback(pos, neg):
-            self.counts_update.emit(pos, neg)
+        state = {
+            "total_refusals": 0,
+            "total_compliance": 0,
+        }
+        had_error = False
 
-        for input_file in self.input_files:
+        sfm(self.mode)
+        self.status_update.emit("Loading selected classifier model...")
+        init_models(status_update_callback=self.status_update.emit)
+        self.status_update.emit("Counts represent entries (Refusals/Compliance), not GPU microbatch size.")
+
+        total_files = max(1, len(self.input_files))
+
+        for idx, input_file in enumerate(self.input_files):
+            if self.should_stop():
+                self.status_update.emit("Streaming cancelled by user.")
+                had_error = True
+                break
+
+            per_file = {"refusals": 0, "compliance": 0}
+            file_name = os.path.basename(input_file)
+            self.status_update.emit(f"Processing file {idx + 1}/{total_files}: {file_name}")
+
+            def status_callback(msg, file_idx=idx):
+                nonlocal had_error
+                if msg.startswith("Streaming error"):
+                    had_error = True
+                if msg.startswith("Streaming cancelled"):
+                    had_error = True
+
+                if msg.startswith("Filtering complete"):
+                    overall = int(round(((file_idx + 1) / total_files) * 100))
+                    self.progress_update.emit(max(0, min(100, overall)))
+                    self.status_update.emit(f"Completed file {file_idx + 1}/{total_files}: {file_name}")
+                else:
+                    self.status_update.emit(msg)
+
+            def progress_callback(percent, file_idx=idx):
+                overall = int(round(((file_idx + (percent / 100.0)) / total_files) * 100))
+                self.progress_update.emit(max(0, min(99, overall)))
+
+            def counts_callback(refusals, compliance):
+                delta_refusals = max(0, refusals - per_file["refusals"])
+                delta_compliance = max(0, compliance - per_file["compliance"])
+                per_file["refusals"] = refusals
+                per_file["compliance"] = compliance
+
+                state["total_refusals"] += delta_refusals
+                state["total_compliance"] += delta_compliance
+                self.counts_update.emit(state["total_refusals"], state["total_compliance"])
+
             class DummyEntry:
                 def __init__(self, val):
                     self._val = val
@@ -112,20 +187,29 @@ class FilterThread(QThread):
                 input_file_entry=DummyEntry(input_file),
                 threshold_entry=DummyEntry(str(self.threshold)),
                 batch_size_entry=DummyEntry(str(self.batch_size)),
+                conversation_batch_size_entry=DummyEntry(str(self.conversation_batch_size)),
+                precision_entry=DummyEntry(self.precision_mode),
+                split_tokens_entry=DummyEntry(str(self.split_token_limit)),
                 status_update_callback=status_callback,
                 counts_update_callback=counts_callback,
+                progress_update_callback=progress_callback,
+                stop_requested_callback=self.should_stop,
             )
 
-        self.finished_signal.emit()
+            if had_error:
+                break
 
+        if not had_error:
+            self.progress_update.emit(100)
+        self.finished_signal.emit(not had_error)
 
 class BinaryClassificationApp(QWidget):
     def __init__(self, theme):
         super().__init__()
         self.theme = theme
         self.input_files = []
-
-        initialize_models()
+        self.current_mode = FILTER_MODE_RP
+        self.thread = None
         
         self.setWindowTitle(f"{APP_TITLE} 🛡️")
         self.setMinimumSize(800, 600)
@@ -325,25 +409,30 @@ class BinaryClassificationApp(QWidget):
         settings_layout.setSpacing(12)
         settings_group.setLayout(settings_layout)
 
-        # Filter mode
+        # Classifier model
         mode_row = QHBoxLayout()
         mode_row.setSpacing(25)
-        mode_label = QLabel("Filter Mode:")
+        mode_label = QLabel("Classifier Model:")
         mode_label.setStyleSheet("font-weight: 500;")
         
         self.mode_group = QButtonGroup(self)
-        self.rp_mode_radio = QRadioButton("RP Filter (detect refusals)")
+        self.rp_mode_radio = QRadioButton("RP Classifier")
         self.rp_mode_radio.setChecked(True)
         self.rp_mode_radio.toggled.connect(self.update_filter_mode)
         self.mode_group.addButton(self.rp_mode_radio)
 
-        self.normal_mode_radio = QRadioButton("Normal Filter (keep safe only)")
+        self.normal_mode_radio = QRadioButton("Instruct Classifier")
         self.normal_mode_radio.toggled.connect(self.update_filter_mode)
         self.mode_group.addButton(self.normal_mode_radio)
+
+        self.garak_mode_radio = QRadioButton("Garak Classifier")
+        self.garak_mode_radio.toggled.connect(self.update_filter_mode)
+        self.mode_group.addButton(self.garak_mode_radio)
 
         mode_row.addWidget(mode_label)
         mode_row.addWidget(self.rp_mode_radio)
         mode_row.addWidget(self.normal_mode_radio)
+        mode_row.addWidget(self.garak_mode_radio)
         mode_row.addStretch()
         settings_layout.addLayout(mode_row)
 
@@ -352,33 +441,80 @@ class BinaryClassificationApp(QWidget):
         self.class_logic_label.setStyleSheet("color: #6B7280; font-size: 10pt; font-style: italic;")
         settings_layout.addWidget(self.class_logic_label)
 
-        # Threshold and batch size
+        self.backend_capability_label = QLabel("")
+        self.backend_capability_label.setStyleSheet("color: #9CA3AF; font-size: 9pt;")
+        settings_layout.addWidget(self.backend_capability_label)
+
+        # Threshold and batching
         params_row = QHBoxLayout()
         params_row.setSpacing(20)
 
         params_row.addWidget(QLabel("Threshold:"))
         self.threshold_entry = QLineEdit("0.75")
         self.threshold_entry.setFixedWidth(80)
-        self.threshold_entry.setToolTip("Classification threshold (0.0 - 1.0)")
+        self.threshold_entry.setToolTip("Compliance confidence cutoff (0.0 - 1.0). Entries below this are removed as refusals.")
         params_row.addWidget(self.threshold_entry)
 
-        params_row.addWidget(QLabel("Batch Size:"))
-        self.batch_size_entry = QLineEdit("64")
+        params_row.addWidget(QLabel("GPU Microbatch:"))
+        self.batch_size_entry = QLineEdit("1024")
         self.batch_size_entry.setFixedWidth(80)
-        self.batch_size_entry.setToolTip("Number of items to process at once")
+        self.batch_size_entry.setToolTip("Target inference microbatch size on GPU (higher is faster until VRAM limit)")
         params_row.addWidget(self.batch_size_entry)
+
+        params_row.addWidget(QLabel("Conversation Batch:"))
+        self.conversation_batch_entry = QLineEdit("4096")
+        self.conversation_batch_entry.setFixedWidth(80)
+        self.conversation_batch_entry.setToolTip("Number of conversations prepared on CPU per producer chunk")
+        params_row.addWidget(self.conversation_batch_entry)
+
+        params_row.addWidget(QLabel("Precision:"))
+        self.precision_combo = QComboBox()
+        self.precision_combo.addItems(["fp16", "bf16", "fp32"])
+        self.precision_combo.setCurrentText("fp16")
+        self.precision_combo.setToolTip("Inference precision on GPU")
+        self.precision_combo.setFixedWidth(90)
+        params_row.addWidget(self.precision_combo)
 
         params_row.addStretch()
         settings_layout.addLayout(params_row)
 
+        split_row = QHBoxLayout()
+        split_row.setSpacing(12)
+        split_row.addWidget(QLabel("Split At Tokens:"))
+        self.split_tokens_slider = QSlider(Qt.Horizontal)
+        self.split_tokens_slider.setMinimum(32)
+        self.split_tokens_slider.setSingleStep(32)
+        self.split_tokens_slider.setPageStep(256)
+        self.split_tokens_slider.valueChanged.connect(self._on_split_slider_changed)
+        split_row.addWidget(self.split_tokens_slider, stretch=1)
+        self.split_tokens_value_label = QLabel("0")
+        self.split_tokens_value_label.setFixedWidth(58)
+        self.split_tokens_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        split_row.addWidget(self.split_tokens_value_label)
+        settings_layout.addLayout(split_row)
+
         main_layout.addWidget(settings_group)
 
-        # Run button
+        # Run controls
+        run_row = QHBoxLayout()
+        run_row.setSpacing(10)
+
         self.filter_button = QPushButton("⚡ Filter Conversations")
         self.filter_button.setFixedHeight(42)
         self.filter_button.setStyleSheet(self._primary_button_style())
         self.filter_button.clicked.connect(self.start_filtering)
-        main_layout.addWidget(self.filter_button)
+        self.filter_button.setEnabled(False)
+        run_row.addWidget(self.filter_button, stretch=1)
+
+        self.stop_button = QPushButton("⏹ Stop")
+        self.stop_button.setFixedHeight(42)
+        self.stop_button.setFixedWidth(120)
+        self.stop_button.setStyleSheet(self._red_button_style())
+        self.stop_button.clicked.connect(self.stop_filtering)
+        self.stop_button.setEnabled(False)
+        run_row.addWidget(self.stop_button)
+
+        main_layout.addLayout(run_row)
 
         # Progress group
         progress_group = QGroupBox("📊 Progress")
@@ -403,12 +539,12 @@ class BinaryClassificationApp(QWidget):
         counts_row = QHBoxLayout()
         counts_row.setSpacing(30)
 
-        self.positive_count_label = QLabel("✅ Positive (Refusal): 0")
-        self.positive_count_label.setStyleSheet("color: #10B981; font-weight: 500;")
+        self.positive_count_label = QLabel("🚫 Refusals: 0")
+        self.positive_count_label.setStyleSheet("color: #EF4444; font-weight: 600;")
         counts_row.addWidget(self.positive_count_label)
 
-        self.negative_count_label = QLabel("❌ Negative (Safe): 0")
-        self.negative_count_label.setStyleSheet("color: #EF4444; font-weight: 500;")
+        self.negative_count_label = QLabel("✅ Compliance: 0")
+        self.negative_count_label.setStyleSheet("color: #10B981; font-weight: 600;")
         counts_row.addWidget(self.negative_count_label)
 
         counts_row.addStretch()
@@ -416,6 +552,8 @@ class BinaryClassificationApp(QWidget):
 
         main_layout.addWidget(progress_group)
         main_layout.addStretch()
+
+        self._sync_backend_ui()
 
     def _primary_button_style(self):
         return """
@@ -455,6 +593,27 @@ class BinaryClassificationApp(QWidget):
             }
         """
 
+    def _current_backend_info(self):
+        return BACKEND_UI_INFO.get(self.current_mode, BACKEND_UI_INFO[FILTER_MODE_RP])
+
+    def _on_split_slider_changed(self, value):
+        self.split_tokens_value_label.setText(str(int(value)))
+
+    def _sync_backend_ui(self):
+        info = self._current_backend_info()
+        max_tokens = int(info["max_tokens"])
+        default_split_tokens = int(info.get("default_split_tokens", max_tokens))
+        default_split_tokens = max(32, min(default_split_tokens, max_tokens))
+        self.split_tokens_slider.blockSignals(True)
+        self.split_tokens_slider.setMaximum(max_tokens)
+        self.split_tokens_slider.setValue(default_split_tokens)
+        self.split_tokens_slider.blockSignals(False)
+        self.split_tokens_value_label.setText(str(int(self.split_tokens_slider.value())))
+        self.backend_capability_label.setText(
+            f"{info['name']} supports up to {max_tokens} tokens ({info['strategy']} scoring). "
+            "Lower 'Split At Tokens' values split earlier."
+        )
+
     def _add_files(self, file_paths):
         """Add files from drag-drop or browse."""
         added = False
@@ -476,6 +635,8 @@ class BinaryClassificationApp(QWidget):
             item = QListWidgetItem(f"📄 {display}")
             item.setToolTip(fp)
             self.file_list.addItem(item)
+        is_running = self.thread is not None and self.thread.isRunning()
+        self.filter_button.setEnabled(bool(self.input_files) and not is_running)
 
     def browse_input_file(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select JSONL Files", filter="JSONL Files (*.jsonl)")
@@ -487,17 +648,34 @@ class BinaryClassificationApp(QWidget):
         self._refresh_file_list()
         self.update_status("Ready")
         self.progress_bar.setValue(0)
-        self.positive_count_label.setText("✅ Positive (Refusal): 0")
-        self.negative_count_label.setText("❌ Negative (Safe): 0")
+        self.positive_count_label.setText("🚫 Refusals: 0")
+        self.negative_count_label.setText("✅ Compliance: 0")
+        self.filter_button.setEnabled(False)
+        self.stop_button.setEnabled(False)
 
     def start_filtering(self):
+        if self.thread is not None and self.thread.isRunning():
+            self.update_status("⚠️ Filtering already running.")
+            return
+
         try:
             threshold = float(self.threshold_entry.text())
             batch_size = int(self.batch_size_entry.text())
+            conversation_batch_size = int(self.conversation_batch_entry.text())
+            precision_mode = self.precision_combo.currentText().strip().lower()
+            split_token_limit = int(self.split_tokens_slider.value())
             if not (0.0 <= threshold <= 1.0):
                 raise ValueError("Threshold must be between 0.0 and 1.0")
             if batch_size <= 0:
-                raise ValueError("Batch size must be positive")
+                raise ValueError("GPU microbatch must be positive")
+            if self.current_mode == FILTER_MODE_GARAK and batch_size > 64:
+                raise ValueError("Garak Classifier supports a maximum GPU microbatch of 64")
+            if conversation_batch_size <= 0:
+                raise ValueError("Conversation batch must be positive")
+            if split_token_limit <= 0:
+                raise ValueError("Split token limit must be positive")
+            if precision_mode not in {"fp16", "bf16", "fp32"}:
+                raise ValueError("Precision must be fp16, bf16, or fp32")
         except ValueError as e:
             self.update_status(f"⚠️ Invalid settings: {e}")
             return
@@ -507,39 +685,66 @@ class BinaryClassificationApp(QWidget):
             return
 
         self.filter_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
         self.progress_bar.setValue(0)
-        self.thread = FilterThread(self.input_files, threshold, batch_size)
+        self.positive_count_label.setText("🚫 Refusals: 0")
+        self.negative_count_label.setText("✅ Compliance: 0")
+        self.thread = FilterThread(
+            self.input_files,
+            threshold,
+            batch_size,
+            conversation_batch_size,
+            precision_mode,
+            split_token_limit,
+            self.current_mode,
+        )
         self.thread.status_update.connect(self.update_status)
         self.thread.counts_update.connect(self.update_counts)
         self.thread.progress_update.connect(self.progress_bar.setValue)
         self.thread.finished_signal.connect(self.filtering_finished)
         self.thread.start()
 
-    def filtering_finished(self):
-        self.update_status("✅ Filtering complete! Check outputs/refusalmancer/")
-        self.progress_bar.setValue(100)
-        self.filter_button.setEnabled(True)
+    def filtering_finished(self, ok):
+        if ok:
+            self.update_status("✅ Filtering complete! Check Outputs/")
+            self.progress_bar.setValue(100)
+        self.thread = None
+        self.filter_button.setEnabled(bool(self.input_files))
+        self.stop_button.setEnabled(False)
+
+    def stop_filtering(self):
+        if self.thread is not None and self.thread.isRunning():
+            self.thread.request_stop()
+            self.stop_button.setEnabled(False)
+            self.update_status("Stopping... finishing current chunk")
 
     def update_status(self, message):
         self.status_bar.setText(f"Status: {message}")
 
-    def update_counts(self, positive_count, negative_count):
-        self.positive_count_label.setText(f"✅ Positive (Refusal): {positive_count}")
-        self.negative_count_label.setText(f"❌ Negative (Safe): {negative_count}")
+    def update_counts(self, refusal_count, clean_count):
+        self.positive_count_label.setText(f"🚫 Refusals: {refusal_count}")
+        self.negative_count_label.setText(f"✅ Compliance: {clean_count}")
 
     def update_filter_mode(self):
-        mode = FILTER_MODE_RP if self.rp_mode_radio.isChecked() else FILTER_MODE_NORMAL
-        set_filter_mode(mode)
-        self.positive_count_label.setText("✅ Positive (Refusal): 0")
-        self.negative_count_label.setText("❌ Negative (Safe): 0")
+        if self.rp_mode_radio.isChecked():
+            mode = FILTER_MODE_RP
+        elif self.normal_mode_radio.isChecked():
+            mode = FILTER_MODE_NORMAL
+        else:
+            mode = FILTER_MODE_GARAK
+        self.current_mode = mode
+        self.positive_count_label.setText("🚫 Refusals: 0")
+        self.negative_count_label.setText("✅ Compliance: 0")
         self.class_logic_label.setText(self.get_classification_logic_text())
-        self.update_status("Filter mode changed")
+        self._sync_backend_ui()
+        self.update_status("Classifier model changed")
 
     def get_classification_logic_text(self):
         if self.rp_mode_radio.isChecked():
-            return "RP Filter: Class 0 = Refusal (positive), Class 1 = Safe — Keeps conversations with refusals"
-        else:
-            return "Normal Filter: Class 1 = Refusal (positive), Class 0 = Safe — Keeps only safe conversations"
+            return "RP classifier selected. Entries are removed when compliance confidence is below threshold."
+        if self.normal_mode_radio.isChecked():
+            return "Instruct classifier selected. Entries are removed when compliance confidence is below threshold."
+        return "Garak classifier selected. Uses full-entry scoring, then sentence splitting automatically for long entries."
 
 
 if __name__ == "__main__":

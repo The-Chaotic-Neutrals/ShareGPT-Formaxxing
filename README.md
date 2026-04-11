@@ -24,6 +24,7 @@ ShareGPT Formaxxing Tool is a modular application designed to help researchers a
 - **DedupeMancer** - Unified deduplication for datasets (SHA-256/MinHash) and images (dHash/CLIP embeddings)
 - **LineMancer** - Split, merge, and shuffle JSONL files
 - **N-GraMancer** - Analyze n-gram patterns in conversation datasets
+- **SpaceMancer** - Conservative spacing restoration for ShareGPT datasets (local + Hugging Face), with dry-run previews and selectable correction profiles
 
 ## 📋 Requirements
 
@@ -403,6 +404,7 @@ ShareGPT-Formaxxing/
 │   ├── Other/               # UI components, theme, manager
 │   ├── ParquetMaxxer/       # Parquet conversion
 │   ├── RefusalMancer/       # Refusal detection
+│   ├── SpaceMancer/         # Spacing restoration for ShareGPT
 │   ├── SafetensorMaxxer/    # Safetensor tools
 │   ├── SynthMaxxer/         # Synthetic data generation
 │   └── TokenMaxxer/         # Token analysis
@@ -442,6 +444,7 @@ All tools save their output to the `Outputs/` directory in the repository root, 
 - `Outputs/dedupemancer/images/unique/` - DedupeMancer unique images
 - `Outputs/dedupemancer/images/duplicates/` - DedupeMancer duplicate images (if moved)
 - `Outputs/linemancer/` - LineMancer processed files
+- `Outputs/spacemancer/` - SpaceMancer cleaned JSONL datasets and audit files
 - `Outputs/` - General output for other tools
 
 ## 🐛 Troubleshooting

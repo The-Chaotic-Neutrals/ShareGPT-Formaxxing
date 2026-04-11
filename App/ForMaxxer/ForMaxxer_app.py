@@ -220,8 +220,8 @@ class DatasetConverterApp(QWidget):
             # Output directory
             # Default to outputs folder in repo root
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            repo_root = os.path.dirname(script_dir)
-            output_dir = os.path.join(repo_root, "outputs", "formaxxer")
+            repo_root = os.path.dirname(os.path.dirname(script_dir))
+            output_dir = os.path.join(repo_root, "Outputs")
             os.makedirs(output_dir, exist_ok=True)
 
             # Process each file

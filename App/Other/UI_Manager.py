@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -8,32 +9,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QIcon, QPalette, QColor, QFont
 from PyQt5.QtCore import Qt, QTimer
 
-# Import your tools
 from App.Other.Theme import Theme
-from App.ForMaxxer.ForMaxxer_app import DatasetConverterApp
-from App.DeslopMancer.DeslopTool_app import DeslopToolApp
-from App.RefusalMancer.binary_classification_app import BinaryClassificationApp
-from App.DedupeMancer.DedupeMancer_app import DeduplicationApp
-
-# BehaviorMancer
-from App.BehaviorMancer.BehaviorMancer_app import BehaviorMancerApp
-
-# Import N-GraMancer using workaround for hyphen in directory name
-import sys
-import importlib.util
-from pathlib import Path
-_ngramancer_app_path = Path(__file__).parent.parent / "N-GraMancer" / "N-GraMancer_app.py"
-spec = importlib.util.spec_from_file_location("N_GraMancer_app", _ngramancer_app_path)
-N_GraMancer_app = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(N_GraMancer_app)
-NgramAnalyzerApp = N_GraMancer_app.NgramAnalyzerApp
-from App.LanguageMaxxer.LanguageMaxxer_app import LanguageMaxxerApp
-from App.SafetensorMaxxer.safetensormaxxer_app import SafetensorMaxxerApp
-from App.LineMancer.LineMancer_app import LineMancerFrame
-from App.ParquetMaxxer.parquetmaxxer_app import ParquetMaxxer
-from App.TokenMaxxer.tokenmaxxerv3_app import TokenMaxxerV3App
-from App.SynthMaxxer.synthmaxxer_app import MainWindow as SynthMaxxerApp
-from App.MergeMaxxer.MergeMaxxer import MergeKitGUI
 
 
 class UIManager(QWidget):
@@ -175,6 +151,7 @@ class UIManager(QWidget):
             ("DedupeMancer", self.open_deduplication_app),
             ("LineMancer", self.open_linemancer_app),
             ("N-GraMancer", self.open_ngram_analyzer_app),
+            ("SpaceMancer", self.open_spacemancer_app),
         ]
         mancer_widget = QWidget()
         mancer_layout = QHBoxLayout()
@@ -313,6 +290,7 @@ class UIManager(QWidget):
 
     # ---- Window Launchers ----
     def open_dataset_converter_app(self):
+        from App.ForMaxxer.ForMaxxer_app import DatasetConverterApp
         win = DatasetConverterApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
@@ -321,6 +299,7 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_deslop_tool(self):
+        from App.DeslopMancer.DeslopTool_app import DeslopToolApp
         win = DeslopToolApp()
         win.setStyleSheet(f"background-color: transparent; color: {self.theme.get('text_fg')};")
         if self.icon_path.exists():
@@ -330,6 +309,7 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_binary_classification_app(self):
+        from App.RefusalMancer.binary_classification_app import BinaryClassificationApp
         win = BinaryClassificationApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
@@ -338,6 +318,7 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
     
     def open_behaviormancer_app(self):
+        from App.BehaviorMancer.BehaviorMancer_app import BehaviorMancerApp
         win = BehaviorMancerApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
@@ -346,6 +327,7 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_deduplication_app(self):
+        from App.DedupeMancer.DedupeMancer_app import DeduplicationApp
         win = DeduplicationApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
@@ -354,6 +336,11 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_ngram_analyzer_app(self):
+        ngramancer_app_path = Path(__file__).parent.parent / "N-GraMancer" / "N-GraMancer_app.py"
+        spec = importlib.util.spec_from_file_location("N_GraMancer_app", ngramancer_app_path)
+        ngramancer_app = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ngramancer_app)
+        NgramAnalyzerApp = ngramancer_app.NgramAnalyzerApp
         win = NgramAnalyzerApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
@@ -362,6 +349,7 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_languagemaxxer_app(self):
+        from App.LanguageMaxxer.LanguageMaxxer_app import LanguageMaxxerApp
         win = LanguageMaxxerApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
@@ -370,6 +358,7 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_safetensormaxxer_app(self):
+        from App.SafetensorMaxxer.safetensormaxxer_app import SafetensorMaxxerApp
         win = SafetensorMaxxerApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
@@ -378,6 +367,7 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_linemancer_app(self):
+        from App.LineMancer.LineMancer_app import LineMancerFrame
         win = LineMancerFrame()
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
@@ -388,6 +378,7 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_parquetmaxxer_app(self):
+        from App.ParquetMaxxer.parquetmaxxer_app import ParquetMaxxer
         win = ParquetMaxxer()
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
@@ -397,6 +388,7 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_tokenmaxxer_app(self):
+        from App.TokenMaxxer.tokenmaxxerv3_app import TokenMaxxerV3App
         win = TokenMaxxerV3App()
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
@@ -406,6 +398,7 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_synthmaxxer_app(self):
+        from App.SynthMaxxer.synthmaxxer_app import MainWindow as SynthMaxxerApp
         win = SynthMaxxerApp()
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
@@ -414,7 +407,17 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_mergemaxxer_app(self):
+        from App.MergeMaxxer.MergeMaxxer import MergeKitGUI
         win = MergeKitGUI(self.theme)
+        if self.icon_path.exists():
+            win.setWindowIcon(QIcon(str(self.icon_path)))
+        self.add_background_to_window(win)
+        win.show()
+        self.qt_windows.append(win)
+
+    def open_spacemancer_app(self):
+        from App.SpaceMancer.SpaceMancer_app import SpaceMancerApp
+        win = SpaceMancerApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))
         self.add_background_to_window(win)

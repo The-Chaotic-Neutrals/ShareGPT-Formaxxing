@@ -130,31 +130,25 @@ def filter_english_jsonl(input_path, output_path=None, rejected_path=None, thres
 
     # Get repo root (parent of script directory)
     script_dir = Path(__file__).parent.absolute()
-    repo_root = script_dir.parent.absolute()
-    outputs_dir = repo_root / "outputs"
+    repo_root = script_dir.parent.parent.absolute()
+    outputs_dir = repo_root / "Outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
     
     input_path = Path(input_path)
 
     # Setup default output path if not provided or relative
     if output_path is None:
-        filtered_dir = outputs_dir / "languagemaxxer" / "english_filtered"
-        filtered_dir.mkdir(parents=True, exist_ok=True)
-        output_path = filtered_dir / f"{input_path.stem}_english.jsonl"
+        output_path = outputs_dir / f"{input_path.stem}_english.jsonl"
     else:
         output_path = Path(output_path)
         if not output_path.is_absolute():
-            filtered_dir = outputs_dir / "languagemaxxer" / "english_filtered"
-            filtered_dir.mkdir(parents=True, exist_ok=True)
-            output_path = filtered_dir / output_path.name
+            output_path = outputs_dir / output_path.name
 
     # Setup default rejected path if provided and relative
     if rejected_path is not None:
         rejected_path = Path(rejected_path)
         if not rejected_path.is_absolute():
-            rejected_dir = outputs_dir / "languagemaxxer" / "rejected"
-            rejected_dir.mkdir(parents=True, exist_ok=True)
-            rejected_path = rejected_dir / rejected_path.name
+            rejected_path = outputs_dir / rejected_path.name
 
     with open(input_path, 'r', encoding='utf-8') as infile:
         lines = infile.readlines()
@@ -213,8 +207,8 @@ class GrammarCorrector:
         """Prepare the output file path."""
         if output_dir is None:
             script_dir = Path(__file__).parent.absolute()
-            repo_root = script_dir.parent.absolute()
-            output_dir = repo_root / "outputs" / "languagemaxxer" / "grammar_corrected"
+            repo_root = script_dir.parent.parent.absolute()
+            output_dir = repo_root / "Outputs"
         else:
             output_dir = Path(output_dir)
         

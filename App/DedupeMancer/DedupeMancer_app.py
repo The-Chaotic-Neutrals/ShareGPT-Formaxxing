@@ -333,7 +333,8 @@ class ImageDedupWorker(QThread):
                 all_groups = []
                 
                 base_dir = os.path.dirname(self.report_path)
-                sha_report = os.path.join(base_dir, "report_sha256.jsonl")
+                report_stem = Path(self.report_path).stem
+                sha_report = os.path.join(base_dir, f"{report_stem}_sha256.jsonl")
                 dh_report = self.report_path
 
                 self.status_update.emit("Phase 1/2: SHA-256 exact...")
@@ -1395,8 +1396,8 @@ class DeduplicationApp(QWidget):
         input_file = self.dataset_files[self.current_file_index]
         
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        repo_root = os.path.dirname(script_dir)
-        output_dir = os.path.join(repo_root, "outputs", "dedupemancer", "datasets")
+        repo_root = os.path.dirname(os.path.dirname(script_dir))
+        output_dir = os.path.join(repo_root, "Outputs")
         os.makedirs(output_dir, exist_ok=True)
         base = os.path.splitext(os.path.basename(input_file))[0]
         output_file = os.path.join(output_dir, f"{base}-deduplicated.jsonl")
@@ -1578,21 +1579,39 @@ class DeduplicationApp(QWidget):
             return
 
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        repo_root = os.path.dirname(script_dir)
+        repo_root = os.path.dirname(os.path.dirname(script_dir))
         
-        if method == "text":
-            out_dir = os.path.join(repo_root, "outputs", "dedupemancer", "text_dedup")
-        else:
-            out_dir = os.path.join(repo_root, "outputs", "dedupemancer", "images")
+        out_dir = os.path.join(repo_root, "Outputs")
         os.makedirs(out_dir, exist_ok=True)
 
-        report_path = os.path.join(out_dir, "report.jsonl")
-        duplicates_dir = os.path.join(out_dir, "duplicates")
-        unique_dir = os.path.join(out_dir, "unique")
+        def _sanitize_appendix(value: str) -> str:
+            cleaned = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in value)
+            while "__" in cleaned:
+                cleaned = cleaned.replace("__", "_")
+            cleaned = cleaned.strip("_")
+            return cleaned or "output"
+
+        source_tag = "images"
+        if hf_dataset:
+            source_tag = hf_dataset
+        elif self.parquet_files:
+            first = Path(self.parquet_files[0]).stem
+            source_tag = f"{first}_{len(self.parquet_files)}pq" if len(self.parquet_files) > 1 else first
+        elif self.image_inputs:
+            first_path = Path(self.image_inputs[0])
+            first = first_path.name if first_path.name else first_path.stem
+            source_tag = f"{first}_{len(self.image_inputs)}src" if len(self.image_inputs) > 1 else first
+
+        appendix = _sanitize_appendix(f"{source_tag}_{method}")
+        self._current_image_output_appendix = appendix
+
+        report_path = os.path.join(out_dir, f"{appendix}_report.jsonl")
+        duplicates_dir = os.path.join(out_dir, f"{appendix}_duplicates")
+        unique_dir = os.path.join(out_dir, f"{appendix}_unique")
         
         # Parquet export path
         export_parquet = self.image_export_parquet_cb.isChecked() and self.parquet_files
-        parquet_output_path = os.path.join(out_dir, "deduplicated.parquet") if export_parquet else None
+        parquet_output_path = os.path.join(out_dir, f"{appendix}_deduplicated.parquet") if export_parquet else None
 
         self.image_run_btn.setEnabled(False)
         self._reset_image_progress()
@@ -1678,7 +1697,8 @@ class DeduplicationApp(QWidget):
         self.image_progress_bar.setValue(100)
         self.image_progress_label.setText("100%")
         
-        output_hint = "outputs/dedupemancer/"
+        appendix = getattr(self, "_current_image_output_appendix", "output")
+        output_hint = f"Outputs/{appendix}"
         extras = []
         if self.image_export_parquet_cb.isChecked() and self.parquet_files:
             extras.append("parquet")
@@ -1690,7 +1710,7 @@ class DeduplicationApp(QWidget):
         if self.image_copy_unique_cb.isChecked():
             self.image_status_label.setText(f"Status: ✅ Done! Check {output_hint}")
         else:
-            self.image_status_label.setText(f"Status: ✅ Done. Check {output_hint}report.jsonl")
+            self.image_status_label.setText(f"Status: ✅ Done. Check {output_hint}_report.jsonl")
 
 
 if __name__ == "__main__":

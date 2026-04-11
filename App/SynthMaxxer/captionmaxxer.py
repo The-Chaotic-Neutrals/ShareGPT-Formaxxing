@@ -352,7 +352,7 @@ def _build_multimodal_ui(main_window, left_panel, right_panel):
     # Get repo root (go up from App/SynthMaxxer to repo root)
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     outputs_dir = os.path.join(repo_root, "Outputs")
-    default_output = os.path.join(outputs_dir, "captions")
+    default_output = outputs_dir
     output_row, _ = create_file_browse_row(
         line_edit_name="mm_output_edit",
         placeholder_text="Output folder (will contain images/ + metadata.jsonl)",

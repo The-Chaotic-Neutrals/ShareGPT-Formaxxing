@@ -32,3 +32,4 @@ accelerate
 safetensors
 einops
 huggingface_hub
+keyring

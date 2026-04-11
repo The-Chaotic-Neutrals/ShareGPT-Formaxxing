@@ -78,8 +78,8 @@ class TokenMaxxerCore:
     def clean_file(self, file_path: str, max_tokens: int):
         # Default to outputs folder in repo root
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        repo_root = os.path.dirname(script_dir)
-        outputs_dir = os.path.join(repo_root, "outputs", "tokenmaxxer")
+        repo_root = os.path.dirname(os.path.dirname(script_dir))
+        outputs_dir = os.path.join(repo_root, "Outputs")
         os.makedirs(outputs_dir, exist_ok=True)
         
         base_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -145,8 +145,8 @@ class TokenMaxxerCore:
     def tokenize_only(self, file_path: str):
         # Default to outputs folder in repo root
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        repo_root = os.path.dirname(script_dir)
-        outputs_dir = os.path.join(repo_root, "outputs", "tokenmaxxer")
+        repo_root = os.path.dirname(os.path.dirname(script_dir))
+        outputs_dir = os.path.join(repo_root, "Outputs")
         os.makedirs(outputs_dir, exist_ok=True)
         
         base_name = os.path.splitext(os.path.basename(file_path))[0]

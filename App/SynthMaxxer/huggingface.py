@@ -88,8 +88,8 @@ def build_huggingface_tab(main_window):
 
     # Output directory
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    outputs_dir = os.path.join(repo_root, "outputs")
-    default_output = os.path.join(outputs_dir, "hf_dataset")
+    outputs_dir = os.path.join(repo_root, "Outputs")
+    default_output = outputs_dir
     output_row, _ = create_file_browse_row(
         line_edit_name="hf_output_edit",
         placeholder_text="Output directory for downloaded dataset",
@@ -116,8 +116,8 @@ def build_huggingface_tab(main_window):
 
     # Output directory for model
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    outputs_dir = os.path.join(repo_root, "outputs")
-    default_model_output = os.path.join(outputs_dir, "hf_models")
+    outputs_dir = os.path.join(repo_root, "Outputs")
+    default_model_output = outputs_dir
     model_output_row, _ = create_file_browse_row(
         line_edit_name="hf_model_output_edit",
         placeholder_text="Output directory for downloaded model",
@@ -236,7 +236,7 @@ def browse_hf_output(main_window):
     """Browse for HuggingFace output directory"""
     from PyQt5.QtWidgets import QFileDialog
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    default_path = os.path.join(repo_root, "outputs", "hf_dataset")
+    default_path = os.path.join(repo_root, "Outputs")
     if not os.path.exists(default_path):
         os.makedirs(default_path, exist_ok=True)
     
@@ -516,7 +516,7 @@ def browse_hf_model_output(main_window):
     """Browse for HuggingFace model output directory"""
     from PyQt5.QtWidgets import QFileDialog
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    default_path = os.path.join(repo_root, "outputs", "hf_models")
+    default_path = os.path.join(repo_root, "Outputs")
     if not os.path.exists(default_path):
         os.makedirs(default_path, exist_ok=True)
     
@@ -581,7 +581,7 @@ def start_parquet_pack(main_window):
     
     # Get output directory
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    default_out = os.path.join(repo_root, "Outputs", "parquet_packed")
+    default_out = os.path.join(repo_root, "Outputs")
     
     out_dir = QFileDialog.getExistingDirectory(
         main_window,

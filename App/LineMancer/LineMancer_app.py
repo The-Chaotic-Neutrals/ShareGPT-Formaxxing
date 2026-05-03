@@ -3,12 +3,31 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QSpinBox, QRadioButton, QButtonGroup, QGroupBox, QFrame, QFileDialog,
+    QCheckBox,
     QMessageBox, QStackedWidget, QFormLayout
 )
 from App.Other.Theme import Theme
 from App.Other.BG import GalaxyBackgroundWidget
 from App.LineMancer.LineMancer import LineMancerCore
 import os
+
+
+class LineMancerWorker(QtCore.QObject):
+    finished = QtCore.pyqtSignal(object)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, operation, *args, **kwargs):
+        super().__init__()
+        self.operation = operation
+        self.args = args
+        self.kwargs = kwargs
+
+    @QtCore.pyqtSlot()
+    def run(self):
+        try:
+            self.finished.emit(self.operation(*self.args, **self.kwargs))
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class LineMancerFrame(QWidget):
@@ -21,6 +40,9 @@ class LineMancerFrame(QWidget):
         self.input_paths = []
         self.input_path = ""
         self.lines_per_file = 1000
+        self.action_buttons = []
+        self.worker_thread = None
+        self.worker = None
 
         # Background
         self.background = GalaxyBackgroundWidget(self)
@@ -286,6 +308,11 @@ class LineMancerFrame(QWidget):
         input_label.setStyleSheet("font-weight: bold; color: #c0c0ff;")
         form_layout.addRow(input_label, input_layout)
 
+        self.anti_clump_checkbox = QCheckBox("Enable anti-clump spacing")
+        self.anti_clump_checkbox.setChecked(True)
+        self.anti_clump_checkbox.setToolTip("Tries to spread similar records apart after shuffle")
+        form_layout.addRow("Options:", self.anti_clump_checkbox)
+
         # Lines per file
         self.lines_per_file_spin = QSpinBox()
         self.lines_per_file_spin.setRange(1, 1000000)
@@ -305,6 +332,7 @@ class LineMancerFrame(QWidget):
         split_btn.setStyleSheet(self._action_button_style())
         split_btn.setCursor(Qt.PointingHandCursor)
         split_btn.clicked.connect(self.split_jsonl)
+        self.action_buttons.append(split_btn)
         btn_layout.addWidget(split_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
@@ -350,6 +378,7 @@ class LineMancerFrame(QWidget):
         merge_btn.setStyleSheet(self._action_button_style())
         merge_btn.setCursor(Qt.PointingHandCursor)
         merge_btn.clicked.connect(self.merge_jsonl)
+        self.action_buttons.append(merge_btn)
         btn_layout.addWidget(merge_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
@@ -395,6 +424,7 @@ class LineMancerFrame(QWidget):
         shuffle_btn.setStyleSheet(self._action_button_style())
         shuffle_btn.setCursor(Qt.PointingHandCursor)
         shuffle_btn.clicked.connect(self.shuffle_jsonl)
+        self.action_buttons.append(shuffle_btn)
         btn_layout.addWidget(shuffle_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
@@ -434,29 +464,65 @@ class LineMancerFrame(QWidget):
             self.input_path_edit_shuffle.setText(path)
 
     def split_jsonl(self):
-        try:
-            count = self.core.split_jsonl(
-                self.input_path_edit.text(),
-                lines_per_file=self.lines_per_file_spin.value()
-            )
-            QMessageBox.information(self, "Success", f"✅ Split complete!\n\n{count} parts saved.")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"❌ {str(e)}")
+        self._run_operation(
+            self.core.split_jsonl,
+            self._split_finished,
+            self.input_path_edit.text(),
+            lines_per_file=self.lines_per_file_spin.value()
+        )
 
     def merge_jsonl(self):
-        try:
-            paths = self.merge_path_edit.text().split(', ')
-            output_path, total = self.core.merge_jsonl(paths)
-            QMessageBox.information(self, "Success", f"✅ Merge complete!\n\nMerged {total} lines into:\n{output_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"❌ {str(e)}")
+        paths = self.merge_path_edit.text().split(', ')
+        self._run_operation(self.core.merge_jsonl, self._merge_finished, paths)
 
     def shuffle_jsonl(self):
-        try:
-            output_path = self.core.shuffle_jsonl(self.input_path_edit_shuffle.text())
-            QMessageBox.information(self, "Success", f"✅ Shuffle complete!\n\nShuffled lines saved to:\n{output_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"❌ {str(e)}")
+        self._run_operation(
+            self.core.shuffle_jsonl,
+            self._shuffle_finished,
+            self.input_path_edit_shuffle.text(),
+            anti_clump=self.anti_clump_checkbox.isChecked()
+        )
+
+    def _run_operation(self, operation, success_callback, *args, **kwargs):
+        if self.worker_thread is not None:
+            QMessageBox.information(self, "LineMancer", "An operation is already running.")
+            return
+
+        for button in self.action_buttons:
+            button.setEnabled(False)
+
+        self.worker_thread = QtCore.QThread(self)
+        self.worker = LineMancerWorker(operation, *args, **kwargs)
+        self.worker.moveToThread(self.worker_thread)
+        self.worker_thread.started.connect(self.worker.run)
+        self.worker.finished.connect(success_callback)
+        self.worker.finished.connect(self._operation_finished)
+        self.worker.failed.connect(self._operation_failed)
+        self.worker.failed.connect(self._operation_finished)
+        self.worker.finished.connect(self.worker_thread.quit)
+        self.worker.failed.connect(self.worker_thread.quit)
+        self.worker_thread.finished.connect(self.worker.deleteLater)
+        self.worker_thread.finished.connect(self.worker_thread.deleteLater)
+        self.worker_thread.start()
+
+    def _operation_finished(self):
+        for button in self.action_buttons:
+            button.setEnabled(True)
+        self.worker_thread = None
+        self.worker = None
+
+    def _operation_failed(self, message):
+        QMessageBox.critical(self, "Error", f"❌ {message}")
+
+    def _split_finished(self, count):
+        QMessageBox.information(self, "Success", f"✅ Split complete!\n\n{count} parts saved.")
+
+    def _merge_finished(self, result):
+        output_path, total = result
+        QMessageBox.information(self, "Success", f"✅ Merge complete!\n\nMerged {total} lines into:\n{output_path}")
+
+    def _shuffle_finished(self, output_path):
+        QMessageBox.information(self, "Success", f"✅ Shuffle complete!\n\nShuffled lines saved to:\n{output_path}")
 
 
 if __name__ == "__main__":

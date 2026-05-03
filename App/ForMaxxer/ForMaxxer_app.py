@@ -5,13 +5,101 @@ from pathlib import Path
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
     QFileDialog, QLineEdit, QMessageBox, QApplication, QCheckBox, QGroupBox,
-    QGridLayout, QFrame
+    QGridLayout, QFrame, QSpinBox
 )
 from PyQt5.QtGui import QIcon, QPalette, QColor, QFont
-from PyQt5.QtCore import Qt
-from App.ForMaxxer.ForMaxxer import DatasetConverter, filter_dataset
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from App.ForMaxxer.ForMaxxer import DatasetConverter, filter_dataset, format_bytes
 
 # Logging will be configured only when needed, not at module import time
+
+
+class ForMaxxerWorker(QThread):
+    status = pyqtSignal(str)
+    preview = pyqtSignal(object)
+    completed = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, input_paths, filter_options, parent=None):
+        super().__init__(parent)
+        self.input_paths = input_paths
+        self.filter_options = filter_options
+
+    def run(self):
+        try:
+            # Configure logging only when needed (not at module import time)
+            if not logging.getLogger().handlers:
+                logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+            self.status.emit("⚙️ Conversion in progress...")
+            logging.info(f"Starting conversion for {', '.join(self.input_paths)}")
+
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            repo_root = os.path.dirname(os.path.dirname(script_dir))
+            output_dir = os.path.join(repo_root, "Outputs")
+            os.makedirs(output_dir, exist_ok=True)
+
+            format_info = []
+            converted_files = []
+            for input_path in self.input_paths:
+                filename = os.path.basename(input_path)
+                self.status.emit(f"Processing file: {filename}...")
+                logging.info(f"Processing file: {input_path}")
+
+                results = DatasetConverter.process_multiple_files([input_path], output_dir)
+                result = results.get(filename, ([], "unknown"))
+
+                if isinstance(result, tuple):
+                    preview_entries, detected_format = result
+                else:
+                    preview_entries = result if isinstance(result, list) else []
+                    detected_format = "unknown"
+
+                format_info.append(f"{filename}: {detected_format}")
+                self.preview.emit(preview_entries)
+
+                converted_file = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}.jsonl")
+                if os.path.exists(converted_file):
+                    converted_files.append(converted_file)
+                    input_size = os.path.getsize(input_path) if os.path.exists(input_path) else 0
+                    converted_size = os.path.getsize(converted_file)
+                    format_info[-1] = (
+                        f"{filename}: {detected_format} "
+                        f"({format_bytes(input_size)} → {format_bytes(converted_size)} converted)"
+                    )
+
+            format_summary = " | ".join(format_info)
+
+            if self.filter_options["enabled"] and converted_files:
+                self.status.emit("🛠 Applying filtering to converted files...")
+                filter_results = []
+
+                for converted_file in converted_files:
+                    filename = os.path.basename(converted_file)
+                    self.status.emit(f"Filtering: {filename}...")
+
+                    try:
+                        summary, output_path = filter_dataset(
+                            converted_file,
+                            output_dir,
+                            check_blank_turns=self.filter_options["check_blank_turns"],
+                            check_invalid_endings=self.filter_options["check_invalid_endings"],
+                            check_null_gpt=self.filter_options["check_null_gpt"],
+                            check_duplicate_system=self.filter_options["check_duplicate_system"],
+                            allow_empty_system_role=self.filter_options["allow_empty_system_role"],
+                            check_duplicate_turns=self.filter_options["check_duplicate_turns"],
+                            duplicate_similarity_threshold=self.filter_options["duplicate_similarity_threshold"],
+                        )
+                        filter_results.append(f"{filename}: filtered → {format_bytes(os.path.getsize(output_path))}")
+                    except Exception as filter_error:
+                        filter_results.append(f"{filename}: filter error - {str(filter_error)}")
+
+                filter_summary = " | ".join(filter_results)
+                self.completed.emit(f"✅ Conversion & filtering completed. Formats: {format_summary}\nFiltering: {filter_summary}")
+            else:
+                self.completed.emit(f"✅ Conversion completed. Detected formats: {format_summary}")
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class DatasetConverterApp(QWidget):
@@ -20,6 +108,7 @@ class DatasetConverterApp(QWidget):
         self.theme = theme
         self.setWindowTitle("🗂️ ForMaxxer")
         self.resize(700, 550)
+        self.worker = None
         self.apply_theme()
         self.setup_ui()
         self.set_icon()
@@ -148,6 +237,28 @@ class DatasetConverterApp(QWidget):
             row, col = divmod(idx, 2)
             filter_layout.addWidget(cb, row, col)
 
+        threshold_row = (len(filter_checkboxes) + 1) // 2
+        threshold_label = QLabel("Duplicate Similarity Threshold")
+        threshold_label.setStyleSheet(f"color: {self.theme.get('text_fg', '#ffffff')}; font-size: 12px;")
+        self.duplicate_similarity_spin = QSpinBox(self)
+        self.duplicate_similarity_spin.setRange(0, 100)
+        self.duplicate_similarity_spin.setValue(92)
+        self.duplicate_similarity_spin.setSuffix("%")
+        self.duplicate_similarity_spin.setToolTip("Higher = stricter duplicate filtering")
+        self.duplicate_similarity_spin.setStyleSheet(f"""
+            QSpinBox {{
+                background-color: {self.theme.get('entry_bg', '#000000')};
+                color: {self.theme.get('entry_fg', '#ffffff')};
+                border: 1px solid {self.theme.get('fg', '#1e90ff')};
+                border-radius: 4px;
+                padding: 2px 4px;
+                selection-background-color: {self.theme.get('fg', '#1e90ff')};
+                selection-color: {self.theme.get('bg', '#000000')};
+            }}
+        """)
+        filter_layout.addWidget(threshold_label, threshold_row, 0)
+        filter_layout.addWidget(self.duplicate_similarity_spin, threshold_row, 1)
+
         layout.addWidget(self.filtering_group)
         self.filtering_group.setVisible(False)  # Hidden by default
 
@@ -189,7 +300,7 @@ class DatasetConverterApp(QWidget):
                 self,
                 "Select Input Files",
                 "",
-                "JSON Files (*.json *.jsonl);;All Files (*)"
+                "Dataset Files (*.json *.jsonl *.parquet);;JSON Files (*.json *.jsonl);;Parquet Files (*.parquet);;All Files (*)"
             )
             if file_paths:
                 self.entry_input_file.setText("; ".join(file_paths))
@@ -203,87 +314,38 @@ class DatasetConverterApp(QWidget):
         if input_paths and input_paths[0].strip():
             self.convert_button.setEnabled(False)
             self.convert_multiple_datasets(input_paths)
-            self.convert_button.setEnabled(True)
         else:
             self.update_status("❌ No input files selected.")
             QMessageBox.critical(self, "Input Error", "Please select input files.")
 
     def convert_multiple_datasets(self, input_paths):
-        try:
-            # Configure logging only when needed (not at module import time)
-            if not logging.getLogger().handlers:
-                logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-            
-            self.update_status("⚙️ Conversion in progress...")
-            logging.info(f"Starting conversion for {', '.join(input_paths)}")
+        filter_options = {
+            "enabled": self.enable_filtering_cb.isChecked(),
+            "check_blank_turns": self.blank_turns_cb.isChecked(),
+            "check_invalid_endings": self.invalid_endings_cb.isChecked(),
+            "check_null_gpt": self.null_gpt_cb.isChecked(),
+            "check_duplicate_system": self.duplicate_system_cb.isChecked(),
+            "allow_empty_system_role": self.allow_empty_system_cb.isChecked(),
+            "check_duplicate_turns": self.duplicate_turns_cb.isChecked(),
+            "duplicate_similarity_threshold": self.duplicate_similarity_spin.value(),
+        }
+        self.worker = ForMaxxerWorker(input_paths, filter_options, self)
+        self.worker.status.connect(self.update_status)
+        self.worker.preview.connect(self.update_preview)
+        self.worker.completed.connect(self.on_worker_finished)
+        self.worker.error.connect(self.on_worker_error)
+        self.worker.start()
 
-            # Output directory
-            # Default to outputs folder in repo root
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            repo_root = os.path.dirname(os.path.dirname(script_dir))
-            output_dir = os.path.join(repo_root, "Outputs")
-            os.makedirs(output_dir, exist_ok=True)
+    def on_worker_finished(self, message):
+        self.update_status(message)
+        self.convert_button.setEnabled(True)
+        self.worker = None
 
-            # Process each file
-            format_info = []
-            converted_files = []
-            for input_path in input_paths:
-                filename = os.path.basename(input_path)
-                self.update_status(f"Processing file: {filename}...")
-                logging.info(f"Processing file: {input_path}")
-
-                results = DatasetConverter.process_multiple_files([input_path], output_dir)
-                result = results.get(filename, ([], "unknown"))
-                
-                if isinstance(result, tuple):
-                    preview_entries, detected_format = result
-                else:
-                    # Backward compatibility
-                    preview_entries = result if isinstance(result, list) else []
-                    detected_format = "unknown"
-                
-                format_info.append(f"{filename}: {detected_format}")
-                self.update_preview(preview_entries)
-                
-                # Track converted file path for optional filtering
-                converted_file = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}.jsonl")
-                if os.path.exists(converted_file):
-                    converted_files.append(converted_file)
-
-            format_summary = " | ".join(format_info)
-            
-            # Apply filtering if enabled
-            if self.enable_filtering_cb.isChecked() and converted_files:
-                self.update_status("🛠 Applying filtering to converted files...")
-                filter_results = []
-                
-                for converted_file in converted_files:
-                    filename = os.path.basename(converted_file)
-                    self.update_status(f"Filtering: {filename}...")
-                    
-                    try:
-                        summary, output_path = filter_dataset(
-                            converted_file,
-                            output_dir,
-                            check_blank_turns=self.blank_turns_cb.isChecked(),
-                            check_invalid_endings=self.invalid_endings_cb.isChecked(),
-                            check_null_gpt=self.null_gpt_cb.isChecked(),
-                            check_duplicate_system=self.duplicate_system_cb.isChecked(),
-                            allow_empty_system_role=self.allow_empty_system_cb.isChecked(),
-                            check_duplicate_turns=self.duplicate_turns_cb.isChecked(),
-                        )
-                        filter_results.append(f"{filename}: filtered")
-                    except Exception as filter_error:
-                        filter_results.append(f"{filename}: filter error - {str(filter_error)}")
-                
-                filter_summary = " | ".join(filter_results)
-                self.update_status(f"✅ Conversion & filtering completed. Formats: {format_summary}\nFiltering: {filter_summary}")
-            else:
-                self.update_status(f"✅ Conversion completed. Detected formats: {format_summary}")
-                
-        except Exception as e:
-            self.update_status(f"Error: {str(e)}")
-            QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+    def on_worker_error(self, message):
+        self.update_status(f"Error: {message}")
+        self.convert_button.setEnabled(True)
+        self.worker = None
+        QMessageBox.critical(self, "Error", f"An error occurred: {message}")
 
     def update_preview(self, preview_entries):
         if not preview_entries:

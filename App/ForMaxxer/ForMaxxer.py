@@ -1,8 +1,12 @@
 import json
 import os
 import re
-from fuzzywuzzy import fuzz
 from typing import Optional, List, Dict, Any
+
+try:
+    from rapidfuzz import fuzz
+except ImportError:
+    from fuzzywuzzy import fuzz
 
 # Format identifiers
 FORMAT_SHAREGPT = "sharegpt"
@@ -11,6 +15,24 @@ FORMAT_VICUNA = "vicuna"
 FORMAT_ALPACA = "alpaca"
 FORMAT_CHATML = "chatml"
 FORMAT_UNKNOWN = "unknown"
+
+
+def value_with_prefix(message: Dict[str, Any]) -> str:
+    value = message.get('value', '')
+    if not isinstance(value, str):
+        return ""
+
+    prefix = message.get('prefix')
+    value = value.strip()
+    if not isinstance(prefix, str) or not prefix.strip():
+        return value
+
+    prefix = prefix.strip()
+    if not value:
+        return prefix
+    if value.startswith(prefix):
+        return value
+    return f"{prefix} {value}"
 
 
 class DatasetConverter:
@@ -206,7 +228,7 @@ class DatasetConverter:
                 continue
             
             role = msg.get('from', '').lower()
-            value = msg.get('value', '')
+            value = value_with_prefix(msg)
             
             # Normalize role names
             if role == 'user':
@@ -224,11 +246,8 @@ class DatasetConverter:
                 else:
                     continue
             
-            if value and isinstance(value, str):
-                conversations.append({
-                    "from": role,
-                    "value": value.strip()
-                })
+            if value:
+                conversations.append({"from": role, "value": value})
         
         return conversations
 
@@ -349,9 +368,9 @@ class DatasetConverter:
                             role = 'human'
                         elif role == 'assistant':
                             role = 'gpt'
-                        value = message.get('value', '')
-                        if isinstance(value, str):
-                            conversations.append({"from": role, "value": value.strip()})
+                        value = value_with_prefix(message)
+                        if value:
+                            conversations.append({"from": role, "value": value})
         
         elif detected_format == FORMAT_HUGGINGFACE:
             conversations = DatasetConverter.convert_huggingface_to_sharegpt(entry)
@@ -372,7 +391,8 @@ class DatasetConverter:
                     role = message.get('from')
                     if role == 'user':
                         role = 'human'
-                    conversations.append({"from": role if role != 'assistant' else 'gpt', "value": message.get('value', '').strip()})
+                    value = value_with_prefix(message)
+                    conversations.append({"from": role if role != 'assistant' else 'gpt', "value": value})
             else:
                 if 'system' in entry:
                     conversations.append({"from": "system", "value": entry['system'].strip()})
@@ -477,6 +497,14 @@ class DatasetConverter:
         print("Validation completed: The output is proper JSONL.")
 
     @staticmethod
+    def write_jsonl_rows(rows, output_path: str):
+        """Write JSONL with the same spacing as the original conversion path."""
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for row in rows:
+                json.dump(row, f, ensure_ascii=False)
+                f.write('\n')
+
+    @staticmethod
     def process_data(data: list, output_path: str, detected_format: Optional[str] = None) -> tuple:
         """
         Process data and write conversations to an output file.
@@ -524,14 +552,79 @@ class DatasetConverter:
             filename = os.path.basename(input_path)
             output_path = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}.jsonl")
             print(f"Processing file: {filename}")
-            data = DatasetConverter.load_data(input_path)
-            preview, detected_format = DatasetConverter.process_data(data, output_path)
+            if os.path.splitext(input_path)[1].lower() == ".parquet":
+                preview, detected_format = DatasetConverter.process_parquet_data(input_path, output_path)
+            else:
+                data = DatasetConverter.load_data(input_path)
+                preview, detected_format = DatasetConverter.process_data(data, output_path)
             preview_entries[filename] = (preview, detected_format)
         return preview_entries
+
+    @staticmethod
+    def process_parquet_data(input_path: str, output_path: str) -> tuple:
+        """
+        Convert a Parquet dataset to ShareGPT JSONL through HF Datasets/Arrow.
+        """
+        from datasets import load_dataset
+
+        dataset = load_dataset("parquet", data_files=input_path, split="train")
+        sample = [dataset[i] for i in range(min(10, len(dataset)))]
+        detected_format = DatasetConverter.detect_format(sample, sample_size=len(sample))
+        print(f"Detected format: {detected_format}")
+
+        def convert_row(entry):
+            return {"conversations": DatasetConverter.extract_conversations(entry, detected_format)}
+
+        converted = dataset.map(convert_row, remove_columns=dataset.column_names, desc="Converting Parquet to ShareGPT")
+        preview_entries = [converted[i] for i in range(min(3, len(converted)))]
+        DatasetConverter.write_jsonl_rows(converted, output_path)
+        DatasetConverter.validate_jsonl(output_path)
+        return preview_entries, detected_format
 
 # =============================================================================
 # Dataset Filtering (formerly DataMaxxer)
 # =============================================================================
+
+FILTER_STATS_TEMPLATE = {
+    "input_size_bytes": 0,
+    "output_size_bytes": 0,
+    "kept_source_bytes": 0,
+    "json_error_drop_bytes": 0,
+    "blank_turn_drop_bytes": 0,
+    "invalid_ending_drop_bytes": 0,
+    "null_gpt_drop_bytes": 0,
+    "missing_role_drop_bytes": 0,
+    "empty_after_cleanup_drop_bytes": 0,
+    "duplicate_drop_bytes": 0,
+    "original_data_count": 0,
+    "json_error_count": 0,
+    "blank_turn_drop_count": 0,
+    "invalid_ending_drop_count": 0,
+    "null_gpt_drop_count": 0,
+    "missing_role_drop_count": 0,
+    "empty_after_cleanup_drop_count": 0,
+    "duplicate_turn_conv_count": 0,
+    "duplicate_exact_conv_count": 0,
+    "duplicate_near_conv_count": 0,
+    "filtered_data_count": 0,
+}
+
+
+def format_bytes(size_bytes):
+    size = float(size_bytes or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
+        size /= 1024
+
+
+def _jsonl_line_sizes(input_path):
+    sizes = []
+    with open(input_path, 'rb') as f:
+        for line in f:
+            if line.strip():
+                sizes.append(len(line))
+    return sizes
 
 def ends_with_letter_number_comma(text):
     """Check if a text ends with a letter, number, or comma."""
@@ -551,21 +644,333 @@ def normalize_text(text):
     return text
 
 
-def has_human_gpt_duplicate(conversations):
+def normalize_for_similarity(text):
     """
-    Return True if any human turn is exactly duplicated by the following gpt turn
-    (after normalization).
+    Normalize text for fuzzy/near-duplicate checks.
     """
+    text = normalize_text(text)
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def get_human_gpt_duplicate_type(conversations, similarity_threshold=92):
+    """
+    Return the duplicate type for a human->gpt pair:
+    - "exact": normalized texts are identical
+    - "near": highly similar copy-with-small-edits
+    - None: no duplicate match found
+    """
+    threshold = max(0, min(100, int(similarity_threshold)))
+    partial_threshold = min(100, threshold + 4)
+
     for i in range(len(conversations) - 1):
         cur_msg = conversations[i]
         next_msg = conversations[i + 1]
 
         if cur_msg.get("from") == "human" and next_msg.get("from") == "gpt":
-            cur_val = normalize_text(cur_msg.get("value", ""))
-            next_val = normalize_text(next_msg.get("value", ""))
-            if cur_val and cur_val == next_val:
-                return True
-    return False
+            cur_val = normalize_for_similarity(cur_msg.get("value", ""))
+            next_val = normalize_for_similarity(next_msg.get("value", ""))
+            if not cur_val or not next_val:
+                continue
+
+            if cur_val == next_val:
+                return "exact"
+
+            shorter_len = min(len(cur_val), len(next_val))
+            longer_len = max(len(cur_val), len(next_val))
+            length_ratio = shorter_len / longer_len if longer_len else 0
+
+            token_ratio = fuzz.token_sort_ratio(cur_val, next_val)
+            partial_ratio = fuzz.partial_ratio(cur_val, next_val)
+
+            # Catch "copy with tiny tweaks" patterns while avoiding big rewrites.
+            if length_ratio >= 0.7 and (token_ratio >= threshold or partial_ratio >= partial_threshold):
+                return "near"
+
+            if length_ratio >= 0.8 and (next_val.startswith(cur_val) or cur_val.startswith(next_val)):
+                return "near"
+    return None
+
+
+def has_human_gpt_duplicate(conversations, similarity_threshold=92):
+    """
+    Return True if any human turn is duplicated by the following gpt turn.
+    Includes exact and near-duplicate checks.
+    """
+    return get_human_gpt_duplicate_type(conversations, similarity_threshold) is not None
+
+
+def clean_conversation_item(
+    item,
+    check_blank_turns=True,
+    check_invalid_endings=True,
+    check_null_gpt=True,
+    check_duplicate_system=True,
+    allow_empty_system_role=True,
+    check_duplicate_turns=True,
+    duplicate_similarity_threshold=92,
+):
+    conversations = item.get("conversations", []) if hasattr(item, "get") else []
+    has_blank_turn = False
+    has_invalid_ending = False
+    has_null_gpt_value = False
+
+    filtered_conversations = []
+    for i, msg in enumerate(conversations):
+        if not isinstance(msg, dict):
+            has_blank_turn = True
+            break
+
+        value = value_with_prefix(msg)
+        role = msg.get('from')
+
+        if check_blank_turns:
+            if role == "system":
+                if value is not None and not isinstance(value, str):
+                    has_blank_turn = True
+                    break
+            else:
+                if not (isinstance(value, str) and value.strip()):
+                    has_blank_turn = True
+                    break
+
+        if check_invalid_endings and value and ends_with_letter_number_comma(value):
+            has_invalid_ending = True
+            break
+
+        if check_null_gpt and role == 'gpt' and value is None:
+            has_null_gpt_value = True
+            break
+
+        if check_duplicate_system and role == 'system' and i < len(conversations) - 1:
+            next_msg = conversations[i + 1]
+            next_value = next_msg.get('value') if isinstance(next_msg, dict) else None
+            if (
+                isinstance(next_msg, dict)
+                and next_msg.get('from') == 'human'
+                and value
+                and next_value
+                and value.strip().lower() == next_value.strip().lower()
+            ):
+                continue
+
+        if role == "system" and not allow_empty_system_role and not value:
+            has_blank_turn = True
+            break
+
+        filtered_conversations.append({"from": role, "value": value})
+
+    if has_blank_turn:
+        return None, "blank_turn"
+    if has_invalid_ending:
+        return None, "invalid_ending"
+    if has_null_gpt_value:
+        return None, "null_gpt"
+
+    if check_duplicate_turns:
+        duplicate_type = get_human_gpt_duplicate_type(
+            filtered_conversations,
+            similarity_threshold=duplicate_similarity_threshold,
+        )
+        if duplicate_type:
+            return None, f"duplicate_{duplicate_type}"
+
+    roles = set(msg.get('from') for msg in filtered_conversations if isinstance(msg, dict))
+    if 'human' not in roles or 'gpt' not in roles:
+        return None, "missing_roles"
+
+    if filtered_conversations and filtered_conversations[-1].get('from') == 'human':
+        filtered_conversations = filtered_conversations[:-1]
+
+    if not filtered_conversations:
+        return None, "empty_after_cleanup"
+
+    return {"conversations": filtered_conversations}, None
+
+
+def _record_drop_reason(stats, reason, source_bytes=0):
+    if reason == "duplicate_exact":
+        stats["duplicate_turn_conv_count"] += 1
+        stats["duplicate_exact_conv_count"] += 1
+        stats["duplicate_drop_bytes"] += source_bytes
+    elif reason == "duplicate_near":
+        stats["duplicate_turn_conv_count"] += 1
+        stats["duplicate_near_conv_count"] += 1
+        stats["duplicate_drop_bytes"] += source_bytes
+    elif reason == "blank_turn":
+        stats["blank_turn_drop_count"] += 1
+        stats["blank_turn_drop_bytes"] += source_bytes
+    elif reason == "invalid_ending":
+        stats["invalid_ending_drop_count"] += 1
+        stats["invalid_ending_drop_bytes"] += source_bytes
+    elif reason == "null_gpt":
+        stats["null_gpt_drop_count"] += 1
+        stats["null_gpt_drop_bytes"] += source_bytes
+    elif reason == "missing_roles":
+        stats["missing_role_drop_count"] += 1
+        stats["missing_role_drop_bytes"] += source_bytes
+    elif reason == "empty_after_cleanup":
+        stats["empty_after_cleanup_drop_count"] += 1
+        stats["empty_after_cleanup_drop_bytes"] += source_bytes
+
+
+def _filter_dataset_with_hf_datasets(
+    input_path,
+    output_dir,
+    check_blank_turns=True,
+    check_invalid_endings=True,
+    check_null_gpt=True,
+    check_duplicate_system=True,
+    allow_empty_system_role=True,
+    check_duplicate_turns=True,
+    duplicate_similarity_threshold=92,
+):
+    from pathlib import Path
+    import tempfile
+    from datasets import load_dataset
+
+    input_path = Path(input_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = input_path.suffix.lower()
+    if suffix == ".parquet":
+        dataset = load_dataset("parquet", data_files=str(input_path), split="train")
+        output_file = output_dir / input_path.name
+        write_format = "parquet"
+    elif suffix in {".json", ".jsonl"}:
+        dataset = load_dataset("json", data_files=str(input_path), split="train")
+        if suffix == ".jsonl":
+            line_sizes = _jsonl_line_sizes(input_path)
+            if len(line_sizes) == len(dataset):
+                dataset = dataset.add_column("__formaxxer_source_size_bytes", line_sizes)
+        output_file = output_dir / input_path.name
+        write_format = "jsonl"
+    else:
+        raise ValueError(f"Unsupported filter input format: {suffix}")
+
+    stats = dict(FILTER_STATS_TEMPLATE)
+    stats["input_size_bytes"] = input_path.stat().st_size if input_path.exists() else 0
+    stats["original_data_count"] = len(dataset)
+
+    def map_row(item):
+        source_bytes = item.get("__formaxxer_source_size_bytes") if hasattr(item, "get") else None
+        if source_bytes is None:
+            source_bytes = len(json.dumps(dict(item), ensure_ascii=False).encode("utf-8")) if hasattr(item, "items") else 0
+        cleaned, drop_reason = clean_conversation_item(
+            item,
+            check_blank_turns=check_blank_turns,
+            check_invalid_endings=check_invalid_endings,
+            check_null_gpt=check_null_gpt,
+            check_duplicate_system=check_duplicate_system,
+            allow_empty_system_role=allow_empty_system_role,
+            check_duplicate_turns=check_duplicate_turns,
+            duplicate_similarity_threshold=duplicate_similarity_threshold,
+        )
+
+        return {
+            "conversations": cleaned["conversations"] if cleaned else [],
+            "__drop_reason": drop_reason or "",
+            "__formaxxer_source_size_bytes": int(source_bytes or 0),
+        }
+
+    mapped = dataset.map(map_row, desc="Filtering conversations")
+    drop_reasons = mapped["__drop_reason"]
+    source_sizes = mapped["__formaxxer_source_size_bytes"]
+    for drop_reason, source_bytes in zip(drop_reasons, source_sizes):
+        if drop_reason:
+            _record_drop_reason(stats, drop_reason, source_bytes)
+        else:
+            stats["kept_source_bytes"] += source_bytes
+
+    filtered = mapped.filter(lambda row: row["__drop_reason"] == "", desc="Keeping valid conversations")
+    columns_to_remove = [column for column in filtered.column_names if column != "conversations"]
+    if columns_to_remove:
+        filtered = filtered.remove_columns(columns_to_remove)
+    stats["filtered_data_count"] = len(filtered)
+
+    temp_output_file = None
+    writing_in_place = output_file.resolve() == input_path.resolve()
+    write_target = output_file
+    if writing_in_place:
+        temp_fd, temp_path = tempfile.mkstemp(
+            prefix=f"{input_path.stem}_filtered_",
+            suffix=input_path.suffix,
+            dir=str(output_dir),
+        )
+        os.close(temp_fd)
+        temp_output_file = Path(temp_path)
+        write_target = temp_output_file
+
+    try:
+        if write_format == "parquet":
+            filtered.to_parquet(str(write_target))
+        else:
+            DatasetConverter.write_jsonl_rows(filtered, str(write_target))
+
+        if writing_in_place and temp_output_file is not None:
+            os.replace(str(temp_output_file), str(output_file))
+        stats["output_size_bytes"] = output_file.stat().st_size if output_file.exists() else 0
+    except Exception:
+        if temp_output_file is not None and temp_output_file.exists():
+            try:
+                temp_output_file.unlink()
+            except Exception:
+                pass
+        raise
+
+    return _format_filter_summary(output_file, stats, duplicate_similarity_threshold), str(output_file)
+
+
+def _format_filter_summary(output_file, stats, duplicate_similarity_threshold):
+    rule_drop_count = (
+        stats['blank_turn_drop_count']
+        + stats['invalid_ending_drop_count']
+        + stats['null_gpt_drop_count']
+        + stats['missing_role_drop_count']
+        + stats['empty_after_cleanup_drop_count']
+    )
+    rule_drop_bytes = (
+        stats['blank_turn_drop_bytes']
+        + stats['invalid_ending_drop_bytes']
+        + stats['null_gpt_drop_bytes']
+        + stats['missing_role_drop_bytes']
+        + stats['empty_after_cleanup_drop_bytes']
+    )
+    known_source_bytes = stats['kept_source_bytes'] + rule_drop_bytes + stats['duplicate_drop_bytes'] + stats['json_error_drop_bytes']
+    source_accounting = ""
+    if known_source_bytes:
+        kept_pct = (stats['kept_source_bytes'] / known_source_bytes) * 100
+        dropped_pct = ((rule_drop_bytes + stats['duplicate_drop_bytes'] + stats['json_error_drop_bytes']) / known_source_bytes) * 100
+        source_accounting = (
+            f"Source bytes kept               : {format_bytes(stats['kept_source_bytes'])} ({kept_pct:.1f}%)\n"
+            f"Source bytes dropped            : {format_bytes(rule_drop_bytes + stats['duplicate_drop_bytes'] + stats['json_error_drop_bytes'])} ({dropped_pct:.1f}%)\n"
+            f"  Dropped by rules              : {format_bytes(rule_drop_bytes)}\n"
+            f"  Dropped by duplicates         : {format_bytes(stats['duplicate_drop_bytes'])}\n"
+            f"  Dropped by JSON errors        : {format_bytes(stats['json_error_drop_bytes'])}\n"
+        )
+    summary = (
+        f"Filtered data saved to {output_file}\n"
+        f"Input size                      : {format_bytes(stats['input_size_bytes'])}\n"
+        f"Output size                     : {format_bytes(stats['output_size_bytes'])}\n"
+        f"{source_accounting}"
+        f"Original lines read             : {stats['original_data_count']}\n"
+        f"Lines dropped (JSON errors)     : {stats['json_error_count']}\n"
+        f"Conversations dropped (rules)   : {rule_drop_count}\n"
+        f"  Blank/invalid turns           : {stats['blank_turn_drop_count']}\n"
+        f"  Invalid endings               : {stats['invalid_ending_drop_count']}\n"
+        f"  Null GPT responses            : {stats['null_gpt_drop_count']}\n"
+        f"  Missing human/gpt roles       : {stats['missing_role_drop_count']}\n"
+        f"  Empty after cleanup           : {stats['empty_after_cleanup_drop_count']}\n"
+        f"Conversations dropped (dups)    : {stats['duplicate_turn_conv_count']}\n"
+        f"  Exact duplicate drops         : {stats['duplicate_exact_conv_count']}\n"
+        f"  Near duplicate drops          : {stats['duplicate_near_conv_count']}\n"
+        f"  Similarity threshold used     : {max(0, min(100, int(duplicate_similarity_threshold)))}\n"
+        f"Filtered size (written)         : {stats['filtered_data_count']}"
+    )
+    print(summary)
+    return summary
 
 
 def filter_dataset(
@@ -577,6 +982,7 @@ def filter_dataset(
     check_duplicate_system=True,
     allow_empty_system_role=True,
     check_duplicate_turns=True,
+    duplicate_similarity_threshold=92,
 ):
     """
     Filters a dataset of conversations based on specified criteria.
@@ -590,30 +996,61 @@ def filter_dataset(
         check_duplicate_system (bool): Remove duplicate system messages.
         allow_empty_system_role (bool): Allow conversations with empty system role.
         check_duplicate_turns (bool): Remove conversations with duplicate human→gpt turns.
+        duplicate_similarity_threshold (int): Similarity threshold for duplicate human→gpt checks (0-100).
 
     Returns:
         tuple: (summary string, output_file_path)
     """
     from pathlib import Path
+    import tempfile
     
     try:
-        # Prepare paths
         input_path = Path(input_path)
         output_dir = Path(output_dir)
-        filtered_dir = output_dir / "filtered"
-        filtered_dir.mkdir(parents=True, exist_ok=True)
-        output_file = filtered_dir / f"{input_path.stem}_filtered.jsonl"
+        if input_path.suffix.lower() in {".json", ".jsonl", ".parquet"}:
+            try:
+                return _filter_dataset_with_hf_datasets(
+                    input_path,
+                    output_dir,
+                    check_blank_turns=check_blank_turns,
+                    check_invalid_endings=check_invalid_endings,
+                    check_null_gpt=check_null_gpt,
+                    check_duplicate_system=check_duplicate_system,
+                    allow_empty_system_role=allow_empty_system_role,
+                    check_duplicate_turns=check_duplicate_turns,
+                    duplicate_similarity_threshold=duplicate_similarity_threshold,
+                )
+            except Exception as hf_error:
+                if input_path.suffix.lower() == ".parquet":
+                    raise
+                print(f"HF Datasets filtering unavailable; falling back to streaming JSONL: {hf_error}")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / input_path.name
+        writing_in_place = output_file.resolve() == input_path.resolve()
+
+        temp_output_file = None
+        if writing_in_place:
+            temp_fd, temp_path = tempfile.mkstemp(
+                prefix=f"{input_path.stem}_filtered_",
+                suffix=".jsonl",
+                dir=str(output_dir),
+            )
+            os.close(temp_fd)
+            temp_output_file = Path(temp_path)
+            write_target = temp_output_file
+        else:
+            write_target = output_file
         
-        filtered_data_count = 0
-        original_data_count = 0
-        json_error_count = 0
-        duplicate_turn_conv_count = 0
+        stats = dict(FILTER_STATS_TEMPLATE)
+        stats["input_size_bytes"] = input_path.stat().st_size if input_path.exists() else 0
 
         with open(input_path, 'r', encoding='utf-8', errors='ignore') as infile, \
-             output_file.open('w', encoding='utf-8') as outfile:
+             write_target.open('w', encoding='utf-8') as outfile:
             
             for line in infile:
-                original_data_count += 1
+                stats["original_data_count"] += 1
+                source_bytes = len(line.encode('utf-8'))
                 line = line.strip()
 
                 if not line:
@@ -622,100 +1059,42 @@ def filter_dataset(
                 try:
                     item = json.loads(line)
                 except json.JSONDecodeError as e:
-                    json_error_count += 1
-                    print(f"JSON decode error at line {original_data_count}: {e}")
-                    continue
-                
-                conversations = item.get("conversations", [])
-                has_blank_turn = False
-                has_invalid_ending = False
-                has_null_gpt_value = False
-                
-                filtered_conversations = []
-                for i, msg in enumerate(conversations):
-                    value = msg.get('value')
-                    role = msg.get('from')
-
-                    # Check blank turns
-                    if check_blank_turns:
-                        if role == "system":
-                            if value is not None and not isinstance(value, str):
-                                has_blank_turn = True
-                                break
-                        else:
-                            if not (isinstance(value, str) and value.strip()):
-                                has_blank_turn = True
-                                break
-
-                    # Check invalid endings
-                    if check_invalid_endings and value and ends_with_letter_number_comma(value):
-                        has_invalid_ending = True
-                        break
-
-                    # Check null GPT responses
-                    if check_null_gpt and role == 'gpt' and value is None:
-                        has_null_gpt_value = True
-                        break
-
-                    # Check for duplicate system messages
-                    if check_duplicate_system and role == 'system' and i < len(conversations) - 1:
-                        next_msg = conversations[i + 1]
-                        next_value = next_msg.get('value')
-                        if (
-                            next_msg.get('from') == 'human'
-                            and value
-                            and next_value
-                            and value.strip().lower() == next_value.strip().lower()
-                        ):
-                            # Skip this system message (do not append)
-                            continue
-
-                    # Check for empty system role if not allowed
-                    if role == "system" and not allow_empty_system_role and not value:
-                        has_blank_turn = True
-                        break
-
-                    filtered_conversations.append(msg)
-
-                # Skip conversations that fail checks
-                if has_blank_turn or has_invalid_ending or has_null_gpt_value:
+                    stats["json_error_count"] += 1
+                    stats["json_error_drop_bytes"] += source_bytes
+                    print(f"JSON decode error at line {stats['original_data_count']}: {e}")
                     continue
 
-                # Optionally drop conversations with human→gpt duplicate turns
-                if check_duplicate_turns and has_human_gpt_duplicate(filtered_conversations):
-                    duplicate_turn_conv_count += 1
+                filtered_item, drop_reason = clean_conversation_item(
+                    item,
+                    check_blank_turns=check_blank_turns,
+                    check_invalid_endings=check_invalid_endings,
+                    check_null_gpt=check_null_gpt,
+                    check_duplicate_system=check_duplicate_system,
+                    allow_empty_system_role=allow_empty_system_role,
+                    check_duplicate_turns=check_duplicate_turns,
+                    duplicate_similarity_threshold=duplicate_similarity_threshold,
+                )
+                if drop_reason:
+                    _record_drop_reason(stats, drop_reason, source_bytes)
                     continue
-
-                # Ensure valid roles exist in the conversation
-                roles = set(msg.get('from') for msg in filtered_conversations)
-                if 'human' in roles and 'gpt' in roles:
-                    # Remove the last human message if it's the last one
-                    if filtered_conversations and filtered_conversations[-1].get('from') == 'human':
-                        filtered_conversations = filtered_conversations[:-1]
-                    
-                    # Write valid conversations
-                    if filtered_conversations:
-                        filtered_item = {"conversations": filtered_conversations}
-                        json.dump(filtered_item, outfile, ensure_ascii=False)
-                        outfile.write('\n')
-                        filtered_data_count += 1
+                if filtered_item:
+                    json.dump(filtered_item, outfile, ensure_ascii=False)
+                    outfile.write('\n')
+                    stats["filtered_data_count"] += 1
+                    stats["kept_source_bytes"] += source_bytes
         
-        print(f"Filtered data saved to {output_file}")
-        print(f"Original lines read             : {original_data_count}")
-        print(f"Lines dropped (JSON errors)     : {json_error_count}")
-        print(f"Conversations dropped (dups)    : {duplicate_turn_conv_count}")
-        print(f"Filtered size (written)         : {filtered_data_count}")
+        if writing_in_place and temp_output_file is not None:
+            os.replace(str(temp_output_file), str(output_file))
+        stats["output_size_bytes"] = output_file.stat().st_size if output_file.exists() else 0
 
-        summary = (
-            f"Filtered data saved to {output_file}\n"
-            f"Original lines read             : {original_data_count}\n"
-            f"Lines dropped (JSON errors)     : {json_error_count}\n"
-            f"Conversations dropped (dups)    : {duplicate_turn_conv_count}\n"
-            f"Filtered size (written)         : {filtered_data_count}"
-        )
-        return summary, str(output_file)
+        return _format_filter_summary(output_file, stats, duplicate_similarity_threshold), str(output_file)
 
     except Exception as e:
+        if 'temp_output_file' in locals() and temp_output_file is not None and temp_output_file.exists():
+            try:
+                temp_output_file.unlink()
+            except Exception:
+                pass
         print(f"Unexpected error during filtering: {e}")
         raise ValueError(f"Error during filtering: {str(e)}")
 

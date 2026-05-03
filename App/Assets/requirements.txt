@@ -1,6 +1,7 @@
 numpy==1.26.4
 aiofiles
 fuzzywuzzy
+rapidfuzz
 jsonlines
 matplotlib
 pandas

@@ -1,4 +1,3 @@
-import spacy
 import json
 import os
 import logging
@@ -6,38 +5,16 @@ import queue
 import threading
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
-import re
-from datasets import load_dataset
 from safetensors import SafetensorError
 
 # Silence TorchDynamo warnings
 logging.getLogger("torch._dynamo").setLevel(logging.ERROR)
 
-# Backend constants
-FILTER_MODE_RP = "rp"
-FILTER_MODE_NORMAL = "normal"
-FILTER_MODE_GARAK = "garak"
-
-# Backends: map classifier to model and refusal class index
-MODEL_SPECS = {
-    FILTER_MODE_RP: {
-        "model_name": "Dans-DiscountModels/Dans-Classifier-RP-Validity-V1.0.0-396m",
-        "refusal_index": 0,
-        "split_strategy": "sentence",
-        "max_tokens": 512,
-    },
-    FILTER_MODE_NORMAL: {
-        "model_name": "protectai/distilroberta-base-rejection-v1",
-        "refusal_index": 1,
-        "split_strategy": "sentence",
-        "max_tokens": 512,
-    },
-    FILTER_MODE_GARAK: {
-        "model_name": "garak-llm/garak-refusal-detector",
-        "refusal_index": 0,
-        "split_strategy": "entry_then_sentence_long",
-        "max_tokens": 8192,
-    },
+MODEL_SPEC = {
+    "model_name": "garak-llm/garak-refusal-detector",
+    "refusal_index": 0,
+    "split_strategy": "entry_then_sentence_long",
+    "max_tokens": 8192,
 }
 
 # Global state
@@ -46,7 +23,6 @@ tokenizers = {}
 producer_tokenizers = {}
 models = {}
 resolved_label_info = {}
-filter_mode = FILTER_MODE_RP
 inference_precision = "fp16"
 
 total_input_count = 0
@@ -60,14 +36,7 @@ class ProcessingCancelled(Exception):
 
 
 def get_model_name():
-    return MODEL_SPECS[filter_mode]["model_name"]
-
-
-def set_filter_mode(mode):
-    global filter_mode
-    if mode not in MODEL_SPECS:
-        raise ValueError(f"Invalid filter mode: {mode}")
-    filter_mode = mode
+    return MODEL_SPEC["model_name"]
 
 
 def get_refusal_index():
@@ -75,7 +44,7 @@ def get_refusal_index():
     info = resolved_label_info.get(model_name)
     if info and info.get("refusal_id") is not None:
         return int(info["refusal_id"])
-    return MODEL_SPECS[filter_mode]["refusal_index"]
+    return MODEL_SPEC["refusal_index"]
 
 
 def _normalize_label_text(label):
@@ -99,7 +68,7 @@ def _is_non_refusal_label(label):
 
 
 def get_split_strategy():
-    return MODEL_SPECS[filter_mode].get("split_strategy", "sentence")
+    return MODEL_SPEC.get("split_strategy", "sentence")
 
 
 def get_split_strategy_label():
@@ -112,7 +81,7 @@ def get_split_strategy_label():
 
 
 def get_model_max_tokens():
-    return int(MODEL_SPECS[filter_mode].get("max_tokens", 512))
+    return int(MODEL_SPEC.get("max_tokens", 512))
 
 
 def _resolve_label_info(model, fallback_refusal_index):
@@ -169,7 +138,6 @@ def _resolve_label_info(model, fallback_refusal_index):
 
 
 def initialize_models(status_update_callback=None):
-    import torch._dynamo
     global nlp, tokenizers, producer_tokenizers, models
 
     # Force device to GPU if available, no CPU fallback or ONNX
@@ -192,20 +160,10 @@ def initialize_models(status_update_callback=None):
             status_update_callback("Loading tokenizer...")
         tokenizers[model_name] = AutoTokenizer.from_pretrained(model_name)
 
-    if model_name not in producer_tokenizers:
-        # Separate tokenizer instance for producer thread token counting/splitting.
-        # Prevents Rust tokenizer borrow conflicts with concurrent GPU inference tokenization.
-        producer_tokenizers[model_name] = AutoTokenizer.from_pretrained(
-            model_name,
-            use_fast=False,
-        )
-
     if model_name not in models:
         if status_update_callback:
             status_update_callback("Loading model weights...")
         try:
-            if "RP-Validity" in model_name or filter_mode == FILTER_MODE_RP:
-                torch._dynamo.config.suppress_errors = True
             models[model_name] = AutoModelForSequenceClassification.from_pretrained(model_name).eval().to(torch.device(device))
         except (SafetensorError, OSError, ValueError) as e:
             err = str(e)
@@ -233,7 +191,7 @@ def initialize_models(status_update_callback=None):
                 raise
 
     if model_name not in resolved_label_info:
-        fallback = MODEL_SPECS[filter_mode]["refusal_index"]
+        fallback = MODEL_SPEC["refusal_index"]
         resolved_label_info[model_name] = _resolve_label_info(models[model_name], fallback)
 
     if status_update_callback:
@@ -346,8 +304,6 @@ def run_filter_streaming(input_file, output_file, threshold, batch_size,
         with open(input_file, 'r', encoding='utf-8') as f:
             total_lines = sum(1 for _ in f)
 
-        dataset = load_dataset("json", data_files=input_file, split="train", streaming=True)
-
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         writer = open(output_file, 'w', encoding='utf-8')
 
@@ -356,62 +312,65 @@ def run_filter_streaming(input_file, output_file, threshold, batch_size,
         total_clean_count = 0
         total_input_count = 0
         total_kept_count = 0
-        finalized_count = 0
-
         if status_update_callback:
             status_update_callback(f"Streaming and filtering started... Total lines: {total_lines}")
 
-        batch = []
-        conversation_batch_size = max(1, conversation_batch_size)
+        queue_depth = max(4, min(max(1, conversation_batch_size), 512))
         microbatch_size = max(1, batch_size)
-        if filter_mode == FILTER_MODE_GARAK and microbatch_size > 64:
+        if microbatch_size > 64:
             microbatch_size = 64
             if status_update_callback:
                 status_update_callback("Garak Classifier microbatch capped at 64 for stability.")
         global inference_precision
         inference_precision = precision_mode
-        prep_queue = queue.Queue(maxsize=3)
+        prep_queue = queue.Queue(maxsize=queue_depth)
         sentinel = object()
-        producer_state = {"input_count": 0, "error": None}
+        producer_state = {"input_count": 0, "entry_count": 0, "error": None}
         stop_event = threading.Event()
 
         if status_update_callback:
             status_update_callback(
-                f"Using conversation batch size {conversation_batch_size}, inference microbatch {microbatch_size}"
+                f"Using CPU queue depth {queue_depth}, inference microbatch {microbatch_size}"
             )
             status_update_callback(f"Inference precision: {inference_precision}")
             status_update_callback(f"Scoring strategy: {get_split_strategy_label()}")
             status_update_callback(f"Split token limit: {split_token_limit} (backend max {get_model_max_tokens()})")
-            status_update_callback(f"Threshold mode: remove entries with compliance confidence below {threshold:.3f}")
+            status_update_callback(f"Threshold mode: remove entries with refusal confidence at or above {threshold:.3f}")
 
         def _producer():
-            local_batch = []
             try:
-                for item in dataset:
-                    if stop_requested_callback and stop_requested_callback():
-                        stop_event.set()
-                        break
-                    if stop_event.is_set():
-                        break
-                    producer_state["input_count"] += 1
-                    item_cleaned = validate_json(item)
-                    if item_cleaned:
-                        local_batch.append(item_cleaned)
-                        if len(local_batch) >= conversation_batch_size:
-                            prepared = _prepare_conversation_batch(local_batch, split_token_limit)
+                with open(input_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if stop_requested_callback and stop_requested_callback():
+                            stop_event.set()
+                            break
+                        if stop_event.is_set():
+                            break
+
+                        producer_state["input_count"] += 1
+                        try:
+                            item = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+
+                        item_cleaned = validate_json(item)
+                        if item_cleaned:
+                            seq = producer_state["entry_count"]
+                            producer_state["entry_count"] += 1
+                            prepared = _prepare_conversation_entry(
+                                seq,
+                                item_cleaned,
+                                split_token_limit,
+                                status_update_callback,
+                            )
                             prep_queue.put(prepared)
-                            local_batch = []
 
-                    if status_update_callback and producer_state["input_count"] % 100 == 0:
-                        percent_done = (producer_state["input_count"] / total_lines) * 100
-                        remaining = total_lines - producer_state["input_count"]
-                        status_update_callback(
-                            f"Read {producer_state['input_count']}/{total_lines} lines ({percent_done:.1f}%). Remaining to read: {remaining}"
-                        )
-
-                if local_batch:
-                    prepared = _prepare_conversation_batch(local_batch, split_token_limit)
-                    prep_queue.put(prepared)
+                        if status_update_callback and producer_state["input_count"] % 100 == 0:
+                            percent_done = (producer_state["input_count"] / total_lines) * 100
+                            remaining = total_lines - producer_state["input_count"]
+                            status_update_callback(
+                                f"Read {producer_state['input_count']}/{total_lines} lines ({percent_done:.1f}%). Remaining to read: {remaining}"
+                            )
             except Exception as e:
                 producer_state["error"] = e
             finally:
@@ -423,36 +382,112 @@ def run_filter_streaming(input_file, output_file, threshold, batch_size,
         producer_thread = threading.Thread(target=_producer, daemon=True)
         producer_thread.start()
 
-        while True:
+        active_entries = {}
+        chunk_queue = []
+        finalized_entries = {}
+        next_emit_seq = 0
+        producer_done = False
+        zero_score_entries = 0
+        last_status_finalized = 0
+
+        def _finish_entry(seq, is_refusal):
+            nonlocal zero_score_entries
+            global total_kept_count, total_refusal_count, total_clean_count
+            entry = active_entries.pop(seq, None)
+            if entry is None:
+                return
+            if entry["score_count"] == 0:
+                zero_score_entries += 1
+            if is_refusal:
+                total_refusal_count += 1
+                finalized_entries[seq] = None
+            else:
+                total_clean_count += 1
+                total_kept_count += 1
+                finalized_entries[seq] = entry["conversation"]
+
+        def _flush_writer():
+            nonlocal next_emit_seq
+            while next_emit_seq in finalized_entries:
+                conversation = finalized_entries.pop(next_emit_seq)
+                if conversation is not None:
+                    json_str = json.dumps(conversation, ensure_ascii=False)
+                    json_str = clean_text(json_str)
+                    if validate_utf8(json_str):
+                        writer.write(json_str + "\n")
+                next_emit_seq += 1
+
+        while not producer_done or active_entries or chunk_queue:
             if stop_requested_callback and stop_requested_callback():
                 stop_event.set()
                 raise ProcessingCancelled()
 
-            prepared_batch = prep_queue.get()
-            if prepared_batch is sentinel:
-                break
-            try:
-                _consume_prepared_batch(
-                    prepared_batch,
-                    threshold,
+            drained_item = False
+            while not producer_done and len(chunk_queue) < microbatch_size * 4:
+                try:
+                    prepared_entry = prep_queue.get(timeout=0.05)
+                except queue.Empty:
+                    break
+                drained_item = True
+                if prepared_entry is sentinel:
+                    producer_done = True
+                    break
+
+                seq = prepared_entry["seq"]
+                chunks = prepared_entry["chunks"]
+                active_entries[seq] = {
+                    "conversation": prepared_entry["conversation"],
+                    "remaining": len(chunks),
+                    "score_count": 0,
+                    "refused": False,
+                }
+                if chunks:
+                    chunk_queue.extend((seq, chunk) for chunk in chunks)
+                else:
+                    _finish_entry(seq, False)
+
+            if chunk_queue and (len(chunk_queue) >= microbatch_size or producer_done or not drained_item):
+                batch = chunk_queue[:microbatch_size]
+                del chunk_queue[:microbatch_size]
+                scores = predict(
+                    [chunk for _, chunk in batch],
                     microbatch_size,
-                    writer,
                     status_update_callback,
-                    counts_update_callback,
                     stop_requested_callback,
                 )
-            except Exception:
-                stop_event.set()
-                raise
-            finalized_count = total_refusal_count + total_clean_count
-            if progress_update_callback and total_lines > 0:
-                percent_done = int((finalized_count / total_lines) * 100)
-                progress_update_callback(max(0, min(99, percent_done)))
-            if status_update_callback and total_lines > 0:
-                write_ratio = (total_clean_count / total_lines) * 100
-                status_update_callback(
-                    f"Written {total_clean_count}/{total_lines} entries to output ({write_ratio:.1f}%)."
-                )
+
+                for (seq, _chunk), score in zip(batch, scores):
+                    entry = active_entries.get(seq)
+                    if entry is None:
+                        continue
+                    entry["score_count"] += 1
+                    entry["remaining"] -= 1
+                    if score >= threshold:
+                        entry["refused"] = True
+                        skipped = sum(1 for queued_seq, _ in chunk_queue if queued_seq == seq)
+                        if skipped:
+                            chunk_queue = [(queued_seq, chunk) for queued_seq, chunk in chunk_queue if queued_seq != seq]
+                            entry["remaining"] -= skipped
+                    if entry["remaining"] <= 0:
+                        _finish_entry(seq, entry["refused"])
+
+                _flush_writer()
+
+                finalized_count = total_refusal_count + total_clean_count
+                if counts_update_callback:
+                    counts_update_callback(total_refusal_count, total_clean_count)
+                if progress_update_callback and total_lines > 0:
+                    percent_done = int((finalized_count / total_lines) * 100)
+                    progress_update_callback(max(0, min(99, percent_done)))
+                if status_update_callback and total_lines > 0 and finalized_count - last_status_finalized >= 100:
+                    last_status_finalized = finalized_count
+                    write_ratio = (total_clean_count / total_lines) * 100
+                    status_update_callback(
+                        f"Written {total_clean_count}/{total_lines} entries to output ({write_ratio:.1f}%)."
+                    )
+            elif producer_done and not chunk_queue:
+                _flush_writer()
+                break
 
         stop_event.set()
         producer_thread.join(timeout=2)
@@ -464,12 +499,13 @@ def run_filter_streaming(input_file, output_file, threshold, batch_size,
 
         writer.close()
 
-        removed = total_input_count - total_kept_count
         if counts_update_callback:
             counts_update_callback(total_refusal_count, total_clean_count)
         if progress_update_callback:
             progress_update_callback(100)
         if status_update_callback:
+            if zero_score_entries > 0:
+                status_update_callback(f"Warning: {zero_score_entries} entries had no scorable assistant text.")
             status_update_callback(
                 f"Filtering complete. Compliance kept: {total_clean_count} | Refusals removed: {total_refusal_count} | Total: {total_input_count}. Output: {output_file}"
             )
@@ -516,37 +552,24 @@ def _ensure_nlp(status_update_callback=None):
     if nlp is None:
         if status_update_callback:
             status_update_callback("Loading sentence splitter...")
+        import spacy
         nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
         nlp.add_pipe("sentencizer")
     return nlp
 
 
-def _build_prompt_response(conversation):
-    prompt_parts = []
-    response_parts = []
-
-    def _is_human(role):
-        role = str(role).strip().lower()
-        return role in {"human", "user"}
-
-    def _is_assistant(role):
-        role = str(role).strip().lower()
-        return role in {"gpt", "assistant", "model"}
-
-    for turn in conversation.get("conversations", []):
-        role = turn.get("from")
-        value = clean_text(turn.get("value", ""))
-        if not value:
-            continue
-        if _is_human(role):
-            prompt_parts.append(value)
-        elif _is_assistant(role):
-            response_parts.append(value)
-
-    return {
-        "prompt": "\n".join(prompt_parts).strip(),
-        "response": "\n".join(response_parts).strip(),
-    }
+def _get_producer_tokenizer(status_update_callback=None):
+    model_name = get_model_name()
+    if model_name not in producer_tokenizers:
+        if status_update_callback:
+            status_update_callback("Loading CPU tokenizer for streaming preparation...")
+        # Separate tokenizer instance for producer thread token counting/splitting.
+        # Prevents Rust tokenizer borrow conflicts with concurrent GPU inference tokenization.
+        producer_tokenizers[model_name] = AutoTokenizer.from_pretrained(
+            model_name,
+            use_fast=False,
+        )
+    return producer_tokenizers[model_name]
 
 
 def _is_assistant_role(role):
@@ -554,170 +577,40 @@ def _is_assistant_role(role):
     return role in {"gpt", "assistant", "model"}
 
 
-def _prepare_conversation_batch(conversations, split_token_limit):
-    strategy = get_split_strategy()
-    tokenizer = producer_tokenizers.get(get_model_name())
+def _prepare_conversation_entry(seq, conversation, split_token_limit, status_update_callback=None):
+    tokenizer = _get_producer_tokenizer(status_update_callback)
     split_token_limit = max(32, int(split_token_limit))
+    assistant_turns = [
+        clean_text(turn.get("value", ""))
+        for turn in conversation.get("conversations", [])
+        if _is_assistant_role(turn.get("from")) and turn.get("value") is not None
+    ]
+    assistant_turns = [text for text in assistant_turns if text]
+    entry_text = " ".join(assistant_turns).strip()
 
-    flat_inputs = []
-    flat_owner_indices = []
+    chunks = []
+    if entry_text:
+        if tokenizer is None:
+            token_count = len(entry_text.split())
+        else:
+            token_count = len(tokenizer.encode(entry_text, add_special_tokens=False))
 
-    if strategy == "entry_pair":
-        for idx, conversation in enumerate(conversations):
-            pair = _build_prompt_response(conversation)
-            if not pair["response"]:
-                continue
-            response_chunks = _split_text_for_model(pair["response"], tokenizer, split_token_limit)
-            for chunk in response_chunks:
-                flat_inputs.append({"prompt": pair["prompt"], "response": chunk})
-                flat_owner_indices.append(idx)
-    elif strategy == "entry_then_sentence_long":
-        turn_texts = []
-        turn_owner_indices = []
-        long_entry_indices = set()
-
-        for idx, conversation in enumerate(conversations):
-            entry_text = " ".join(
-                clean_text(turn.get("value", ""))
-                for turn in conversation.get("conversations", [])
-                if _is_assistant_role(turn.get("from")) and turn.get("value") is not None
-            ).strip()
-
-            if not entry_text:
-                continue
-
-            if tokenizer is None:
-                token_count = len(entry_text.split())
-            else:
-                token_count = len(tokenizer.encode(entry_text, add_special_tokens=False))
-
-            if token_count <= split_token_limit:
-                flat_inputs.append(entry_text)
-                flat_owner_indices.append(idx)
-            else:
-                long_entry_indices.add(idx)
-                for turn in conversation.get("conversations", []):
-                    if _is_assistant_role(turn.get("from")):
-                        value = clean_text(turn.get("value", ""))
-                        if value:
-                            turn_texts.append(value)
-                            turn_owner_indices.append(idx)
-
-        if turn_texts:
-            nlp_local = _ensure_nlp()
-            docs = nlp_local.pipe(turn_texts, batch_size=256)
-            for owner_idx, doc in zip(turn_owner_indices, docs):
-                if owner_idx not in long_entry_indices:
-                    continue
+        if token_count <= split_token_limit:
+            chunks.append(entry_text)
+        else:
+            nlp_local = _ensure_nlp(status_update_callback)
+            docs = nlp_local.pipe(assistant_turns, batch_size=32)
+            for doc in docs:
                 for sent in doc.sents:
                     sent_text = clean_text(sent.text.strip())
                     if sent_text:
-                        for chunk in _split_text_for_model(sent_text, tokenizer, split_token_limit):
-                            flat_inputs.append(chunk)
-                            flat_owner_indices.append(owner_idx)
-    elif strategy == "entry":
-        for idx, conversation in enumerate(conversations):
-            entry_text = " ".join(
-                clean_text(turn.get("value", ""))
-                for turn in conversation.get("conversations", [])
-                if _is_assistant_role(turn.get("from")) and turn.get("value") is not None
-            ).strip()
-            if not entry_text:
-                continue
-            for chunk in _split_text_for_model(entry_text, tokenizer, split_token_limit):
-                flat_inputs.append(chunk)
-                flat_owner_indices.append(idx)
-    else:
-        nlp_local = _ensure_nlp()
-        sentence_groups = [[] for _ in conversations]
-
-        turn_texts = []
-        turn_owner_indices = []
-        for idx, conversation in enumerate(conversations):
-            for turn in conversation.get('conversations', []):
-                if _is_assistant_role(turn.get('from')):
-                    value = clean_text(turn.get('value', ''))
-                    if value:
-                        turn_texts.append(value)
-                        turn_owner_indices.append(idx)
-
-        if turn_texts:
-            docs = nlp_local.pipe(turn_texts, batch_size=256)
-            for owner_idx, doc in zip(turn_owner_indices, docs):
-                for sent in doc.sents:
-                    sent_text = clean_text(sent.text.strip())
-                    if sent_text:
-                        sentence_groups[owner_idx].append(sent_text)
-
-        for owner_idx, sentences in enumerate(sentence_groups):
-            for sent in sentences:
-                for chunk in _split_text_for_model(sent, tokenizer, split_token_limit):
-                    flat_inputs.append(chunk)
-                    flat_owner_indices.append(owner_idx)
+                        chunks.extend(_split_text_for_model(sent_text, tokenizer, split_token_limit))
 
     return {
-        "conversations": conversations,
-        "flat_inputs": flat_inputs,
-        "flat_owner_indices": flat_owner_indices,
+        "seq": seq,
+        "conversation": conversation,
+        "chunks": chunks,
     }
-
-
-def _consume_prepared_batch(prepared_batch, threshold, microbatch_size, writer,
-                            status_update_callback=None, counts_update_callback=None,
-                            stop_requested_callback=None):
-    global total_kept_count, total_refusal_count, total_clean_count
-
-    conversations = prepared_batch["conversations"]
-    flat_inputs = prepared_batch["flat_inputs"]
-    flat_owner_indices = prepared_batch["flat_owner_indices"]
-
-    if flat_inputs:
-        if stop_requested_callback and stop_requested_callback():
-            raise ProcessingCancelled()
-        if status_update_callback:
-            status_update_callback(
-                f"Scoring {len(flat_inputs)} prepared chunks (microbatch={microbatch_size})"
-            )
-        classifications = predict(flat_inputs, microbatch_size, status_update_callback, stop_requested_callback)
-    else:
-        classifications = []
-
-    refusal_score_sum = [0.0] * len(conversations)
-    refusal_score_count = [0] * len(conversations)
-
-    for owner_idx, refusal_prob in zip(flat_owner_indices, classifications):
-        refusal_score_sum[owner_idx] += refusal_prob
-        refusal_score_count[owner_idx] += 1
-
-    zero_score_entries = 0
-    for idx, conversation in enumerate(conversations):
-        if refusal_score_count[idx] == 0:
-            zero_score_entries += 1
-            mean_refusal = 0.0
-        else:
-            mean_refusal = refusal_score_sum[idx] / refusal_score_count[idx]
-        compliance_score = 1.0 - mean_refusal
-        is_refusal = compliance_score < threshold
-
-        if is_refusal:
-            total_refusal_count += 1
-        else:
-            total_clean_count += 1
-            total_kept_count += 1
-            json_str = json.dumps(conversation, ensure_ascii=False)
-            json_str = clean_text(json_str)
-            if validate_utf8(json_str):
-                writer.write(json_str + "\n")
-
-        if counts_update_callback and (idx % 64 == 0 or idx == len(conversations) - 1):
-            counts_update_callback(total_refusal_count, total_clean_count)
-
-    if zero_score_entries > 0 and status_update_callback:
-        status_update_callback(f"Warning: {zero_score_entries} entries in this chunk had no scorable assistant text.")
-
-
-def extract_sentences(doc):
-    return [clean_text(sent.text.strip()) for sent in doc.sents]
 
 
 def update_status(message, status_update_callback=None):
@@ -751,7 +644,7 @@ def predict(inputs, microbatch_size=4, status_update_callback=None, stop_request
             raise ProcessingCancelled()
         chunk = inputs[i:i + current_microbatch]
         try:
-            inputs = tokenizers[model_name](
+            encoded_inputs = tokenizers[model_name](
                 chunk,
                 padding=True,
                 truncation=True,
@@ -762,13 +655,19 @@ def predict(inputs, microbatch_size=4, status_update_callback=None, stop_request
             with torch.inference_mode():
                 if use_autocast:
                     with torch.autocast(device_type="cuda", dtype=autocast_dtype):
-                        logits = models[model_name](**inputs).logits
+                        logits = models[model_name](**encoded_inputs).logits
                 else:
-                    logits = models[model_name](**inputs).logits
+                    logits = models[model_name](**encoded_inputs).logits
 
             if logits.ndim == 2 and logits.shape[1] >= 2:
                 probs = torch.softmax(logits, dim=-1)
-                refusal_scores = probs[:, refusal_idx].detach().cpu().tolist()
+                predicted_ids = torch.argmax(probs, dim=-1)
+                predicted_scores = torch.max(probs, dim=-1).values
+                refusal_scores = torch.where(
+                    predicted_ids == refusal_idx,
+                    predicted_scores,
+                    torch.zeros_like(predicted_scores),
+                ).detach().cpu().tolist()
             else:
                 probs = torch.sigmoid(logits)
                 refusal_scores = probs.squeeze(-1).detach().cpu().tolist()

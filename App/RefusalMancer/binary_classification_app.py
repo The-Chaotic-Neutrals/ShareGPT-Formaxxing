@@ -6,7 +6,7 @@ import os
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QFileDialog, QRadioButton, QButtonGroup, QProgressBar, QGroupBox, QListWidget,
+    QFileDialog, QProgressBar, QGroupBox, QListWidget,
     QComboBox, QSlider,
     QListWidgetItem, QSizePolicy, QAbstractItemView
 )
@@ -17,29 +17,14 @@ from App.Other.BG import GalaxyBackgroundWidget
 
 
 APP_TITLE = "RefusalMancer"
-FILTER_MODE_RP = "rp"
-FILTER_MODE_NORMAL = "normal"
-FILTER_MODE_GARAK = "garak"
+GARAK_MAX_MICROBATCH = 64
 
-BACKEND_UI_INFO = {
-    FILTER_MODE_RP: {
-        "max_tokens": 512,
-        "default_split_tokens": 512,
-        "name": "RP Classifier",
-        "strategy": "Sentence-first",
-    },
-    FILTER_MODE_NORMAL: {
-        "max_tokens": 512,
-        "default_split_tokens": 512,
-        "name": "Instruct Classifier",
-        "strategy": "Sentence-first",
-    },
-    FILTER_MODE_GARAK: {
-        "max_tokens": 8192,
-        "default_split_tokens": 8192,
-        "name": "Garak Classifier",
-        "strategy": "Entry-level + sentence fallback",
-    },
+GARAK_UI_INFO = {
+    "max_tokens": 8192,
+    "default_split_tokens": 8192,
+    "name": "Garak Classifier",
+    "strategy": "Entry-level + sentence fallback",
+    "threshold_tip": "Refusal confidence cutoff (0.0 - 1.0). Entries at or above this are removed as refusals.",
 }
 
 
@@ -100,7 +85,7 @@ class FilterThread(QThread):
     progress_update = pyqtSignal(int)
     finished_signal = pyqtSignal(bool)
 
-    def __init__(self, input_files, threshold, batch_size, conversation_batch_size, precision_mode, split_token_limit, mode):
+    def __init__(self, input_files, threshold, batch_size, conversation_batch_size, precision_mode, split_token_limit):
         super().__init__()
         self.input_files = input_files
         self.threshold = threshold
@@ -108,7 +93,6 @@ class FilterThread(QThread):
         self.conversation_batch_size = conversation_batch_size
         self.precision_mode = precision_mode
         self.split_token_limit = split_token_limit
-        self.mode = mode
         self._stop_requested = False
 
     def request_stop(self):
@@ -123,7 +107,6 @@ class FilterThread(QThread):
         from App.RefusalMancer.binary_classification import (
             filter_conversations as fc,
             initialize_models as init_models,
-            set_filter_mode as sfm,
         )
 
         state = {
@@ -132,8 +115,7 @@ class FilterThread(QThread):
         }
         had_error = False
 
-        sfm(self.mode)
-        self.status_update.emit("Loading selected classifier model...")
+        self.status_update.emit("Loading garak classifier model...")
         init_models(status_update_callback=self.status_update.emit)
         self.status_update.emit("Counts represent entries (Refusals/Compliance), not GPU microbatch size.")
 
@@ -208,7 +190,6 @@ class BinaryClassificationApp(QWidget):
         super().__init__()
         self.theme = theme
         self.input_files = []
-        self.current_mode = FILTER_MODE_RP
         self.thread = None
         
         self.setWindowTitle(f"{APP_TITLE} 🛡️")
@@ -295,24 +276,6 @@ class BinaryClassificationApp(QWidget):
                 color: #6B7280;
                 border-color: rgba(17, 24, 39, 200);
                 background-color: rgba(2, 2, 2, 200);
-            }
-            QRadioButton {
-                spacing: 8px;
-                color: #E5E7EB;
-            }
-            QRadioButton::indicator {
-                width: 16px;
-                height: 16px;
-            }
-            QRadioButton::indicator:unchecked {
-                border: 2px solid #4B5563;
-                background-color: transparent;
-                border-radius: 8px;
-            }
-            QRadioButton::indicator:checked {
-                border: 2px solid #2563EB;
-                background-color: #2563EB;
-                border-radius: 8px;
             }
             QProgressBar {
                 border: 1px solid rgba(31, 41, 55, 200);
@@ -409,32 +372,9 @@ class BinaryClassificationApp(QWidget):
         settings_layout.setSpacing(12)
         settings_group.setLayout(settings_layout)
 
-        # Classifier model
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(25)
-        mode_label = QLabel("Classifier Model:")
-        mode_label.setStyleSheet("font-weight: 500;")
-        
-        self.mode_group = QButtonGroup(self)
-        self.rp_mode_radio = QRadioButton("RP Classifier")
-        self.rp_mode_radio.setChecked(True)
-        self.rp_mode_radio.toggled.connect(self.update_filter_mode)
-        self.mode_group.addButton(self.rp_mode_radio)
-
-        self.normal_mode_radio = QRadioButton("Instruct Classifier")
-        self.normal_mode_radio.toggled.connect(self.update_filter_mode)
-        self.mode_group.addButton(self.normal_mode_radio)
-
-        self.garak_mode_radio = QRadioButton("Garak Classifier")
-        self.garak_mode_radio.toggled.connect(self.update_filter_mode)
-        self.mode_group.addButton(self.garak_mode_radio)
-
-        mode_row.addWidget(mode_label)
-        mode_row.addWidget(self.rp_mode_radio)
-        mode_row.addWidget(self.normal_mode_radio)
-        mode_row.addWidget(self.garak_mode_radio)
-        mode_row.addStretch()
-        settings_layout.addLayout(mode_row)
+        model_label = QLabel("Classifier Model: Garak Classifier")
+        model_label.setStyleSheet("font-weight: 500;")
+        settings_layout.addWidget(model_label)
 
         # Classification logic hint
         self.class_logic_label = QLabel(self.get_classification_logic_text())
@@ -452,19 +392,19 @@ class BinaryClassificationApp(QWidget):
         params_row.addWidget(QLabel("Threshold:"))
         self.threshold_entry = QLineEdit("0.75")
         self.threshold_entry.setFixedWidth(80)
-        self.threshold_entry.setToolTip("Compliance confidence cutoff (0.0 - 1.0). Entries below this are removed as refusals.")
+        self.threshold_entry.setToolTip(GARAK_UI_INFO["threshold_tip"])
         params_row.addWidget(self.threshold_entry)
 
         params_row.addWidget(QLabel("GPU Microbatch:"))
-        self.batch_size_entry = QLineEdit("1024")
+        self.batch_size_entry = QLineEdit(str(GARAK_MAX_MICROBATCH))
         self.batch_size_entry.setFixedWidth(80)
         self.batch_size_entry.setToolTip("Target inference microbatch size on GPU (higher is faster until VRAM limit)")
         params_row.addWidget(self.batch_size_entry)
 
-        params_row.addWidget(QLabel("Conversation Batch:"))
-        self.conversation_batch_entry = QLineEdit("4096")
+        params_row.addWidget(QLabel("CPU Queue:"))
+        self.conversation_batch_entry = QLineEdit("512")
         self.conversation_batch_entry.setFixedWidth(80)
-        self.conversation_batch_entry.setToolTip("Number of conversations prepared on CPU per producer chunk")
+        self.conversation_batch_entry.setToolTip("Maximum prepared entries queued between CPU preparation and GPU scoring")
         params_row.addWidget(self.conversation_batch_entry)
 
         params_row.addWidget(QLabel("Precision:"))
@@ -594,7 +534,7 @@ class BinaryClassificationApp(QWidget):
         """
 
     def _current_backend_info(self):
-        return BACKEND_UI_INFO.get(self.current_mode, BACKEND_UI_INFO[FILTER_MODE_RP])
+        return GARAK_UI_INFO
 
     def _on_split_slider_changed(self, value):
         self.split_tokens_value_label.setText(str(int(value)))
@@ -613,6 +553,13 @@ class BinaryClassificationApp(QWidget):
             f"{info['name']} supports up to {max_tokens} tokens ({info['strategy']} scoring). "
             "Lower 'Split At Tokens' values split earlier."
         )
+        self.threshold_entry.setToolTip(info["threshold_tip"])
+        try:
+            current_microbatch = int(self.batch_size_entry.text())
+        except ValueError:
+            current_microbatch = GARAK_MAX_MICROBATCH
+        if current_microbatch > GARAK_MAX_MICROBATCH:
+            self.batch_size_entry.setText(str(GARAK_MAX_MICROBATCH))
 
     def _add_files(self, file_paths):
         """Add files from drag-drop or browse."""
@@ -668,10 +615,10 @@ class BinaryClassificationApp(QWidget):
                 raise ValueError("Threshold must be between 0.0 and 1.0")
             if batch_size <= 0:
                 raise ValueError("GPU microbatch must be positive")
-            if self.current_mode == FILTER_MODE_GARAK and batch_size > 64:
-                raise ValueError("Garak Classifier supports a maximum GPU microbatch of 64")
+            if batch_size > GARAK_MAX_MICROBATCH:
+                raise ValueError(f"Garak Classifier supports a maximum GPU microbatch of {GARAK_MAX_MICROBATCH}")
             if conversation_batch_size <= 0:
-                raise ValueError("Conversation batch must be positive")
+                raise ValueError("CPU queue must be positive")
             if split_token_limit <= 0:
                 raise ValueError("Split token limit must be positive")
             if precision_mode not in {"fp16", "bf16", "fp32"}:
@@ -696,7 +643,6 @@ class BinaryClassificationApp(QWidget):
             conversation_batch_size,
             precision_mode,
             split_token_limit,
-            self.current_mode,
         )
         self.thread.status_update.connect(self.update_status)
         self.thread.counts_update.connect(self.update_counts)
@@ -725,26 +671,8 @@ class BinaryClassificationApp(QWidget):
         self.positive_count_label.setText(f"🚫 Refusals: {refusal_count}")
         self.negative_count_label.setText(f"✅ Compliance: {clean_count}")
 
-    def update_filter_mode(self):
-        if self.rp_mode_radio.isChecked():
-            mode = FILTER_MODE_RP
-        elif self.normal_mode_radio.isChecked():
-            mode = FILTER_MODE_NORMAL
-        else:
-            mode = FILTER_MODE_GARAK
-        self.current_mode = mode
-        self.positive_count_label.setText("🚫 Refusals: 0")
-        self.negative_count_label.setText("✅ Compliance: 0")
-        self.class_logic_label.setText(self.get_classification_logic_text())
-        self._sync_backend_ui()
-        self.update_status("Classifier model changed")
-
     def get_classification_logic_text(self):
-        if self.rp_mode_radio.isChecked():
-            return "RP classifier selected. Entries are removed when compliance confidence is below threshold."
-        if self.normal_mode_radio.isChecked():
-            return "Instruct classifier selected. Entries are removed when compliance confidence is below threshold."
-        return "Garak classifier selected. Uses full-entry scoring, then sentence splitting automatically for long entries."
+        return "Garak classifier selected. Scores full entries unless they exceed the split limit, then removes if any sentence is a refusal."
 
 
 if __name__ == "__main__":

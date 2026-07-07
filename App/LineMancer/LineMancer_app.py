@@ -308,11 +308,6 @@ class LineMancerFrame(QWidget):
         input_label.setStyleSheet("font-weight: bold; color: #c0c0ff;")
         form_layout.addRow(input_label, input_layout)
 
-        self.anti_clump_checkbox = QCheckBox("Enable anti-clump spacing")
-        self.anti_clump_checkbox.setChecked(True)
-        self.anti_clump_checkbox.setToolTip("Tries to spread similar records apart after shuffle")
-        form_layout.addRow("Options:", self.anti_clump_checkbox)
-
         # Lines per file
         self.lines_per_file_spin = QSpinBox()
         self.lines_per_file_spin.setRange(1, 1000000)
@@ -480,7 +475,6 @@ class LineMancerFrame(QWidget):
             self.core.shuffle_jsonl,
             self._shuffle_finished,
             self.input_path_edit_shuffle.text(),
-            anti_clump=self.anti_clump_checkbox.isChecked()
         )
 
     def _run_operation(self, operation, success_callback, *args, **kwargs):

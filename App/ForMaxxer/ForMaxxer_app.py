@@ -89,6 +89,7 @@ class ForMaxxerWorker(QThread):
                             allow_empty_system_role=self.filter_options["allow_empty_system_role"],
                             check_duplicate_turns=self.filter_options["check_duplicate_turns"],
                             duplicate_similarity_threshold=self.filter_options["duplicate_similarity_threshold"],
+                            strip_think_tags=self.filter_options["strip_think_tags"],
                         )
                         filter_results.append(f"{filename}: filtered → {format_bytes(os.path.getsize(output_path))}")
                     except Exception as filter_error:
@@ -218,6 +219,12 @@ class DatasetConverterApp(QWidget):
         self.duplicate_system_cb = QCheckBox("Check Duplicate System")
         self.allow_empty_system_cb = QCheckBox("Allow Empty System Role")
         self.duplicate_turns_cb = QCheckBox("Check Duplicate Human → GPT Turns")
+        self.strip_think_tags_cb = QCheckBox("Collapse GPT reasoning blocks (single block per response)")
+        self.strip_think_tags_cb.setToolTip(
+            "Removes closed <think>...</think> and Gemma 4 <|channel>thought...<channel|> blocks from "
+            "all but the last GPT response; the final GPT response keeps only its first reasoning block "
+            "plus the remaining content. Drops conversations with an unclosed reasoning block."
+        )
 
         filter_checkboxes = [
             self.blank_turns_cb,
@@ -226,6 +233,7 @@ class DatasetConverterApp(QWidget):
             self.duplicate_system_cb,
             self.allow_empty_system_cb,
             self.duplicate_turns_cb,
+            self.strip_think_tags_cb,
         ]
 
         for cb in filter_checkboxes:
@@ -328,6 +336,7 @@ class DatasetConverterApp(QWidget):
             "allow_empty_system_role": self.allow_empty_system_cb.isChecked(),
             "check_duplicate_turns": self.duplicate_turns_cb.isChecked(),
             "duplicate_similarity_threshold": self.duplicate_similarity_spin.value(),
+            "strip_think_tags": self.strip_think_tags_cb.isChecked(),
         }
         self.worker = ForMaxxerWorker(input_paths, filter_options, self)
         self.worker.status.connect(self.update_status)

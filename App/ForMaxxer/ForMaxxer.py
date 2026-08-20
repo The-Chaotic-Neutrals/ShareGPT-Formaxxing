@@ -595,6 +595,7 @@ FILTER_STATS_TEMPLATE = {
     "null_gpt_drop_bytes": 0,
     "missing_role_drop_bytes": 0,
     "empty_after_cleanup_drop_bytes": 0,
+    "unterminated_reasoning_drop_bytes": 0,
     "duplicate_drop_bytes": 0,
     "original_data_count": 0,
     "json_error_count": 0,
@@ -603,6 +604,7 @@ FILTER_STATS_TEMPLATE = {
     "null_gpt_drop_count": 0,
     "missing_role_drop_count": 0,
     "empty_after_cleanup_drop_count": 0,
+    "unterminated_reasoning_drop_count": 0,
     "duplicate_turn_conv_count": 0,
     "duplicate_exact_conv_count": 0,
     "duplicate_near_conv_count": 0,
@@ -701,6 +703,84 @@ def has_human_gpt_duplicate(conversations, similarity_threshold=92):
     return get_human_gpt_duplicate_type(conversations, similarity_threshold) is not None
 
 
+_REASONING_TAG_RE = re.compile(
+    r"(?P<open_think><think\b[^>]*>)"
+    r"|(?P<close_think></think\s*>)"
+    r"|(?P<open_channel><\|channel>\s*thought\b)"
+    r"|(?P<close_channel><channel\|>)",
+    re.IGNORECASE,
+)
+
+
+def has_unterminated_reasoning_block(conversations):
+    """Return True when a GPT reasoning block opens without a matching close token."""
+    reasoning_depth = 0
+    for message in conversations:
+        if message.get("from") != "gpt":
+            continue
+
+        value = message.get("value", "")
+        if not isinstance(value, str):
+            continue
+
+        for match in _REASONING_TAG_RE.finditer(value):
+            if match.group("open_think") or match.group("open_channel"):
+                reasoning_depth += 1
+            elif reasoning_depth:
+                reasoning_depth -= 1
+
+    return reasoning_depth > 0
+
+
+_REASONING_BLOCK_RE = re.compile(
+    r"<think\b[^>]*>[\s\S]*?</think\s*>"
+    r"|<\|channel>\s*thought\b[\s\S]*?<channel\|>",
+    re.IGNORECASE,
+)
+
+
+def _collapse_reasoning_blocks(value):
+    """Collapse multiple reasoning blocks in a single GPT response to one.
+
+    Keeps the first reasoning block intact and removes any additional
+    reasoning blocks (tags and inner reasoning text) so the response ends up
+    with exactly one reasoning block followed by the remaining content.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+
+    matches = list(_REASONING_BLOCK_RE.finditer(value))
+    if len(matches) <= 1:
+        return value
+
+    first_block = matches[0].group(0)
+    prefix = value[:matches[0].start()]
+    rest = value[matches[0].end():]
+    rest_clean = _REASONING_BLOCK_RE.sub("", rest)
+    return (prefix + first_block + rest_clean).strip()
+
+
+def _strip_think_tags(conversations):
+    last_gpt_idx = None
+    for i in range(len(conversations) - 1, -1, -1):
+        if conversations[i].get("from") == "gpt":
+            last_gpt_idx = i
+            break
+
+    for i, msg in enumerate(conversations):
+        if msg.get("from") != "gpt":
+            continue
+        val = msg.get("value", "")
+        if not val:
+            continue
+        if i != last_gpt_idx:
+            msg["value"] = _REASONING_BLOCK_RE.sub("", val).strip()
+        else:
+            msg["value"] = _collapse_reasoning_blocks(val)
+
+    return conversations
+
+
 def clean_conversation_item(
     item,
     check_blank_turns=True,
@@ -710,6 +790,7 @@ def clean_conversation_item(
     allow_empty_system_role=True,
     check_duplicate_turns=True,
     duplicate_similarity_threshold=92,
+    strip_think_tags=False,
 ):
     conversations = item.get("conversations", []) if hasattr(item, "get") else []
     has_blank_turn = False
@@ -768,6 +849,11 @@ def clean_conversation_item(
     if has_null_gpt_value:
         return None, "null_gpt"
 
+    if strip_think_tags:
+        if has_unterminated_reasoning_block(filtered_conversations):
+            return None, "unterminated_reasoning"
+        filtered_conversations = _strip_think_tags(filtered_conversations)
+
     if check_duplicate_turns:
         duplicate_type = get_human_gpt_duplicate_type(
             filtered_conversations,
@@ -813,6 +899,9 @@ def _record_drop_reason(stats, reason, source_bytes=0):
     elif reason == "empty_after_cleanup":
         stats["empty_after_cleanup_drop_count"] += 1
         stats["empty_after_cleanup_drop_bytes"] += source_bytes
+    elif reason == "unterminated_reasoning":
+        stats["unterminated_reasoning_drop_count"] += 1
+        stats["unterminated_reasoning_drop_bytes"] += source_bytes
 
 
 def _filter_dataset_with_hf_datasets(
@@ -825,6 +914,7 @@ def _filter_dataset_with_hf_datasets(
     allow_empty_system_role=True,
     check_duplicate_turns=True,
     duplicate_similarity_threshold=92,
+    strip_think_tags=False,
 ):
     from pathlib import Path
     import tempfile
@@ -867,6 +957,7 @@ def _filter_dataset_with_hf_datasets(
             allow_empty_system_role=allow_empty_system_role,
             check_duplicate_turns=check_duplicate_turns,
             duplicate_similarity_threshold=duplicate_similarity_threshold,
+            strip_think_tags=strip_think_tags,
         )
 
         return {
@@ -930,6 +1021,7 @@ def _format_filter_summary(output_file, stats, duplicate_similarity_threshold):
         + stats['null_gpt_drop_count']
         + stats['missing_role_drop_count']
         + stats['empty_after_cleanup_drop_count']
+        + stats['unterminated_reasoning_drop_count']
     )
     rule_drop_bytes = (
         stats['blank_turn_drop_bytes']
@@ -937,6 +1029,7 @@ def _format_filter_summary(output_file, stats, duplicate_similarity_threshold):
         + stats['null_gpt_drop_bytes']
         + stats['missing_role_drop_bytes']
         + stats['empty_after_cleanup_drop_bytes']
+        + stats['unterminated_reasoning_drop_bytes']
     )
     known_source_bytes = stats['kept_source_bytes'] + rule_drop_bytes + stats['duplicate_drop_bytes'] + stats['json_error_drop_bytes']
     source_accounting = ""
@@ -963,6 +1056,7 @@ def _format_filter_summary(output_file, stats, duplicate_similarity_threshold):
         f"  Null GPT responses            : {stats['null_gpt_drop_count']}\n"
         f"  Missing human/gpt roles       : {stats['missing_role_drop_count']}\n"
         f"  Empty after cleanup           : {stats['empty_after_cleanup_drop_count']}\n"
+        f"  Unterminated reasoning        : {stats['unterminated_reasoning_drop_count']}\n"
         f"Conversations dropped (dups)    : {stats['duplicate_turn_conv_count']}\n"
         f"  Exact duplicate drops         : {stats['duplicate_exact_conv_count']}\n"
         f"  Near duplicate drops          : {stats['duplicate_near_conv_count']}\n"
@@ -983,6 +1077,7 @@ def filter_dataset(
     allow_empty_system_role=True,
     check_duplicate_turns=True,
     duplicate_similarity_threshold=92,
+    strip_think_tags=False,
 ):
     """
     Filters a dataset of conversations based on specified criteria.
@@ -1019,6 +1114,7 @@ def filter_dataset(
                     allow_empty_system_role=allow_empty_system_role,
                     check_duplicate_turns=check_duplicate_turns,
                     duplicate_similarity_threshold=duplicate_similarity_threshold,
+                    strip_think_tags=strip_think_tags,
                 )
             except Exception as hf_error:
                 if input_path.suffix.lower() == ".parquet":
@@ -1073,6 +1169,7 @@ def filter_dataset(
                     allow_empty_system_role=allow_empty_system_role,
                     check_duplicate_turns=check_duplicate_turns,
                     duplicate_similarity_threshold=duplicate_similarity_threshold,
+                    strip_think_tags=strip_think_tags,
                 )
                 if drop_reason:
                     _record_drop_reason(stats, drop_reason, source_bytes)

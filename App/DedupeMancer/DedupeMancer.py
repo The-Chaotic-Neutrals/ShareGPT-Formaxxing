@@ -10,6 +10,7 @@ import numpy as np
 from rensa import RMinHash
 from sentence_transformers import SentenceTransformer
 import contextlib
+import unicodedata
 from collections import Counter
 
 # Suppress noisy transformers/tokenizers output BEFORE imports
@@ -177,11 +178,8 @@ class Deduplication:
             # Lazy import faiss only when needed (avoids loading on startup)
             import faiss
 
-            # Normalize embeddings for cosine similarity using inner product
+            # Normalize embeddings so dot product == cosine similarity
             faiss.normalize_L2(embeddings)
-            dim = embeddings.shape[1]
-            index = faiss.IndexFlatIP(dim)
-            index.add(embeddings)
 
             # Bucket indices by SimHash prefix for cheaper candidate search
             PREFIX_BITS = self.prefix_bits
@@ -229,11 +227,13 @@ class Deduplication:
                             candidates.append(j)
 
                     if candidates:
-                        # Semantic cosine filter over MinHash candidates
-                        D, I = index.search(embeddings[i:i+1], len(candidates))
-                        for idx_found, sim in zip(I[0], D[0]):
-                            if idx_found in candidates and sim >= self.semantic_threshold:
-                                visited.add(idx_found)
+                        # Semantic cosine filter over MinHash candidates.
+                        # Dot products only against candidates (never self),
+                        # avoiding the query embedding itself consuming a slot.
+                        sims = embeddings[i] @ embeddings[candidates].T
+                        for j, sim in zip(candidates, sims):
+                            if sim >= self.semantic_threshold:
+                                visited.add(j)
                                 duplicate_count += 1
 
                     # i is now finalized as unique
@@ -256,6 +256,7 @@ class Deduplication:
 
             # Push progress to 100% at the end of phase 2
             update_progress(total_steps, total_steps)
+            self.duplicate_count = duplicate_count
             update_status(
                 f"MinHash + SimHash + Semantic Deduplication complete. "
                 f"Duplicates found: {duplicate_count}. Output: {output_file}"
@@ -268,10 +269,16 @@ class Deduplication:
     @staticmethod
     def extract_convo_text(conversation):
         # Assumes ShareGPT-like {"conversations": [{"value": "..."}]}
-        return ''.join(
-            turn.get('value', '')
-            for turn in conversation.get('conversations', [])
-            if turn.get('value') is not None
+        # NFKC collapses composed/decomposed and full/half-width forms so
+        # visually identical text dedups even when the bytes differ.
+        # Per-turn strip removes invisible leading/trailing whitespace.
+        return unicodedata.normalize(
+            'NFKC',
+            ''.join(
+                str(turn.get('value', '')).strip()
+                for turn in conversation.get('conversations', [])
+                if turn.get('value') is not None
+            ),
         )
 
     def generate_min_hash(self, shingles):
@@ -288,10 +295,13 @@ class Deduplication:
 
     @staticmethod
     def generate_sha256_hash(conversation):
-        conversation_text = ''.join(
-            turn.get('value', '')
-            for turn in conversation.get('conversations', [])
-            if turn.get('value') is not None
+        conversation_text = unicodedata.normalize(
+            'NFKC',
+            ''.join(
+                str(turn.get('value', '')).strip()
+                for turn in conversation.get('conversations', [])
+                if turn.get('value') is not None
+            ),
         )
         return hashlib.sha256(conversation_text.encode('utf-8')).hexdigest()
 

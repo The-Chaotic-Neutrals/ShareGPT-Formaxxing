@@ -3,7 +3,7 @@ import threading
 import os
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
-    QTextEdit, QFileDialog, QVBoxLayout, QHBoxLayout, QComboBox
+    QTextEdit, QFileDialog, QVBoxLayout, QHBoxLayout, QComboBox, QCheckBox
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon, QTextCursor, QFont
@@ -99,6 +99,37 @@ class TokenMaxxerV3App(QMainWindow):
         token_layout.addWidget(token_label)
         token_layout.addWidget(self.max_token_entry)
 
+        # Approximate length sorting: rows are grouped into token-width buckets
+        # and shuffled within each bucket instead of being globally exact-sorted.
+        bucket_layout = QHBoxLayout()
+        bucket_label = QLabel("🪣 Approx. sort bucket width (tokens):")
+        bucket_label.setFont(font)
+        bucket_label.setStyleSheet(f"color: {self.theme['fg']};")
+        self.bucket_token_entry = QLineEdit("128")
+        self.bucket_token_entry.setFont(font)
+        self.bucket_token_entry.setStyleSheet(
+            f"background-color: {self.theme['entry_bg']}; color: {self.theme['entry_fg']};"
+        )
+        bucket_layout.addWidget(bucket_label)
+        bucket_layout.addWidget(self.bucket_token_entry)
+
+        self.sort_by_length_checkbox = QCheckBox(
+            "Approx. sort by token length (shortest buckets first)"
+        )
+        self.sort_by_length_checkbox.setFont(font)
+        self.sort_by_length_checkbox.setStyleSheet(f"color: {self.theme['fg']};")
+        self.sort_longest_first_checkbox = QCheckBox(
+            "Approx. sort by token length (longest buckets first)"
+        )
+        self.sort_longest_first_checkbox.setFont(font)
+        self.sort_longest_first_checkbox.setStyleSheet(f"color: {self.theme['fg']};")
+        self.sort_by_length_checkbox.toggled.connect(
+            lambda checked: self.sort_longest_first_checkbox.setChecked(False) if checked else None
+        )
+        self.sort_longest_first_checkbox.toggled.connect(
+            lambda checked: self.sort_by_length_checkbox.setChecked(False) if checked else None
+        )
+
         # Buttons
         self.analyze_button = QPushButton("📊 Analyze Token Lengths")
         self.analyze_button.setFont(font)
@@ -133,6 +164,9 @@ class TokenMaxxerV3App(QMainWindow):
         layout.addLayout(file_layout)
         layout.addLayout(model_layout)
         layout.addLayout(token_layout)
+        layout.addLayout(bucket_layout)
+        layout.addWidget(self.sort_by_length_checkbox)
+        layout.addWidget(self.sort_longest_first_checkbox)
         layout.addWidget(self.analyze_button)
         layout.addWidget(self.clean_button)
         layout.addWidget(self.tokenize_button)
@@ -147,6 +181,9 @@ class TokenMaxxerV3App(QMainWindow):
         self.analyze_button.setEnabled(state)
         self.clean_button.setEnabled(state)
         self.tokenize_button.setEnabled(state)
+        self.bucket_token_entry.setEnabled(state)
+        self.sort_by_length_checkbox.setEnabled(state)
+        self.sort_longest_first_checkbox.setEnabled(state)
 
     # ---------------- UI events ----------------
     def select_file(self):
@@ -250,7 +287,28 @@ class TokenMaxxerV3App(QMainWindow):
             self.status_label.setText("🛌 Idle")
             self.update_button_states()
             return
-        result = self.core.clean_file(self.core.file_path, max_tokens)
+
+        try:
+            bucket_tokens = int(self.bucket_token_entry.text())
+            if bucket_tokens < 1:
+                raise ValueError
+        except ValueError:
+            self.log("❌ Approx. sort bucket width must be a positive integer.")
+            self.is_running = False
+            self.status_label.setText("🛌 Idle")
+            self.update_button_states()
+            return
+
+        result = self.core.clean_file(
+            self.core.file_path,
+            max_tokens,
+            sort_by_length=(
+                self.sort_by_length_checkbox.isChecked()
+                or self.sort_longest_first_checkbox.isChecked()
+            ),
+            longest_first=self.sort_longest_first_checkbox.isChecked(),
+            bucket_tokens=bucket_tokens,
+        )
         self.log(result)
         self.is_running = False
         self.status_label.setText("🛌 Idle")

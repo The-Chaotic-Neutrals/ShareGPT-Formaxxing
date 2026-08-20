@@ -1379,6 +1379,7 @@ class DeduplicationApp(QWidget):
                 QMessageBox.critical(self, "Invalid Settings", f"❌ {e}")
                 return
 
+        self.dataset_dedup.unique_conversations = set()
         self.current_file_index = 0
         self.dataset_run_btn.setEnabled(False)
         self._reset_dataset_progress()

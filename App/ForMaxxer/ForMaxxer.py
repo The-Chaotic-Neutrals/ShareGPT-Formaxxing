@@ -605,6 +605,9 @@ FILTER_STATS_TEMPLATE = {
     "missing_role_drop_count": 0,
     "empty_after_cleanup_drop_count": 0,
     "unterminated_reasoning_drop_count": 0,
+    "reasoning_empty_tags_added_count": 0,
+    "reasoning_tags_repaired_count": 0,
+    "reasoning_tags_unresolved_count": 0,
     "duplicate_turn_conv_count": 0,
     "duplicate_exact_conv_count": 0,
     "duplicate_near_conv_count": 0,
@@ -738,6 +741,79 @@ _REASONING_BLOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
+_VALID_GEMMA_REASONING_RE = re.compile(
+    r"^\s*<\|channel>thought\r?\n[\s\S]*?<channel\|>",
+    re.IGNORECASE,
+)
+_FLEXIBLE_GEMMA_OPEN_RE = re.compile(
+    r"<\s*\|\s*channel\s*\|?\s*>\s*thought[ \t]*\r?\n?",
+    re.IGNORECASE,
+)
+_FLEXIBLE_GEMMA_CLOSE_RE = re.compile(
+    r"<\s*/?\s*\|?\s*channel\s*\|?\s*>\s*(?:thought)?",
+    re.IGNORECASE,
+)
+_STANDALONE_GEMMA_CHANNEL_RE = re.compile(
+    r"^\s*<\s*\|\s*channel\s*\|\s*>\s*",
+    re.IGNORECASE,
+)
+_GEMMA_CHANNEL_MARKER_RE = re.compile(
+    r"<[^>\n]{0,40}channel[^>\n]{0,40}>",
+    re.IGNORECASE,
+)
+_EMPTY_GEMMA_REASONING = "<|channel>thought\n\n<channel|>"
+
+
+def _normalize_gemma_reasoning_value(value):
+    """Return (value, outcome) for one GPT response.
+
+    Outcomes are already_tagged, added, repaired, unresolved, or skipped.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return value, "skipped"
+    if _VALID_GEMMA_REASONING_RE.match(value):
+        return value, "already_tagged"
+
+    stripped = value.lstrip()
+    leading = value[:len(value) - len(stripped)]
+    opening = _FLEXIBLE_GEMMA_OPEN_RE.search(stripped)
+    if opening is not None:
+        remainder = stripped[opening.end():]
+        closing = _FLEXIBLE_GEMMA_CLOSE_RE.search(remainder)
+        if closing is not None:
+            preamble = stripped[:opening.start()].strip()
+            reasoning = remainder[:closing.start()].strip("\r\n")
+            final = remainder[closing.end():].lstrip()
+            if preamble:
+                final = preamble + (" " if final else "") + final
+            normalized = leading + f"<|channel>thought\n{reasoning}\n<channel|>{final}"
+            return normalized, "repaired"
+
+    standalone = _STANDALONE_GEMMA_CHANNEL_RE.match(stripped)
+    if standalone is not None:
+        return leading + _EMPTY_GEMMA_REASONING + stripped[standalone.end():], "repaired"
+    if _GEMMA_CHANNEL_MARKER_RE.search(value[:500]):
+        return value, "unresolved"
+    return _EMPTY_GEMMA_REASONING + value, "added"
+
+
+def _normalize_gemma_reasoning_tags(conversations, stats=None):
+    for message in conversations:
+        if message.get("from") != "gpt":
+            continue
+        normalized, outcome = _normalize_gemma_reasoning_value(message.get("value"))
+        message["value"] = normalized
+        if stats is None:
+            continue
+        key = {
+            "added": "reasoning_empty_tags_added_count",
+            "repaired": "reasoning_tags_repaired_count",
+            "unresolved": "reasoning_tags_unresolved_count",
+        }.get(outcome)
+        if key:
+            stats[key] = stats.get(key, 0) + 1
+    return conversations
+
 
 def _collapse_reasoning_blocks(value):
     """Collapse multiple reasoning blocks in a single GPT response to one.
@@ -791,6 +867,8 @@ def clean_conversation_item(
     check_duplicate_turns=True,
     duplicate_similarity_threshold=92,
     strip_think_tags=False,
+    normalize_gemma_reasoning=False,
+    reasoning_tag_stats=None,
 ):
     conversations = item.get("conversations", []) if hasattr(item, "get") else []
     has_blank_turn = False
@@ -848,6 +926,12 @@ def clean_conversation_item(
         return None, "invalid_ending"
     if has_null_gpt_value:
         return None, "null_gpt"
+
+    if normalize_gemma_reasoning:
+        filtered_conversations = _normalize_gemma_reasoning_tags(
+            filtered_conversations,
+            stats=reasoning_tag_stats,
+        )
 
     if strip_think_tags:
         if has_unterminated_reasoning_block(filtered_conversations):
@@ -915,6 +999,7 @@ def _filter_dataset_with_hf_datasets(
     check_duplicate_turns=True,
     duplicate_similarity_threshold=92,
     strip_think_tags=False,
+    normalize_gemma_reasoning=False,
 ):
     from pathlib import Path
     import tempfile
@@ -945,6 +1030,7 @@ def _filter_dataset_with_hf_datasets(
     stats["original_data_count"] = len(dataset)
 
     def map_row(item):
+        reasoning_tag_stats = {}
         source_bytes = item.get("__formaxxer_source_size_bytes") if hasattr(item, "get") else None
         if source_bytes is None:
             source_bytes = len(json.dumps(dict(item), ensure_ascii=False).encode("utf-8")) if hasattr(item, "items") else 0
@@ -958,17 +1044,25 @@ def _filter_dataset_with_hf_datasets(
             check_duplicate_turns=check_duplicate_turns,
             duplicate_similarity_threshold=duplicate_similarity_threshold,
             strip_think_tags=strip_think_tags,
+            normalize_gemma_reasoning=normalize_gemma_reasoning,
+            reasoning_tag_stats=reasoning_tag_stats,
         )
 
         return {
             "conversations": cleaned["conversations"] if cleaned else [],
             "__drop_reason": drop_reason or "",
             "__formaxxer_source_size_bytes": int(source_bytes or 0),
+            "__reasoning_empty_tags_added": reasoning_tag_stats.get("reasoning_empty_tags_added_count", 0),
+            "__reasoning_tags_repaired": reasoning_tag_stats.get("reasoning_tags_repaired_count", 0),
+            "__reasoning_tags_unresolved": reasoning_tag_stats.get("reasoning_tags_unresolved_count", 0),
         }
 
     mapped = dataset.map(map_row, desc="Filtering conversations")
     drop_reasons = mapped["__drop_reason"]
     source_sizes = mapped["__formaxxer_source_size_bytes"]
+    stats["reasoning_empty_tags_added_count"] = sum(mapped["__reasoning_empty_tags_added"])
+    stats["reasoning_tags_repaired_count"] = sum(mapped["__reasoning_tags_repaired"])
+    stats["reasoning_tags_unresolved_count"] = sum(mapped["__reasoning_tags_unresolved"])
     for drop_reason, source_bytes in zip(drop_reasons, source_sizes):
         if drop_reason:
             _record_drop_reason(stats, drop_reason, source_bytes)
@@ -1057,6 +1151,9 @@ def _format_filter_summary(output_file, stats, duplicate_similarity_threshold):
         f"  Missing human/gpt roles       : {stats['missing_role_drop_count']}\n"
         f"  Empty after cleanup           : {stats['empty_after_cleanup_drop_count']}\n"
         f"  Unterminated reasoning        : {stats['unterminated_reasoning_drop_count']}\n"
+        f"Gemma empty thoughts added      : {stats['reasoning_empty_tags_added_count']}\n"
+        f"Gemma reasoning tags repaired   : {stats['reasoning_tags_repaired_count']}\n"
+        f"Gemma tags unresolved           : {stats['reasoning_tags_unresolved_count']}\n"
         f"Conversations dropped (dups)    : {stats['duplicate_turn_conv_count']}\n"
         f"  Exact duplicate drops         : {stats['duplicate_exact_conv_count']}\n"
         f"  Near duplicate drops          : {stats['duplicate_near_conv_count']}\n"
@@ -1078,6 +1175,7 @@ def filter_dataset(
     check_duplicate_turns=True,
     duplicate_similarity_threshold=92,
     strip_think_tags=False,
+    normalize_gemma_reasoning=False,
 ):
     """
     Filters a dataset of conversations based on specified criteria.
@@ -1115,6 +1213,7 @@ def filter_dataset(
                     check_duplicate_turns=check_duplicate_turns,
                     duplicate_similarity_threshold=duplicate_similarity_threshold,
                     strip_think_tags=strip_think_tags,
+                    normalize_gemma_reasoning=normalize_gemma_reasoning,
                 )
             except Exception as hf_error:
                 if input_path.suffix.lower() == ".parquet":
@@ -1170,6 +1269,8 @@ def filter_dataset(
                     check_duplicate_turns=check_duplicate_turns,
                     duplicate_similarity_threshold=duplicate_similarity_threshold,
                     strip_think_tags=strip_think_tags,
+                    normalize_gemma_reasoning=normalize_gemma_reasoning,
+                    reasoning_tag_stats=stats,
                 )
                 if drop_reason:
                     _record_drop_reason(stats, drop_reason, source_bytes)

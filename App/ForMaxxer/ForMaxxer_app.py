@@ -90,8 +90,11 @@ class ForMaxxerWorker(QThread):
                             check_duplicate_turns=self.filter_options["check_duplicate_turns"],
                             duplicate_similarity_threshold=self.filter_options["duplicate_similarity_threshold"],
                             strip_think_tags=self.filter_options["strip_think_tags"],
+                            normalize_gemma_reasoning=self.filter_options["normalize_gemma_reasoning"],
                         )
-                        filter_results.append(f"{filename}: filtered → {format_bytes(os.path.getsize(output_path))}")
+                        filter_results.append(
+                            f"{filename}: filtered → {format_bytes(os.path.getsize(output_path))}\n{summary}"
+                        )
                     except Exception as filter_error:
                         filter_results.append(f"{filename}: filter error - {str(filter_error)}")
 
@@ -220,6 +223,11 @@ class DatasetConverterApp(QWidget):
         self.allow_empty_system_cb = QCheckBox("Allow Empty System Role")
         self.duplicate_turns_cb = QCheckBox("Check Duplicate Human → GPT Turns")
         self.strip_think_tags_cb = QCheckBox("Collapse GPT reasoning blocks (single block per response)")
+        self.normalize_gemma_reasoning_cb = QCheckBox("Normalize Gemma 4 reasoning tags")
+        self.normalize_gemma_reasoning_cb.setToolTip(
+            "Preserves valid <|channel>thought...<channel|> blocks, repairs common spacing variants, "
+            "and prepends an empty thought block to untagged GPT responses."
+        )
         self.strip_think_tags_cb.setToolTip(
             "Removes closed <think>...</think> and Gemma 4 <|channel>thought...<channel|> blocks from "
             "all but the last GPT response; the final GPT response keeps only its first reasoning block "
@@ -234,6 +242,7 @@ class DatasetConverterApp(QWidget):
             self.allow_empty_system_cb,
             self.duplicate_turns_cb,
             self.strip_think_tags_cb,
+            self.normalize_gemma_reasoning_cb,
         ]
 
         for cb in filter_checkboxes:
@@ -337,6 +346,7 @@ class DatasetConverterApp(QWidget):
             "check_duplicate_turns": self.duplicate_turns_cb.isChecked(),
             "duplicate_similarity_threshold": self.duplicate_similarity_spin.value(),
             "strip_think_tags": self.strip_think_tags_cb.isChecked(),
+            "normalize_gemma_reasoning": self.normalize_gemma_reasoning_cb.isChecked(),
         }
         self.worker = ForMaxxerWorker(input_paths, filter_options, self)
         self.worker.status.connect(self.update_status)

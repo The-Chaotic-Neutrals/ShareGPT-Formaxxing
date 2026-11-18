@@ -716,8 +716,7 @@ _REASONING_TAG_RE = re.compile(
 
 
 def has_unterminated_reasoning_block(conversations):
-    """Return True when a GPT reasoning block opens without a matching close token."""
-    reasoning_depth = 0
+    """Detect thought blocks that do not close in the same GPT reply."""
     for message in conversations:
         if message.get("from") != "gpt":
             continue
@@ -726,13 +725,17 @@ def has_unterminated_reasoning_block(conversations):
         if not isinstance(value, str):
             continue
 
+        open_blocks = []
         for match in _REASONING_TAG_RE.finditer(value):
-            if match.group("open_think") or match.group("open_channel"):
-                reasoning_depth += 1
-            elif reasoning_depth:
-                reasoning_depth -= 1
+            action, kind = match.lastgroup.split("_", 1)
+            if action == "open":
+                open_blocks.append(kind)
+            elif open_blocks and open_blocks[-1] == kind:
+                open_blocks.pop()
+        if open_blocks:
+            return True
 
-    return reasoning_depth > 0
+    return False
 
 
 _REASONING_BLOCK_RE = re.compile(
@@ -750,7 +753,7 @@ _FLEXIBLE_GEMMA_OPEN_RE = re.compile(
     re.IGNORECASE,
 )
 _FLEXIBLE_GEMMA_CLOSE_RE = re.compile(
-    r"<\s*/?\s*\|?\s*channel\s*\|?\s*>\s*(?:thought)?",
+    r"<\s*channel\s*\|\s*>|<\s*/\s*\|?\s*channel\s*\|?\s*>(?:[ \t]*thought\b)?",
     re.IGNORECASE,
 )
 _STANDALONE_GEMMA_CHANNEL_RE = re.compile(
@@ -764,7 +767,7 @@ _GEMMA_CHANNEL_MARKER_RE = re.compile(
 _EMPTY_GEMMA_REASONING = "<|channel>thought\n\n<channel|>"
 
 
-def _normalize_gemma_reasoning_value(value):
+def _normalize_gemma_reasoning_value(value, *, add_empty=True):
     """Return (value, outcome) for one GPT response.
 
     Outcomes are already_tagged, added, repaired, unresolved, or skipped.
@@ -780,7 +783,9 @@ def _normalize_gemma_reasoning_value(value):
     if opening is not None:
         remainder = stripped[opening.end():]
         closing = _FLEXIBLE_GEMMA_CLOSE_RE.search(remainder)
-        if closing is not None:
+        if closing is not None and not _FLEXIBLE_GEMMA_OPEN_RE.search(
+            remainder, 0, closing.start()
+        ):
             preamble = stripped[:opening.start()].strip()
             reasoning = remainder[:closing.start()].strip("\r\n")
             final = remainder[closing.end():].lstrip()
@@ -794,14 +799,26 @@ def _normalize_gemma_reasoning_value(value):
         return leading + _EMPTY_GEMMA_REASONING + stripped[standalone.end():], "repaired"
     if _GEMMA_CHANNEL_MARKER_RE.search(value[:500]):
         return value, "unresolved"
-    return _EMPTY_GEMMA_REASONING + value, "added"
+    if add_empty:
+        return _EMPTY_GEMMA_REASONING + value, "added"
+    return value, "skipped"
 
 
-def _normalize_gemma_reasoning_tags(conversations, stats=None):
-    for message in conversations:
+def _last_gpt_index(conversations):
+    return next(
+        (i for i in range(len(conversations) - 1, -1, -1) if conversations[i].get("from") == "gpt"),
+        None,
+    )
+
+
+def _normalize_gemma_reasoning_tags(conversations, stats=None, *, final_reply_only=False):
+    last_gpt_idx = _last_gpt_index(conversations) if final_reply_only else None
+    for i, message in enumerate(conversations):
         if message.get("from") != "gpt":
             continue
-        normalized, outcome = _normalize_gemma_reasoning_value(message.get("value"))
+        normalized, outcome = _normalize_gemma_reasoning_value(
+            message.get("value"), add_empty=not final_reply_only or i == last_gpt_idx,
+        )
         message["value"] = normalized
         if stats is None:
             continue
@@ -837,11 +854,7 @@ def _collapse_reasoning_blocks(value):
 
 
 def _strip_think_tags(conversations):
-    last_gpt_idx = None
-    for i in range(len(conversations) - 1, -1, -1):
-        if conversations[i].get("from") == "gpt":
-            last_gpt_idx = i
-            break
+    last_gpt_idx = _last_gpt_index(conversations)
 
     for i, msg in enumerate(conversations):
         if msg.get("from") != "gpt":
@@ -931,6 +944,7 @@ def clean_conversation_item(
         filtered_conversations = _normalize_gemma_reasoning_tags(
             filtered_conversations,
             stats=reasoning_tag_stats,
+            final_reply_only=strip_think_tags,
         )
 
     if strip_think_tags:

@@ -1,10 +1,14 @@
 import json
 import os
 import random
+import re
 from collections import defaultdict
 
 import numpy as np
 from transformers import AutoTokenizer
+
+
+_GEMMA_THOUGHT = re.compile(r"^\s*<\|channel>thought[ \t]*\r?\n(.*?)<channel\|>(.*)\Z", re.DOTALL)
 
 
 class TokenMaxxerCore:
@@ -59,6 +63,15 @@ class TokenMaxxerCore:
     def has_chat_template(self):
         return bool(self.tokenizer and getattr(self.tokenizer, "chat_template", None))
 
+    def _uses_gemma_reasoning(self):
+        template = getattr(self.tokenizer, "chat_template", None)
+        return isinstance(template, str) and "<|channel>thought" in template and "<turn|>" in template
+
+    def _counting_mode(self):
+        if self._uses_gemma_reasoning():
+            return "Gemma 4 reasoning SFT"
+        return "HF chat template" if self.has_chat_template() else "raw-text fallback"
+
     @staticmethod
     def _normalize_role(role):
         role = str(role or "").strip().lower()
@@ -75,7 +88,7 @@ class TokenMaxxerCore:
         }
         return role_map.get(role)
 
-    def _entry_to_messages(self, entry):
+    def _entry_to_messages(self, entry, *, gemma_reasoning=False):
         """Convert common ShareGPT-style rows into HF chat-template messages."""
         conversations = entry.get("conversations")
         if conversations is None:
@@ -102,7 +115,16 @@ class TokenMaxxerCore:
             if not isinstance(content, str):
                 content = json.dumps(content, ensure_ascii=False)
 
-            messages.append({"role": role, "content": content})
+            rendered_message = {"role": role, "content": content}
+            if gemma_reasoning and role == "assistant":
+                reasoning = message.get("reasoning_content") or message.get("reasoning") or message.get("thinking")
+                inline = _GEMMA_THOUGHT.match(content)
+                if inline:
+                    reasoning, answer = inline.groups()
+                    rendered_message["content"] = answer
+                if isinstance(reasoning, str) and reasoning.strip():
+                    rendered_message["reasoning_content"] = reasoning.strip()
+            messages.append(rendered_message)
 
         return messages
 
@@ -136,14 +158,17 @@ class TokenMaxxerCore:
             raise RuntimeError("Tokenizer is not loaded.")
 
         if self.has_chat_template():
-            messages = self._entry_to_messages(entry)
+            gemma_reasoning = self._uses_gemma_reasoning()
+            messages = self._entry_to_messages(entry, gemma_reasoning=gemma_reasoning)
             if not messages:
                 return []
 
+            options = {"enable_thinking": True, "preserve_thinking": True} if gemma_reasoning else {}
             encoded = self.tokenizer.apply_chat_template(
                 messages,
                 tokenize=True,
                 add_generation_prompt=False,
+                **options,
             )
 
             # Normally this is list[int], but tolerate tokenizer variants.
@@ -215,7 +240,7 @@ class TokenMaxxerCore:
 
         percentiles = np.percentile(lengths, [10, 25, 50, 75, 90, 95, 99, 100])
         longest_idx = lengths.index(max(lengths))
-        mode = "HF chat template" if self.has_chat_template() else "raw-text fallback"
+        mode = self._counting_mode()
 
         return (
             f"🧮 Counting mode: {mode}\n"
@@ -308,7 +333,7 @@ class TokenMaxxerCore:
             f"{json.dumps(longest_entry_pre, indent=2, ensure_ascii=False)}"
         ) if longest_entry_pre else "⚠️ Failed to determine longest entry before cleaning."
 
-        mode = "HF chat template" if self.has_chat_template() else "raw-text fallback"
+        mode = self._counting_mode()
         if sort_by_length:
             sort_description = (
                 f"Approximate {'longest' if longest_first else 'shortest'} first "
@@ -359,7 +384,7 @@ class TokenMaxxerCore:
                 except Exception:
                     error_count += 1
 
-        mode = "HF chat template" if self.has_chat_template() else "raw-text fallback"
+        mode = self._counting_mode()
         return (
             f"✅ Tokenized file written to: {output_path}\n"
             f"🧮 Tokenization mode: {mode}\n"

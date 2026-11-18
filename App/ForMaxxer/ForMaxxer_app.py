@@ -226,7 +226,8 @@ class DatasetConverterApp(QWidget):
         self.normalize_gemma_reasoning_cb = QCheckBox("Normalize Gemma 4 reasoning tags")
         self.normalize_gemma_reasoning_cb.setToolTip(
             "Preserves valid <|channel>thought...<channel|> blocks, repairs common spacing variants, "
-            "and prepends an empty thought block to untagged GPT responses."
+            "and prepends an empty thought block to untagged GPT responses. "
+            "With Collapse enabled, it adds an empty block only to the final GPT reply."
         )
         self.strip_think_tags_cb.setToolTip(
             "Removes closed <think>...</think> and Gemma 4 <|channel>thought...<channel|> blocks from "

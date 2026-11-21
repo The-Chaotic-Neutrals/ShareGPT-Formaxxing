@@ -227,12 +227,13 @@ class DatasetConverterApp(QWidget):
         self.normalize_gemma_reasoning_cb.setToolTip(
             "Preserves valid <|channel>thought...<channel|> blocks, repairs common spacing variants, "
             "and prepends an empty thought block to untagged GPT responses. "
-            "With Collapse enabled, it adds an empty block only to the final GPT reply."
+            "With Collapse enabled, prior GPT replies retain empty thought wrappers and "
+            "only the final GPT reply retains its reasoning."
         )
         self.strip_think_tags_cb.setToolTip(
-            "Removes closed <think>...</think> and Gemma 4 <|channel>thought...<channel|> blocks from "
-            "all but the last GPT response; the final GPT response keeps only its first reasoning block "
-            "plus the remaining content. Drops conversations with an unclosed reasoning block."
+            "Removes historical reasoning content; when Normalize Gemma 4 is also enabled, "
+            "earlier GPT turns receive empty thought wrappers. The final GPT reply keeps its "
+            "first reasoning block. Drops conversations with an unclosed reasoning block."
         )
 
         filter_checkboxes = [

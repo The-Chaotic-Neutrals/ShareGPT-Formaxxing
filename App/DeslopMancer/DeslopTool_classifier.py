@@ -1,13 +1,15 @@
 import logging
 import os
-import torch
-from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
-import json
-import spacy
-from datasets import load_dataset
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+
+import spacy
+import torch
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline
+
+if __package__:
+    from .dataset_rows import assistant_texts, read_rows, removed_report, write_rows
+else:
+    from dataset_rows import assistant_texts, read_rows, removed_report, write_rows
 
 # Configure logging for debugging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -15,6 +17,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 class CharacterSlopFilter:
     def __init__(self, model_name="kubernetes-bad/character-slop-classifier", batch_size=64, confidence_margin=0.1, eager_load_model=False):
         self.model_name = model_name
+        if batch_size < 1:
+            raise ValueError("Batch size must be a positive integer.")
         self.batch_size = batch_size
         self.confidence_margin = confidence_margin
 
@@ -30,14 +34,6 @@ class CharacterSlopFilter:
 
         self.nlp = spacy.blank("en")
         self.nlp.add_pipe("sentencizer")
-
-        self.classification_cache = defaultdict(dict)
-
-        max_workers = max(os.cpu_count() - 1, 1)
-        self.executor = ThreadPoolExecutor(max_workers=max_workers)
-
-        logging.info(f"Initialized CharacterSlopFilter, model will load lazily on {'GPU' if self.device == 0 else 'CPU'}")
-        logging.info(f"Using {max_workers} workers for CPU tasks")
 
         if eager_load_model:
             self._lazy_load_model()
@@ -55,7 +51,6 @@ class CharacterSlopFilter:
                 self.model_name,
                 torch_dtype=self.torch_dtype,
             )
-            self.model.to(self.device)
             self.classifier = pipeline(
                 "text-classification",
                 model=self.model,
@@ -70,75 +65,66 @@ class CharacterSlopFilter:
         return [sent.text.strip() for sent in doc.sents]
 
     def classify_sentences(self, sentences):
-        self._lazy_load_model()  # Ensure model is loaded before classify
-        to_classify = [sent for sent in sentences if sent not in self.classification_cache]
-        if to_classify:
-            results = self.classifier(
-                to_classify,
-                batch_size=self.batch_size,
-                truncation=True,
-                max_length=512,
-            )
-            for sent, result in zip(to_classify, results):
-                self.classification_cache[sent] = {
-                    "label": result["label"],
-                    "score": result["score"],
-                }
-        return [self.classification_cache[sent] for sent in sentences]
+        if not sentences:
+            return []
+        self._lazy_load_model()
+        unique = list(dict.fromkeys(sentences))
+        results = self.classifier(unique, batch_size=self.batch_size, truncation=True, max_length=512)
+        if len(results) != len(unique):
+            raise RuntimeError("Classifier returned a different number of scores than sentences.")
+        by_sentence = dict(zip(unique, results))
+        return [by_sentence[sentence] for sentence in sentences]
+
+    def _removal(self, sentence_results):
+        count = len(sentence_results)
+        positive = sum(
+            1 for result in sentence_results
+            if result["label"].casefold() == "positive" and result["score"] > 0.5 + self.confidence_margin
+        )
+        ratio = positive / count if count else 0
+        if ratio > 0.55:
+            return {
+                "reason": "assistant_classifier_threshold", "positive_sentences": positive,
+                "scored_sentences": count, "positive_ratio": ratio, "threshold": 0.55,
+            }
+        return None
 
     def process_single_conversation(self, conversation_data):
-        conversations = conversation_data.get("conversations", [])
-        gpt_sentences = []
-
-        for conversation in conversations:
-            if conversation.get("from") == "gpt":
-                text = conversation.get("value", "")
-                if text:
-                    sentences = self.split_into_sentences(text)
-                    gpt_sentences.extend(sentences)
-
-        if not gpt_sentences:
-            # No GPT sentences, keep conversation by default
+        sentences = [
+            sentence for text in assistant_texts(conversation_data)
+            for sentence in self.split_into_sentences(text)
+        ]
+        if self._removal(self.classify_sentences(sentences)) is None:
             return conversation_data
-
-        sentence_results = self.classify_sentences(gpt_sentences)
-        positive_count = sum(
-            1 for result in sentence_results
-            if result["label"] == "positive" and result["score"] > 0.5 + self.confidence_margin
-        )
-        positive_ratio = positive_count / len(gpt_sentences)
-
-        if positive_ratio <= 0.55:
-            return conversation_data  # keep conversation
-        else:
-            return None  # filter out
+        return None
 
     def filter_conversations(self, input_path, output_path, progress_callback=None):
-        # Optionally force eager load here to avoid concurrency on first call
-        if not self._model_loaded:
-            self._lazy_load_model()
-
-        dataset = load_dataset("json", data_files=[input_path], split="train")
-        total = len(dataset)
-        filtered_count = 0
-
-        with open(output_path, "w", encoding="utf-8") as f_out:
-            futures = {
-                self.executor.submit(self.process_single_conversation, item): idx
-                for idx, item in enumerate(dataset)
-            }
-
-            for count, future in enumerate(as_completed(futures), 1):
-                result = future.result()
-                if result:
-                    f_out.write(json.dumps(result, ensure_ascii=False) + "\n")
-                    filtered_count += 1
-
-                if progress_callback:
-                    progress_callback(count, total)
-
-        logging.info(f"Filtering complete. {filtered_count}/{total} conversations kept.")
-        return filtered_count, total
+        rows = list(read_rows(input_path))
+        total = len(rows)
+        kept, removed = [], []
+        for offset in range(0, total, self.batch_size):
+            batch = rows[offset:offset + self.batch_size]
+            sentences = []
+            ends = []
+            for row in batch:
+                for text in row.assistant_texts():
+                    sentences.extend(self.split_into_sentences(text))
+                ends.append(len(sentences))
+            results = self.classify_sentences(sentences)
+            start = 0
+            for row, end in zip(batch, ends):
+                reason = self._removal(results[start:end])
+                start = end
+                if reason is None:
+                    kept.append(row)
+                else:
+                    removed.append({**row.locate(), **reason})
+            if progress_callback:
+                progress_callback(offset + len(batch), total)
+        write_rows(output_path, kept, input_path)
+        write_rows(removed_report(output_path), removed, input_path)
+        logging.info("Filtering complete. %s/%s conversations kept.", len(kept), total)
+        return len(kept), total
 
 
 def select_jsonl_file():

@@ -1,47 +1,29 @@
-import json
-import yaml
-import polars as pl
 from pathlib import Path
 
+import yaml
+
+from App.DeslopMancer.dataset_rows import read_rows, removed_report, write_rows
+from App.DeslopMancer.DeslopTool import phrase_matches, phrase_patterns
+
+
 def filter_dataset_by_yaml(input_path, yaml_path, output_dir):
-    try:
-        # Read the YAML file for strings to exclude
-        with open(yaml_path, 'r') as yaml_file:
-            exclude_strings = yaml.safe_load(yaml_file)
-
-        # Read the JSON Lines file
-        with open(input_path, 'r') as file:
-            data = [json.loads(line) for line in file]
-
-        # Define a function to check if a conversation contains any excluded strings
-        def contains_excluded_strings(conversation):
-            text = ' '.join(msg.get('text', '') for msg in conversation)
-            return any(exclude_string in text for exclude_string in exclude_strings)
-
-        # Convert the data to a Polars DataFrame
-        df = pl.DataFrame(data)
-
-        # Create a boolean column based on the presence of excluded strings
-        df = df.with_columns(
-            pl.col('conversations').map_elements(contains_excluded_strings, return_dtype=pl.Boolean).alias('contains_excluded_strings')
-        )
-
-        # Filter the data based on the new boolean column
-        filtered_data = df.filter(~pl.col('contains_excluded_strings'))
-
-        # Create the Filtered directory if it doesn't exist
-        filtered_dir = Path(output_dir) / "Filtered"
-        filtered_dir.mkdir(exist_ok=True)
-
-        # Save the filtered data as JSONL
-        output_file = filtered_dir / f"{Path(input_path).stem}_filtered.jsonl"
-
-        with output_file.open('w') as f:
-            for row in filtered_data.drop('contains_excluded_strings').to_dicts():
-                json.dump(row, f)
-                f.write('\n')
-
-        return f"Filtered data saved to {output_file}\nOriginal size: {len(df)}\nFiltered size: {len(filtered_data)}"
-
-    except Exception as e:
-        raise ValueError(f"Error during filtering: {str(e)}")
+    with open(yaml_path, encoding="utf-8-sig") as source:
+        phrases = yaml.safe_load(source)
+    if not isinstance(phrases, list) or not all(isinstance(phrase, str) and phrase.strip() for phrase in phrases):
+        raise ValueError("Expected a YAML list of nonempty filter phrases.")
+    patterns = phrase_patterns(phrases)
+    kept, removed = [], []
+    for row in read_rows(input_path):
+        matches = phrase_matches(row, patterns)
+        if matches:
+            removed.append({**row.locate(), "reason": "assistant_yaml_phrase", "matched_phrases": matches})
+        else:
+            kept.append(row)
+    output = Path(output_dir) / "Filtered" / f"{Path(input_path).stem}_filtered.jsonl"
+    report = removed_report(output)
+    write_rows(output, kept, input_path)
+    write_rows(report, removed, input_path)
+    return (
+        f"Filtered data saved to {output}\nOriginal size: {len(kept) + len(removed)}\n"
+        f"Filtered size: {len(kept)}\nRemoved-row report: {report}"
+    )

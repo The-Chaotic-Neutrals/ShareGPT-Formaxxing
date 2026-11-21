@@ -4,7 +4,7 @@ Supports string matching and classifier-based removal methods.
 """
 
 import sys
-import json
+import math
 from pathlib import Path
 
 import torch
@@ -19,24 +19,11 @@ from PyQt5.QtGui import QFont, QIcon, QDropEvent
 
 from App.DeslopMancer.DeslopTool import filter_dataset, load_filter_criteria
 from App.DeslopMancer.DeslopTool_classifier import CharacterSlopFilter
+from App.DeslopMancer.dataset_rows import output_paths, removed_report
 from App.Other.BG import GalaxyBackgroundWidget
 
 
 APP_TITLE = "DeslopMancer"
-
-
-def load_jsonl(file_path: str):
-    data = []
-    with open(file_path, 'r', encoding='utf-8', errors='replace') as file:
-        for line in file:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data.append(json.loads(line))
-            except json.JSONDecodeError as e:
-                print(f"Skipping invalid JSON line. Error: {e}")
-    return data
 
 
 class FileListWidget(QListWidget):
@@ -96,13 +83,13 @@ class FileListWidget(QListWidget):
 class SlopFilterWorker(QThread):
     status_update = pyqtSignal(str)
     progress_update = pyqtSignal(int, int)
-    finished = pyqtSignal(str)
 
     def __init__(self, slop_filter, dataset_file: str, output_path: Path):
         super().__init__()
         self.slop_filter = slop_filter
         self.dataset_file = dataset_file
         self.output_path = output_path
+        self.result = "❌ Worker stopped without a result."
 
     def run(self):
         try:
@@ -117,24 +104,26 @@ class SlopFilterWorker(QThread):
                 progress_callback=progress_callback
             )
             self.status_update.emit(f"Classifier filtering complete.")
-            self.finished.emit(
+            self.result = (
                 f"✅ Saved to {self.output_path}\n"
-                f"   Kept {filtered_count} of {total} conversations."
+                f"   Kept {filtered_count} of {total} conversations.\n"
+                f"   Removed-row report: {removed_report(self.output_path)}"
             )
         except Exception as e:
-            self.finished.emit(f"❌ Classifier filtering failed: {e}")
+            self.result = f"❌ Classifier filtering failed: {e}"
 
 
 class StringMatchWorker(QThread):
     status_update = pyqtSignal(str)
     progress_update = pyqtSignal(int, int)
-    finished = pyqtSignal(str)
 
-    def __init__(self, dataset_file: str, filter_files: list, threshold_multiplier: float):
+    def __init__(self, dataset_file: str, filter_files: list, threshold_multiplier: float, output_path: Path):
         super().__init__()
         self.dataset_file = dataset_file
         self.filter_files = filter_files
         self.threshold_multiplier = threshold_multiplier
+        self.output_path = output_path
+        self.result = "❌ Worker stopped without a result."
 
     def run(self):
         try:
@@ -147,12 +136,12 @@ class StringMatchWorker(QThread):
                 self.dataset_file,
                 self.filter_files,
                 self.threshold_multiplier,
-                progress_callback=progress_callback
+                progress_callback=progress_callback, output_path=self.output_path,
             )
             self.status_update.emit(f"String matching filtering complete.")
-            self.finished.emit(output_message)
+            self.result = output_message
         except Exception as e:
-            self.finished.emit(f"❌ String matching filtering failed: {e}")
+            self.result = f"❌ String matching filtering failed: {e}"
 
 
 class DeslopToolApp(QWidget):
@@ -630,84 +619,55 @@ class DeslopToolApp(QWidget):
             QMessageBox.critical(self, "Input Error", "Please select at least one dataset file.")
             return
 
+        self.run_method = self.selected_filter_method
+        self.run_filter_files = list(self.filter_files)
         try:
-            self.batch_size = int(self.batch_entry.text())
-        except ValueError:
-            QMessageBox.critical(self, "Input Error", "Batch size must be an integer.")
+            if self.run_method == 1:
+                self.run_threshold = float(self.threshold_entry.text().strip())
+                if not math.isfinite(self.run_threshold) or self.run_threshold <= 0:
+                    raise ValueError("Threshold must be finite and greater than zero.")
+                if not self.run_filter_files or not load_filter_criteria(self.run_filter_files):
+                    raise ValueError("Select at least one nonempty filter file.")
+            else:
+                self.batch_size = int(self.batch_entry.text())
+                self.slop_filter = CharacterSlopFilter(batch_size=self.batch_size, confidence_margin=0.1)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Input Error", str(exc))
             return
 
-        if self.selected_filter_method == 1:
-            try:
-                _ = float(self.threshold_entry.text().strip())
-            except ValueError:
-                QMessageBox.critical(self, "Input Error", "Threshold must be a number.")
-                return
-            if not self.filter_files:
-                QMessageBox.critical(self, "Input Error", "Please select at least one filter file.")
-                return
-            if not load_filter_criteria(self.filter_files):
-                QMessageBox.critical(self, "Input Error", "Filter criteria are empty. Check your filter files.")
-                return
-
+        self.run_files = list(self.dataset_files)
+        self.run_outputs = output_paths(self.run_files, Path(__file__).resolve().parents[2] / "Outputs")
         self.process_button.setEnabled(False)
         self.current_file_index = 0
+        self.failed_files = 0
         self.output_text.clear()
         self.progress_bar.setValue(0)
         self.process_next_file()
 
     def process_next_file(self):
-        if self.current_file_index >= len(self.dataset_files):
-            self.append_output("\n✅ All datasets processed.")
+        if self.current_file_index >= len(self.run_files):
+            self.append_output(f"\nFinished with {self.failed_files} failed file(s).")
             self.progress_bar.setValue(100)
             self.process_button.setEnabled(True)
             return
 
-        dataset_file = self.dataset_files[self.current_file_index]
-        import os
-        self.append_output(f"\n📂 Processing: {os.path.basename(dataset_file)}")
-
-        if self.selected_filter_method == 1:
-            try:
-                threshold_multiplier = float(self.threshold_entry.text().strip())
-            except ValueError:
-                threshold_multiplier = 0.69
-
-            self.string_worker = StringMatchWorker(dataset_file, self.filter_files, threshold_multiplier)
-            self.string_worker.status_update.connect(self.append_output)
-            self.string_worker.progress_update.connect(self.set_progress)
-            self.string_worker.finished.connect(self.on_string_filter_finished)
-            self.string_worker.start()
-
-        elif self.selected_filter_method == 2:
-            try:
-                self.slop_filter = CharacterSlopFilter(batch_size=self.batch_size, confidence_margin=0.1)
-            except Exception as e:
-                QMessageBox.critical(self, "Initialization Error", f"Failed to initialize classifier: {e}")
-                self.current_file_index += 1
-                self.process_next_file()
-                return
-
-            script_dir = Path(__file__).parent.absolute()
-            repo_root = script_dir.parent.parent.absolute()
-            output_dir = repo_root / "Outputs"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            output_jsonl_filepath = output_dir / (Path(dataset_file).stem + "_deslopped.jsonl")
-
-            self.slop_worker = SlopFilterWorker(self.slop_filter, dataset_file, output_jsonl_filepath)
-            self.slop_worker.status_update.connect(self.append_output)
-            self.slop_worker.progress_update.connect(self.set_progress)
-            self.slop_worker.finished.connect(self.on_slop_filter_finished)
-            self.slop_worker.start()
+        dataset_file = self.run_files[self.current_file_index]
+        output_path = self.run_outputs[self.current_file_index]
+        self.append_output(f"\nProcessing: {dataset_file}")
+        if self.run_method == 1:
+            worker = StringMatchWorker(dataset_file, self.run_filter_files, self.run_threshold, output_path)
         else:
-            QMessageBox.critical(self, "Error", "Invalid filter method selected.")
+            worker = SlopFilterWorker(self.slop_filter, dataset_file, output_path)
+        self.filter_worker = worker
+        worker.status_update.connect(self.append_output)
+        worker.progress_update.connect(self.set_progress)
+        worker.finished.connect(self.on_filter_finished)
+        worker.start()
 
-    def on_slop_filter_finished(self, message: str):
-        self.progress_bar.setValue(100)
-        self.append_output(message)
-        self.current_file_index += 1
-        self.process_next_file()
-
-    def on_string_filter_finished(self, message: str):
+    def on_filter_finished(self):
+        message = self.filter_worker.result
+        if message.startswith("❌"):
+            self.failed_files += 1
         self.progress_bar.setValue(100)
         self.append_output(message)
         self.current_file_index += 1

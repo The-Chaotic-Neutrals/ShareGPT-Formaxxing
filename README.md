@@ -21,7 +21,7 @@ ShareGPT Formaxxing Tool is a modular application designed to help researchers a
 
 - **DeslopMancer** - Filter conversations based on custom criteria files
 - **RefusalMancer** - Classification models to detect and filter refusal responses
-- **DedupeMancer** - Unified deduplication for datasets (SHA-256/MinHash) and images (dHash/CLIP embeddings)
+- **DupeMancer** - Unified deduplication for datasets (SHA-256/MinHash) and images (dHash/CLIP embeddings)
 - **LineMancer** - Split, merge, and shuffle JSONL files
 - **N-GraMancer** - Analyze n-gram patterns in conversation datasets
 - **SpaceMancer** - Conservative spacing restoration for ShareGPT datasets (local + Hugging Face), with dry-run previews and selectable correction profiles
@@ -165,13 +165,13 @@ Click any tool button to open its dedicated window.
 
 ## 📖 Tool Documentation
 
-### DedupeMancer
+### DupeMancer
 Unified deduplication tool with tabs for datasets and images (formerly DedupMancer + ImageDedupMancer):
 
 **Dataset Deduplication Tab:**
-- **SHA-256/String-Match**: Exact duplicate detection via content hashing
-- **MinHash + Semantic**: Similarity-based deduplication with configurable thresholds
-- Cross-file deduplication support
+- **SHA-256/String-Match**: Compare complete JSON rows, including turn roles and metadata
+- **MinHash + Semantic**: Similarity matching with configurable thresholds. Compares aligned text turns while preserving differences in row metadata and structured turns.
+- SHA-256 can find duplicates across selected files. Both methods keep entire original rows and preserve their input order unless shuffling is enabled.
 - Progress tracking with speed display
 
 **Image Deduplication Tab:**
@@ -184,7 +184,7 @@ Unified deduplication tool with tabs for datasets and images (formerly DedupManc
 - Copy unique images to output, optionally move duplicates
 
 **Output**: 
-- Datasets: `Outputs/dedupemancer/datasets/`
+- Datasets: `Outputs/*-deduplicated.jsonl`
 - Images: `Outputs/dedupemancer/images/unique/` and `Outputs/dedupemancer/images/duplicates/`
 - Text dedup: `Outputs/dedupemancer/text_dedup/unique/`
 
@@ -357,11 +357,11 @@ Classification tool for detecting refusals:
 **Output**: Filtered dataset saved to `Outputs/`
 
 ### DeslopMancer
-Filters conversations based on custom criteria:
+Filters conversations by literal phrases, YAML exclusions, or assistant sentence classification:
 - Loads filter phrases from text files
 - Configurable threshold multipliers
-- Detailed matching statistics
-- YAML-based filtering support
+- Scores visible assistant replies and preserves full retained rows in their source order
+- Reports removed rows with their original line or entry number
 
 **Output**: Filtered dataset saved to `Outputs/`
 
@@ -395,7 +395,7 @@ Verifies and repairs safetensor model files:
 ShareGPT-Formaxxing/
 ├── App/
 │   ├── Assets/              # Icons, models, requirements
-│   ├── DedupeMancer/        # Dataset & image deduplication
+│   ├── DupeMancer/        # Dataset & image deduplication
 │   ├── DeslopMancer/        # Criteria-based filtering
 │   ├── ForMaxxer/           # Format conversion & filtering
 │   ├── LanguageMaxxer/      # English filtering & grammar correction
@@ -440,9 +440,9 @@ All tools save their output to the `Outputs/` directory in the repository root, 
 - `Outputs/formaxxer/filtered/` - ForMaxxer filtered datasets
 - `Outputs/languagemaxxer/english_filtered/` - LanguageMaxxer English-filtered files
 - `Outputs/languagemaxxer/grammar_corrected/` - LanguageMaxxer grammar-corrected files
-- `Outputs/dedupemancer/datasets/` - DedupeMancer deduplicated JSONL files
-- `Outputs/dedupemancer/images/unique/` - DedupeMancer unique images
-- `Outputs/dedupemancer/images/duplicates/` - DedupeMancer duplicate images (if moved)
+- `Outputs/*-deduplicated.jsonl` - DupeMancer deduplicated JSONL files
+- `Outputs/dedupemancer/images/unique/` - DupeMancer unique images
+- `Outputs/dedupemancer/images/duplicates/` - DupeMancer duplicate images (if moved)
 - `Outputs/linemancer/` - LineMancer processed files
 - `Outputs/spacemancer/` - SpaceMancer cleaned JSONL datasets and audit files
 - `Outputs/` - General output for other tools

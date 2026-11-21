@@ -148,7 +148,7 @@ class UIManager(QWidget):
             ("DeslopMancer", self.open_deslop_tool),
             ("RefusalMancer", self.open_binary_classification_app),
             ("BehaviorMancer", self.open_behaviormancer_app),
-            ("DedupeMancer", self.open_deduplication_app),
+            ("DupeMancer", self.open_deduplication_app),
             ("LineMancer", self.open_linemancer_app),
             ("N-GraMancer", self.open_ngram_analyzer_app),
             ("SpaceMancer", self.open_spacemancer_app),
@@ -327,7 +327,7 @@ class UIManager(QWidget):
         self.qt_windows.append(win)
 
     def open_deduplication_app(self):
-        from App.DedupeMancer.DedupeMancer_app import DeduplicationApp
+        from App.DupeMancer.DupeMancer_app import DeduplicationApp
         win = DeduplicationApp(self.theme)
         if self.icon_path.exists():
             win.setWindowIcon(QIcon(str(self.icon_path)))

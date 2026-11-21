@@ -1,5 +1,5 @@
 """
-DedupeMancer App - Unified deduplication tool for datasets and images.
+DupeMancer App - Unified deduplication tool for datasets and images.
 
 This combines:
 - Dataset deduplication (JSONL files) using SHA-256 and MinHash/Semantic methods
@@ -7,6 +7,7 @@ This combines:
 """
 
 from __future__ import annotations
+import json
 import os
 import time
 from pathlib import Path
@@ -20,8 +21,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QDropEvent
 
-from App.DedupeMancer.DedupeMancer import Deduplication
-from App.DedupeMancer.ImageDedup import ImageDeduplication
+from App.DupeMancer.DupeMancer import Deduplication, dataset_output_paths
+from App.DupeMancer.ImageDedup import ImageDeduplication
 from App.Other.BG import GalaxyBackgroundWidget
 
 
@@ -40,28 +41,25 @@ class DatasetDedupWorker(QThread):
         self.output_file = output_file
         self.use_min_hash = use_min_hash
         self.randomize = randomize
+        self.failed = False
 
     def run(self):
         self.status_update.emit(f"🛠 Deduplication started for {self.input_file}...")
         method = "Min-Hash 🔍" if self.use_min_hash else "String-Match 🔗"
         self.status_update.emit(f"Method: {method} - Processing...")
-        self.deduplication.duplicate_count = 0
-        if self.use_min_hash:
-            self.deduplication.perform_min_hash_deduplication(
-                self.input_file,
-                self.output_file,
-                self.status_update.emit,
-                self.progress_update.emit,
-                randomize=self.randomize
+        deduplicate = (
+            self.deduplication.perform_min_hash_deduplication
+            if self.use_min_hash else self.deduplication.perform_sha256_deduplication
+        )
+        try:
+            deduplicate(
+                self.input_file, self.output_file, self.status_update.emit,
+                self.progress_update.emit, randomize=self.randomize,
             )
-        else:
-            self.deduplication.perform_sha256_deduplication(
-                self.input_file,
-                self.output_file,
-                self.status_update.emit,
-                self.progress_update.emit,
-                randomize=self.randomize
-            )
+        except Exception as exc:
+            self.failed = True
+            self.status_update.emit(f"Dataset deduplication failed: {exc}")
+            return
         self.progress_update.emit(1, 1)
         self.status_update.emit(f"✅ Deduplication completed for {self.input_file}.")
 
@@ -183,6 +181,7 @@ class ImageDedupWorker(QThread):
         self.hf_split = hf_split
         self.hf_max_samples = hf_max_samples
         self.hf_metadata_map = {}
+        self.failed = False
         # Output options
         self.randomize_output = randomize_output
 
@@ -190,11 +189,11 @@ class ImageDedupWorker(QThread):
         import tempfile
         import shutil
         
+        parquet_extracted_dir = hf_extracted_dir = None
         try:
             self.status_update.emit("🛠 Image deduplication started...")
             
             # Handle parquet file extraction if any
-            parquet_extracted_dir = None
             parquet_paths = []
             
             if self.parquet_files:
@@ -217,7 +216,6 @@ class ImageDedupWorker(QThread):
                     self.status_update.emit(f"✅ Extracted {len(parquet_paths)} images from parquet")
             
             # Handle HuggingFace dataset extraction if specified
-            hf_extracted_dir = None
             hf_paths = []
             
             if self.hf_dataset:
@@ -272,147 +270,75 @@ class ImageDedupWorker(QThread):
                         filename_field=self.filename_field,
                     )
                 
-            elif self.method == "embeddings":
-                self.status_update.emit("Method: Image Embeddings 🧠 - Processing...")
-                
-                # Combine regular inputs with parquet-extracted and HF images
-                all_paths = self.dedup.iter_image_paths(self.inputs) if self.inputs else []
-                all_paths.extend(parquet_paths)
-                all_paths.extend(hf_paths)
-                
-                if not all_paths:
-                    self.status_update.emit("❌ No images found.")
-                    return
-                
-                all_groups = []
-                
-                groups = self.dedup.perform_embedding_dedup(
-                    self.inputs if self.inputs else [],
-                    self.report_path,
-                    self.status_update.emit,
-                    self.progress_update.emit,
-                    top_k=self.top_k,
-                    move_duplicates=self.move_duplicates,
-                    duplicates_dir=self.duplicates_dir if self.move_duplicates else None,
-                    precomputed_paths=all_paths,
-                )
-                all_groups.extend(groups)
-                
-                # Get unique paths after deduplication
-                kept_paths = self._get_kept_paths(all_paths, all_groups)
-                
-                if self.copy_unique and self.unique_output_dir:
-                    self.phase_changed.emit()
-                    self.status_update.emit("Copying unique images to output...")
-                    self.dedup.copy_unique_to_output(
-                        all_paths,
-                        all_groups,
-                        self.unique_output_dir,
-                        self.status_update.emit,
-                        self.progress_update.emit,
-                        randomize=self.randomize_output,
-                    )
-                
-                # Export to parquet if requested
-                if self.export_parquet and self.parquet_output_path and self.parquet_metadata_map:
-                    self.phase_changed.emit()
-                    self._export_to_parquet(kept_paths)
-                    
             else:
-                self.status_update.emit("Method: Perceptual Hash 🖼️ - Processing...")
-                
-                # Combine regular inputs with parquet-extracted and HF images
                 all_paths = self.dedup.iter_image_paths(self.inputs) if self.inputs else []
                 all_paths.extend(parquet_paths)
                 all_paths.extend(hf_paths)
-                
                 if not all_paths:
-                    self.status_update.emit("❌ No images found.")
-                    return
-                
-                all_groups = []
-                
-                base_dir = os.path.dirname(self.report_path)
-                report_stem = Path(self.report_path).stem
-                sha_report = os.path.join(base_dir, f"{report_stem}_sha256.jsonl")
-                dh_report = self.report_path
+                    raise ValueError("No images found.")
 
-                self.status_update.emit("Phase 1/2: SHA-256 exact...")
-                self.phase_changed.emit()
-                sha_groups = self.dedup.perform_sha256_image_dedup(
-                    self.inputs if self.inputs else [],
-                    sha_report,
-                    self.status_update.emit,
-                    self.progress_update.emit,
-                    move_duplicates=False,
-                    duplicates_dir=None,
-                    precomputed_paths=all_paths,
-                )
-                all_groups.extend(sha_groups)
-                self.status_update.emit(f"SHA-256 found {len(sha_groups)} duplicate groups")
-
-                self.status_update.emit("Phase 2/2: dHash near-duplicates...")
-                self.phase_changed.emit()
-                dhash_groups = self.dedup.perform_dhash_dedup(
-                    self.inputs if self.inputs else [],
-                    dh_report,
-                    self.status_update.emit,
-                    self.progress_update.emit,
-                    move_duplicates=self.move_duplicates,
-                    duplicates_dir=self.duplicates_dir if self.move_duplicates else None,
-                    precomputed_paths=all_paths,
-                )
-                all_groups.extend(dhash_groups)
-                self.status_update.emit(f"Total: {len(all_groups)} duplicate groups from both methods")
-
-                # Get unique paths after deduplication
-                kept_paths = self._get_kept_paths(all_paths, all_groups)
+                annotation_keys = {
+                    path: json.dumps(
+                        {key: value for key, value in metadata.items() if key not in {
+                            "source_parquet", "source_dataset", "row_idx", "original_path"
+                        }},
+                        sort_keys=True, default=str,
+                    )
+                    for path, metadata in self.parquet_metadata_map.items()
+                }
+                if self.method == "embeddings":
+                    self.status_update.emit("Finding duplicates by image embeddings...")
+                    groups = self.dedup.perform_embedding_dedup(
+                        [], self.report_path, self.status_update.emit, self.progress_update.emit,
+                        top_k=self.top_k, precomputed_paths=all_paths, annotation_keys=annotation_keys,
+                    )
+                else:
+                    report = Path(self.report_path)
+                    sha_report = str(report.with_name(f"{report.stem}_sha256.jsonl"))
+                    dhash_report = str(report.with_name(f"{report.stem}_dhash.jsonl"))
+                    self.status_update.emit("Phase 1/2: SHA-256 exact...")
+                    self.phase_changed.emit()
+                    exact = self.dedup.perform_sha256_image_dedup(
+                        [], sha_report, self.status_update.emit, self.progress_update.emit,
+                        precomputed_paths=all_paths, annotation_keys=annotation_keys,
+                    )
+                    self.status_update.emit("Phase 2/2: dHash near-duplicates...")
+                    self.phase_changed.emit()
+                    near = self.dedup.perform_dhash_dedup(
+                        [], dhash_report, self.status_update.emit, self.progress_update.emit,
+                        precomputed_paths=self.dedup.kept_paths(all_paths, exact), annotation_keys=annotation_keys,
+                    )
+                    groups = self.dedup.combine_image_groups(exact, near)
+                    self.dedup._write_report_jsonl(self.report_path, groups, method="sha256_and_dhash")
 
                 if self.copy_unique and self.unique_output_dir:
                     self.phase_changed.emit()
                     self.status_update.emit("Copying unique images to output...")
                     self.dedup.copy_unique_to_output(
-                        all_paths,
-                        all_groups,
-                        self.unique_output_dir,
-                        self.status_update.emit,
-                        self.progress_update.emit,
-                        randomize=self.randomize_output,
+                        all_paths, groups, self.unique_output_dir, self.status_update.emit,
+                        self.progress_update.emit, randomize=self.randomize_output,
                     )
-                
-                # Export to parquet if requested
                 if self.export_parquet and self.parquet_output_path and self.parquet_metadata_map:
                     self.phase_changed.emit()
-                    self._export_to_parquet(kept_paths)
+                    self._export_to_parquet(self.dedup.kept_paths(all_paths, groups))
+                if self.move_duplicates and self.duplicates_dir:
+                    # Only local originals should ever leave their input folders.
+                    extracted = set(parquet_paths) | set(hf_paths)
+                    self.dedup._move_duplicates(
+                        groups, self.duplicates_dir, update_status=self.status_update.emit, exclude=extracted,
+                    )
 
             self.progress_update.emit(1, 1)
             self.status_update.emit("✅ Image deduplication completed.")
             
-            # Cleanup temp extraction directories
-            if parquet_extracted_dir and os.path.exists(parquet_extracted_dir):
-                try:
-                    shutil.rmtree(parquet_extracted_dir)
-                except Exception:
-                    pass
-            if hf_extracted_dir and os.path.exists(hf_extracted_dir):
-                try:
-                    shutil.rmtree(hf_extracted_dir)
-                except Exception:
-                    pass
-                    
-        except Exception as e:
-            self.status_update.emit(f"❌ Failed: {type(e).__name__}: {e}")
-    
-    def _get_kept_paths(self, all_paths, all_groups):
-        """Get list of paths to keep after deduplication."""
-        duplicates_set = set()
-        for paths in all_groups:
-            keep = self.dedup._choose_keep(paths)
-            for p in paths:
-                if p != keep:
-                    duplicates_set.add(p)
-        return [p for p in all_paths if p not in duplicates_set]
-    
+        except Exception as exc:
+            self.failed = True
+            self.status_update.emit(f"❌ Failed: {type(exc).__name__}: {exc}")
+        finally:
+            for directory in (parquet_extracted_dir, hf_extracted_dir):
+                if directory is not None:
+                    shutil.rmtree(directory, ignore_errors=True)
+
     def _export_to_parquet(self, kept_paths):
         """Export deduplicated images to parquet format."""
         # Filter to only parquet-sourced images that have metadata
@@ -436,7 +362,6 @@ class ImageDedupWorker(QThread):
         """Run text-based deduplication on parquet-sourced images."""
         import numpy as np
         import shutil
-        import json
         
         if not parquet_paths:
             self.status_update.emit("❌ No images from parquet to deduplicate.")
@@ -447,42 +372,36 @@ class ImageDedupWorker(QThread):
         for p in parquet_paths:
             meta = self.parquet_metadata_map.get(p, {})
             text = meta.get("text", "")
-            if text and text.strip():
+            if isinstance(text, str) and text.strip():
                 texts.append(text.strip())
                 valid_paths.append(p)
         
-        if not texts:
-            self.status_update.emit("❌ No text found in parquet metadata.")
-            return
         
-        self.status_update.emit(f"Encoding {len(texts)} texts for similarity...")
-        
-        try:
+        embeddings = []
+        if texts:
             from sentence_transformers import SentenceTransformer
+
+            self.status_update.emit(f"Encoding {len(texts)} texts for similarity...")
             model = SentenceTransformer(self.dedup.text_embed_model)
             embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=False, batch_size=128)
-        except ImportError:
-            self.status_update.emit("❌ sentence_transformers required for text dedup.")
-            return
-        
-        self.status_update.emit("Finding duplicates by text similarity...")
-        kept_indices = []
+
+        dropped = set()
         kept_embeddings = []
         threshold = float(self.dedup.text_sim_threshold)
-        
+
         for i, emb in enumerate(embeddings):
             if kept_embeddings:
                 sims = np.dot(kept_embeddings, emb)
                 max_sim = float(np.max(sims))
                 if max_sim >= threshold:
+                    dropped.add(valid_paths[i])
                     continue
-            kept_indices.append(i)
             kept_embeddings.append(emb)
         
-        kept_paths = [valid_paths[i] for i in kept_indices]
-        removed = len(valid_paths) - len(kept_paths)
+        kept_paths = [path for path in parquet_paths if path not in dropped]
+        removed = len(dropped)
         
-        self.status_update.emit(f"Keeping {len(kept_paths)} / {len(valid_paths)} (removed {removed} duplicates)")
+        self.status_update.emit(f"Keeping {len(kept_paths)} / {len(parquet_paths)} (removed {removed} duplicates)")
         
         # Randomize order if requested
         if self.randomize_output:
@@ -502,30 +421,34 @@ class ImageDedupWorker(QThread):
             with open(meta_out, 'w', encoding='utf-8') as f:
                 for p in kept_paths:
                     meta = self.parquet_metadata_map.get(p, {})
-                    fname = os.path.basename(p)
+                    stem, ext = os.path.splitext(os.path.basename(p))
+                    fname = f"{stem}{ext}"
                     dst = os.path.join(images_out, fname)
-                    try:
-                        shutil.copy2(p, dst)
-                        copied += 1
-                        # Write metadata record - include all available metadata
-                        record = {
-                            "file_name": fname,
-                            "text": meta.get("text", ""),
-                        }
-                        # Add prompt if present
-                        if meta.get("prompt"):
-                            record["prompt"] = meta.get("prompt")
-                        # Add any other extra metadata (from HF datasets)
-                        for key, val in meta.items():
-                            if key not in ["text", "prompt", "source_parquet", "source_dataset", "row_idx", "file_name"]:
-                                if isinstance(val, (str, int, float, bool)):
-                                    record[key] = val
-                        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    except Exception:
-                        pass
-            
+                    suffix = 2
+                    while os.path.exists(dst):
+                        fname = f"{stem}_{suffix}{ext}"
+                        dst = os.path.join(images_out, fname)
+                        suffix += 1
+                    shutil.copy2(p, dst)
+                    copied += 1
+                    record = {
+                        key: value for key, value in meta.items()
+                        if key not in {"source_parquet", "source_dataset", "row_idx"}
+                        and isinstance(value, (str, int, float, bool))
+                    }
+                    record["file_name"] = fname
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
             self.status_update.emit(f"✅ Copied {copied} images to {self.unique_output_dir}")
         
+        with open(self.report_path, "w", encoding="utf-8") as report:
+            report.write(json.dumps({
+                "method": "text_similarity",
+                "total_records": len(parquet_paths),
+                "kept_records": len(kept_paths),
+                "removed_duplicates": removed,
+            }) + "\n")
+
         # Export to parquet if requested
         if self.export_parquet and self.parquet_output_path:
             self._export_to_parquet(kept_paths)
@@ -608,7 +531,7 @@ class PathListWidget(QListWidget):
 # Main Unified App
 # =============================================================================
 
-APP_TITLE = "DedupeMancer"
+APP_TITLE = "DupeMancer"
 
 class DeduplicationApp(QWidget):
     def __init__(self, theme, parent=None):
@@ -1379,7 +1302,12 @@ class DeduplicationApp(QWidget):
                 QMessageBox.critical(self, "Invalid Settings", f"❌ {e}")
                 return
 
-        self.dataset_dedup.unique_conversations = set()
+        self.dataset_dedup.unique_conversations.clear()
+        self.dataset_run_files = list(self.dataset_files)
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        output_dir = os.path.join(repo_root, "Outputs")
+        os.makedirs(output_dir, exist_ok=True)
+        self.dataset_run_outputs = dataset_output_paths(self.dataset_run_files, output_dir)
         self.current_file_index = 0
         self.dataset_run_btn.setEnabled(False)
         self._reset_dataset_progress()
@@ -1387,21 +1315,15 @@ class DeduplicationApp(QWidget):
         self._process_next_dataset()
 
     def _process_next_dataset(self):
-        if self.current_file_index >= len(self.dataset_files):
+        if self.current_file_index >= len(self.dataset_run_files):
             self.dataset_run_btn.setEnabled(True)
             self.dataset_status_label.setText("Status: ✅ All files processed.")
             self.dataset_progress_bar.setValue(100)
             self.dataset_progress_label.setText("100%")
             return
 
-        input_file = self.dataset_files[self.current_file_index]
-        
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        repo_root = os.path.dirname(os.path.dirname(script_dir))
-        output_dir = os.path.join(repo_root, "Outputs")
-        os.makedirs(output_dir, exist_ok=True)
-        base = os.path.splitext(os.path.basename(input_file))[0]
-        output_file = os.path.join(output_dir, f"{base}-deduplicated.jsonl")
+        input_file = self.dataset_run_files[self.current_file_index]
+        output_file = self.dataset_run_outputs[self.current_file_index]
 
         self.dataset_start_time = time.time()
         use_minhash = self.dataset_minhash_radio.isChecked()
@@ -1427,6 +1349,9 @@ class DeduplicationApp(QWidget):
         self.dataset_speed_label.setText(f"Speed: {speed:.1f} it/s")
 
     def _dataset_finished(self):
+        if self.dataset_worker.failed:
+            self.dataset_run_btn.setEnabled(True)
+            return
         self.current_file_index += 1
         self._process_next_dataset()
 
@@ -1695,6 +1620,8 @@ class DeduplicationApp(QWidget):
     def _image_finished(self):
         self._image_worker_running = False
         self.image_run_btn.setEnabled(True)
+        if self.image_worker.failed:
+            return
         self.image_progress_bar.setValue(100)
         self.image_progress_label.setText("100%")
         

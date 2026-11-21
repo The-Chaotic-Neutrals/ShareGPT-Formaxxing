@@ -1,163 +1,98 @@
-# DeslopTool.py
-import json
-from pathlib import Path
-from datasets import load_dataset, Dataset
 import math
-from typing import Callable, List, Tuple, Any
+import re
+from pathlib import Path
+
+from App.DeslopMancer.dataset_rows import (
+    DatasetRow, output_paths, read_rows, removed_report, write_rows,
+)
 
 
-def load_filter_criteria(filter_files: List[str]) -> List[str]:
-    filter_criteria = []
-    for filter_file in filter_files:
-        with open(filter_file, 'r', encoding='utf-8', errors='replace') as f:
-            filter_criteria.extend(line.strip() for line in f if line.strip())
-    # Deduplicate to speed up simple substring scans
-    return list(dict.fromkeys(filter_criteria))
+def load_filter_criteria(filter_files):
+    criteria = []
+    for path in filter_files:
+        with open(path, encoding="utf-8-sig") as source:
+            criteria.extend(line.strip() for line in source if line.strip())
+    return list(dict.fromkeys(criteria))
 
 
-def filter_conversations(
-    conversations: List[dict],
-    filter_criteria: List[str],
-    threshold_multiplier: float | None = None,
-    progress_callback: Callable[[int, int, int], None] | None = None,
-) -> Tuple[List[dict], int, int, int]:
-    """
-    threshold_multiplier:
-        - None: keep everything (no removals) but still compute metrics
-        - float: remove conversations whose matched count >= (average * threshold_multiplier)
-    """
-    filtered_conversations: List[dict] = []
-    total_matched_phrases = 0
-    removed_conversation_count = 0
-    matched_counts: List[int] = []
+def phrase_patterns(phrases):
+    patterns = {}
+    for phrase in dict.fromkeys(phrases):
+        if not phrase:
+            continue
+        left = r"(?<!\w)" if re.match(r"\w", phrase[0]) else ""
+        right = r"(?!\w)" if re.match(r"\w", phrase[-1]) else ""
+        patterns[phrase] = re.compile(left + re.escape(phrase) + right)
+    return patterns
 
-    total = len(conversations)
 
-    # Phase 1: Calculate matched counts per conversation
-    for idx, conversation in enumerate(conversations):
-        total_phrases_in_conversation = 0
-        conv_list = conversation.get("conversations", [])
-        if isinstance(conv_list, list):
-            for msg in conv_list:
-                if isinstance(msg, dict) and msg.get("from") == "gpt":
-                    val = msg.get("value") or ""
-                    if val:
-                        # simple substring match for each phrase
-                        matched_count = sum(1 for phrase in filter_criteria if phrase in val)
-                        total_phrases_in_conversation += matched_count
+def phrase_matches(row, patterns):
+    return [
+        phrase for text in row.assistant_texts()
+        for phrase, pattern in patterns.items() if phrase in text and pattern.search(text)
+    ]
 
-        matched_counts.append(total_phrases_in_conversation)
-        total_matched_phrases += total_phrases_in_conversation
 
+def _partition_rows(rows, patterns, threshold_multiplier, progress_callback):
+    if threshold_multiplier is not None and (
+        not math.isfinite(threshold_multiplier) or threshold_multiplier <= 0
+    ):
+        raise ValueError("Threshold multiplier must be finite and greater than zero.")
+    matches = []
+    total = len(rows)
+    for index, row in enumerate(rows, 1):
+        matches.append(phrase_matches(row, patterns))
         if progress_callback:
-            # Report progress scaled to first half (0-50%)
-            progress_callback(idx + 1, total, 1)
+            progress_callback(index, total, 1)
 
-    if total == 0:
-        # Nothing to do
-        return [], 0, 0, 0
-
-    if total_matched_phrases == 0:
-        # No filtering needed/possible; keep all
-        return conversations, 0, total_matched_phrases, 0
-
-    average_matched_phrases = total_matched_phrases / total
-
-    # Phase 2: Filter conversations
-    for idx, conversation in enumerate(conversations):
-        remove = False
-        if threshold_multiplier is not None:
-            # IMPORTANT: use multiplier directly against the *average*
-            remove = matched_counts[idx] >= (average_matched_phrases * threshold_multiplier)
-
-        if remove:
-            removed_conversation_count += 1
+    hits = sum(map(len, matches))
+    threshold = hits / total * threshold_multiplier if total and threshold_multiplier is not None else None
+    kept, removed = [], []
+    for index, (row, phrases) in enumerate(zip(rows, matches), 1):
+        if threshold is not None and phrases and len(phrases) >= threshold:
+            removed.append({
+                **row.locate(), "reason": "assistant_phrase_threshold",
+                "matched_phrases": phrases, "match_count": len(phrases), "threshold": threshold,
+            })
         else:
-            filtered_conversations.append(conversation)
-
+            kept.append(row)
         if progress_callback:
-            # Report progress scaled to second half (50-100%)
-            progress_callback(idx + 1, total, 2)
-
-    filtered_count = removed_conversation_count
-
-    return filtered_conversations, filtered_count, total_matched_phrases, removed_conversation_count
+            progress_callback(index, total, 2)
+    return kept, removed, hits
 
 
-def write_filtered_jsonl(filtered_data: List[dict], output_file_path: Path) -> None:
-    """
-    Use HuggingFace Datasets to reliably write JSONL.
-    """
-    # Ensure parent exists
-    output_file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # If empty, still emit a valid (empty) JSONL file
-    if not filtered_data:
-        with open(output_file_path, "w", encoding="utf-8") as f:
-            pass
-        return
-
-    dataset = Dataset.from_list(filtered_data)
-    dataset.to_json(str(output_file_path), force_ascii=False)
+def filter_conversations(conversations, filter_criteria, threshold_multiplier=None, progress_callback=None):
+    rows = [DatasetRow(record, index, "entry") for index, record in enumerate(conversations, 1)]
+    kept, removed, hits = _partition_rows(rows, phrase_patterns(filter_criteria), threshold_multiplier, progress_callback)
+    return [row.record for row in kept], len(removed), hits, len(removed)
 
 
-def filter_dataset(
-    dataset_file: str,
-    filter_files: List[str],
-    threshold_multiplier: float | None = None,
-    progress_callback: Callable[[int, int], None] | None = None,
-) -> str:
-    """
-    Orchestrates loading, filtering, and writing a *_deslopped.jsonl.
-    progress_callback expects (current, total) where current is a percent (0..100), total=100.
-    """
-    filter_criteria = load_filter_criteria(filter_files)
+def write_filtered_jsonl(filtered_data, output_file_path):
+    write_rows(output_file_path, filtered_data)
 
-    # Load dataset (supports .jsonl or .json where .json is a list of objects)
-    dataset = load_dataset("json", data_files=dataset_file, split="train", streaming=False)
-    data = list(dataset)  # materialize
 
-    last_reported_percent = [-1]  # mutable capture
+def filter_dataset(dataset_file, filter_files, threshold_multiplier=None, progress_callback=None, *, output_path=None):
+    patterns = phrase_patterns(load_filter_criteria(filter_files))
+    data = list(read_rows(dataset_file))
+    last_percent = -1
 
-    def wrapped_progress_callback(current: int, total: int, phase: int) -> None:
-        if progress_callback:
-            # Phase 1 maps to 0..50, Phase 2 maps to 50..100
-            if total <= 0:
-                percent = 0
-            else:
-                if phase == 1:
-                    percent = math.floor((current / total) * 50)
-                else:
-                    percent = 50 + math.floor((current / total) * 50)
-            if percent != last_reported_percent[0]:
-                last_reported_percent[0] = percent
-                progress_callback(percent, 100)
+    def progress(current, total, phase):
+        nonlocal last_percent
+        percent = (phase - 1) * 50 + current * 50 // total
+        if progress_callback and percent != last_percent:
+            last_percent = percent
+            progress_callback(percent, 100)
 
-    filtered_data, filtered_count, total_matched_phrases, removed_conversation_count = filter_conversations(
-        data,
-        filter_criteria,
-        threshold_multiplier,
-        progress_callback=wrapped_progress_callback
+    kept, removed, hits = _partition_rows(data, patterns, threshold_multiplier, progress)
+    if output_path is None:
+        output_path = output_paths([dataset_file], Path(__file__).resolve().parents[2] / "Outputs")[0]
+    report = removed_report(output_path)
+    write_rows(output_path, kept, dataset_file)
+    write_rows(report, removed, dataset_file)
+    if progress_callback and last_percent != 100:
+        progress_callback(100, 100)
+    return (
+        f"Kept {len(kept)} of {len(data)} conversations. Removed {len(removed)}.\n"
+        f"Total matched phrases: {hits}\n"
+        f"Filtered output: {output_path}\nRemoved-row report: {report}\n"
     )
-
-    # Default to outputs folder in repo root
-    script_dir = Path(__file__).parent.absolute()
-    repo_root = script_dir.parent.parent.absolute()
-    output_folder = repo_root / "Outputs"
-    output_folder.mkdir(parents=True, exist_ok=True)
-
-    dataset_name = Path(dataset_file).stem
-    output_file_path = output_folder / f"{dataset_name}_deslopped.jsonl"
-
-    write_filtered_jsonl(filtered_data, output_file_path)
-
-    output_message = (
-        f"Total original conversations: {len(data)}\n"
-        f"Total filtered conversations: {filtered_count}\n"
-        f"Remaining conversations after filtering: {len(filtered_data)}\n"
-        f"Total matched phrases: {total_matched_phrases}\n"
-        f"Total conversations removed: {removed_conversation_count}\n"
-        f"Filtered output written to: {output_file_path}\n"
-    )
-
-    return output_message

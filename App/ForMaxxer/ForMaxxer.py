@@ -764,7 +764,7 @@ _GEMMA_CHANNEL_MARKER_RE = re.compile(
     r"<[^>\n]{0,40}channel[^>\n]{0,40}>",
     re.IGNORECASE,
 )
-_EMPTY_GEMMA_REASONING = "<|channel>thought\n\n<channel|>"
+_EMPTY_GEMMA_REASONING = "<|channel>thought\n<channel|>"
 
 
 def _normalize_gemma_reasoning_value(value, *, add_empty=True):
@@ -775,6 +775,12 @@ def _normalize_gemma_reasoning_value(value, *, add_empty=True):
     if not isinstance(value, str) or not value.strip():
         return value, "skipped"
     if _VALID_GEMMA_REASONING_RE.match(value):
+        # Normalize whitespace-only thought bodies without altering real reasoning.
+        match = _VALID_GEMMA_REASONING_RE.match(value)
+        body = value[match.start():match.end()]
+        if re.fullmatch(r"<\|channel>thought\r?\n\s*<channel\|>", body, re.IGNORECASE):
+            normalized = value[:match.start()] + _EMPTY_GEMMA_REASONING + value[match.end():]
+            return normalized, "repaired" if normalized != value else "already_tagged"
         return value, "already_tagged"
 
     stripped = value.lstrip()
@@ -791,7 +797,10 @@ def _normalize_gemma_reasoning_value(value, *, add_empty=True):
             final = remainder[closing.end():].lstrip()
             if preamble:
                 final = preamble + (" " if final else "") + final
-            normalized = leading + f"<|channel>thought\n{reasoning}\n<channel|>{final}"
+            normalized = leading + (
+                f"<|channel>thought\n{reasoning}\n<channel|>{final}"
+                if reasoning.strip() else _EMPTY_GEMMA_REASONING + final
+            )
             return normalized, "repaired"
 
     standalone = _STANDALONE_GEMMA_CHANNEL_RE.match(stripped)
@@ -940,17 +949,18 @@ def clean_conversation_item(
     if has_null_gpt_value:
         return None, "null_gpt"
 
-    if normalize_gemma_reasoning:
-        filtered_conversations = _normalize_gemma_reasoning_tags(
-            filtered_conversations,
-            stats=reasoning_tag_stats,
-            final_reply_only=strip_think_tags,
-        )
-
     if strip_think_tags:
         if has_unterminated_reasoning_block(filtered_conversations):
             return None, "unterminated_reasoning"
         filtered_conversations = _strip_think_tags(filtered_conversations)
+
+    # Normalize AFTER collapsing: historical thoughts become empty wrappers,
+    # while the last assistant response retains its real reasoning.
+    if normalize_gemma_reasoning:
+        filtered_conversations = _normalize_gemma_reasoning_tags(
+            filtered_conversations,
+            stats=reasoning_tag_stats,
+        )
 
     if check_duplicate_turns:
         duplicate_type = get_human_gpt_duplicate_type(

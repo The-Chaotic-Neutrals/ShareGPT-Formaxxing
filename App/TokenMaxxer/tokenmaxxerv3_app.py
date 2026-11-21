@@ -260,8 +260,11 @@ class TokenMaxxerV3App(QMainWindow):
             self.update_button_states()
             return
         self.log("🔍 Analyzing token lengths...")
-        result = self.core.analyze_file(self.core.file_path)
-        self.log(result)
+        try:
+            result = self.core.analyze_file(self.core.file_path)
+            self.log(result)
+        except Exception as exc:
+            self.log(f"TokenMaxxer failed: {exc}")
         self.is_running = False
         self.status_label.setText("🛌 Idle")
         self.update_button_states()
@@ -299,17 +302,20 @@ class TokenMaxxerV3App(QMainWindow):
             self.update_button_states()
             return
 
-        result = self.core.clean_file(
-            self.core.file_path,
-            max_tokens,
-            sort_by_length=(
-                self.sort_by_length_checkbox.isChecked()
-                or self.sort_longest_first_checkbox.isChecked()
-            ),
-            longest_first=self.sort_longest_first_checkbox.isChecked(),
-            bucket_tokens=bucket_tokens,
-        )
-        self.log(result)
+        try:
+            result = self.core.clean_file(
+                self.core.file_path,
+                max_tokens,
+                sort_by_length=(
+                    self.sort_by_length_checkbox.isChecked()
+                    or self.sort_longest_first_checkbox.isChecked()
+                ),
+                longest_first=self.sort_longest_first_checkbox.isChecked(),
+                bucket_tokens=bucket_tokens,
+            )
+            self.log(result)
+        except Exception as exc:
+            self.log(f"TokenMaxxer failed: {exc}")
         self.is_running = False
         self.status_label.setText("🛌 Idle")
         self.update_button_states()
@@ -327,8 +333,11 @@ class TokenMaxxerV3App(QMainWindow):
             self.status_label.setText("🛌 Idle")
             self.update_button_states()
             return
-        result = self.core.tokenize_only(self.core.file_path)
-        self.log(result)
+        try:
+            result = self.core.tokenize_only(self.core.file_path)
+            self.log(result)
+        except Exception as exc:
+            self.log(f"TokenMaxxer failed: {exc}")
         self.is_running = False
         self.status_label.setText("🛌 Idle")
         self.update_button_states()

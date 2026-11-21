@@ -1,14 +1,40 @@
+import ast
 import json
 import os
 import random
-import re
 from collections import defaultdict
+from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
 from transformers import AutoTokenizer
 
 
-_GEMMA_THOUGHT = re.compile(r"^\s*<\|channel>thought[ \t]*\r?\n(.*?)<channel\|>(.*)\Z", re.DOTALL)
+@lru_cache(maxsize=4)
+def _read_studio_gemma_template(source, _mtime_ns):
+    # Read the literal template without importing Studio or initializing Unsloth.
+    module = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    for statement in module.body:
+        if isinstance(statement, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "gemma4_thinking_template"
+            for target in statement.targets
+        ):
+            if isinstance(statement.value, ast.Constant) and isinstance(statement.value.value, str):
+                return statement.value.value
+            break
+    raise ValueError(f"Studio's Gemma 4 training template could not be read from {source}.")
+
+
+def _studio_gemma_template():
+    repo = Path(os.environ.get("UNSLOTH_STUDIO_REPO") or Path(__file__).resolve().parents[3] / "unsloth")
+    source = repo / "unsloth" / "chat_templates.py"
+    try:
+        return _read_studio_gemma_template(source, source.stat().st_mtime_ns)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Studio checkout not found at {repo}. Set UNSLOTH_STUDIO_REPO to its folder "
+            "to count Gemma 4 rows using Studio's training template."
+        ) from exc
 
 
 class TokenMaxxerCore:
@@ -56,7 +82,15 @@ class TokenMaxxerCore:
 
     # ---------------- Tokenizer ----------------
     def load_tokenizer(self, model_repo: str):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_repo)
+        tokenizer = AutoTokenizer.from_pretrained(model_repo)
+        previous = self.tokenizer
+        self.tokenizer = tokenizer
+        try:
+            if self._uses_gemma_reasoning():
+                _studio_gemma_template()
+        except Exception:
+            self.tokenizer = previous
+            raise
         self.model_name = model_repo
         self.save_config(model_repo)
 
@@ -69,122 +103,100 @@ class TokenMaxxerCore:
 
     def _counting_mode(self):
         if self._uses_gemma_reasoning():
-            return "Gemma 4 reasoning SFT"
+            return "Studio Gemma 4 reasoning SFT"
         return "HF chat template" if self.has_chat_template() else "raw-text fallback"
 
     @staticmethod
-    def _normalize_role(role):
-        role = str(role or "").strip().lower()
-        role_map = {
-            "human": "user",
-            "user": "user",
-            "gpt": "assistant",
-            "assistant": "assistant",
-            "model": "assistant",
-            "bot": "assistant",
-            "system": "system",
-            "developer": "developer",
-            "tool": "tool",
-        }
-        return role_map.get(role)
-
-    def _entry_to_messages(self, entry, *, gemma_reasoning=False):
-        """Convert common ShareGPT-style rows into HF chat-template messages."""
+    def _entry_to_messages(entry):
+        if not isinstance(entry, dict):
+            raise ValueError("Expected a JSON object for the dataset row.")
         conversations = entry.get("conversations")
         if conversations is None:
-            conversations = entry.get("messages", [])
+            conversations = entry.get("messages")
+        if not isinstance(conversations, list) or not conversations:
+            raise ValueError("Expected a non-empty conversations or messages list.")
 
+        roles = {
+            "human": "user", "user": "user", "instruction": "user",
+            "gpt": "assistant", "assistant": "assistant", "model": "assistant",
+            "bot": "assistant", "output": "assistant", "system": "system",
+            "input": "system", "developer": "developer", "tool": "tool",
+        }
         messages = []
-        for message in conversations or []:
-            role = self._normalize_role(
-                message.get("from")
-                or message.get("role")
-                or message.get("speaker")
-            )
+        for number, message in enumerate(conversations, 1):
+            if not isinstance(message, dict):
+                raise ValueError(f"Turn {number}: expected a message object.")
+            source_role = message.get("from") or message.get("role") or message.get("speaker")
+            role = roles.get(str(source_role or "").strip().lower())
             if role is None:
-                continue
+                raise ValueError(f"Turn {number}: unsupported or missing role {source_role!r}.")
 
-            content = message.get("value")
-            if content is None:
-                content = message.get("content")
-            if content is None:
-                content = message.get("text", "")
+            # Keep inline Gemma thoughts in content, as Studio does. Converting
+            # them to reasoning_content changes the rendered message boundaries.
+            rendered = {
+                key: value for key, value in message.items()
+                if key not in {"from", "speaker", "value", "text"} and value is not None
+            }
+            content = next(
+                (message[key] for key in ("value", "content", "text") if message.get(key) is not None),
+                "",
+            )
+            rendered.update(role=role, content=content)
+            if "reasoning_content" not in rendered and rendered.get("thinking"):
+                rendered["reasoning_content"] = rendered["thinking"]
+            messages.append(rendered)
 
-            # Most ShareGPT datasets use strings. Preserve non-string content
-            # in a readable form rather than silently dropping it.
-            if not isinstance(content, str):
-                content = json.dumps(content, ensure_ascii=False)
-
-            rendered_message = {"role": role, "content": content}
-            if gemma_reasoning and role == "assistant":
-                reasoning = message.get("reasoning_content") or message.get("reasoning") or message.get("thinking")
-                inline = _GEMMA_THOUGHT.match(content)
-                if inline:
-                    reasoning, answer = inline.groups()
-                    rendered_message["content"] = answer
-                if isinstance(reasoning, str) and reasoning.strip():
-                    rendered_message["reasoning_content"] = reasoning.strip()
-            messages.append(rendered_message)
-
+        system = entry.get("system")
+        if isinstance(system, str) and system.strip() and messages[0]["role"] != "system":
+            messages.insert(0, {"role": "system", "content": system})
         return messages
 
-    def _raw_flat_text(self, entry):
-        conversations = entry.get("conversations")
-        if conversations is None:
-            conversations = entry.get("messages", [])
-
-        values = []
-        for message in conversations or []:
-            content = message.get("value")
-            if content is None:
-                content = message.get("content")
-            if content is None:
-                content = message.get("text")
-            if content is None:
-                continue
-            if not isinstance(content, str):
-                content = json.dumps(content, ensure_ascii=False)
-            values.append(content)
-        return "\n".join(values)
-
-    def encode_entry(self, entry):
-        """
-        Tokenize an entry as the loaded model would see it during chat SFT.
-
-        Uses the tokenizer's own chat template when available. If the tokenizer
-        has no chat template, falls back to the old raw-text counting method.
-        """
+    def encode_entry(self, entry, *, studio_template=None):
+        """Encode the rendered text without adding another BOS or EOS."""
         if self.tokenizer is None:
             raise RuntimeError("Tokenizer is not loaded.")
-
+        messages = self._entry_to_messages(entry)
         if self.has_chat_template():
-            gemma_reasoning = self._uses_gemma_reasoning()
-            messages = self._entry_to_messages(entry, gemma_reasoning=gemma_reasoning)
-            if not messages:
-                return []
-
-            options = {"enable_thinking": True, "preserve_thinking": True} if gemma_reasoning else {}
-            encoded = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=True,
-                add_generation_prompt=False,
-                **options,
+            options = {}
+            if self._uses_gemma_reasoning():
+                options.update(
+                    chat_template=studio_template or _studio_gemma_template(),
+                    enable_thinking=True,
+                    preserve_thinking=True,
+                )
+            tools = entry.get("tools")
+            if tools:
+                if isinstance(tools, str):
+                    tools = json.loads(tools)
+                if not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools):
+                    raise ValueError("Expected tools to be a list of tool definitions.")
+                options["tools"] = []
+                for tool in tools:
+                    if "function" not in tool and "name" in tool:
+                        tool = {"type": "function", "function": tool}
+                    elif not tool.get("type") and "function" in tool:
+                        tool = {**tool, "type": "function"}
+                    options["tools"].append(tool)
+            if not any(
+                (m["content"].strip() if isinstance(m["content"], str) else m["content"])
+                or m.get("tool_calls") or m.get("reasoning_content")
+                for m in messages
+            ):
+                raise ValueError("No message content to tokenize.")
+            text = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False, **options,
             )
-
-            # Normally this is list[int], but tolerate tokenizer variants.
-            # Some tokenizers return a BatchEncoding/dict (e.g. {'input_ids': [...],
-            # 'attention_mask': [...]}). BatchEncoding is a UserDict, not a plain
-            # dict, so isinstance(encoded, dict) is False.
-            if not isinstance(encoded, (list, tuple)):
-                encoded = encoded.get("input_ids", [])
-            if hasattr(encoded, "tolist"):
-                encoded = encoded.tolist()
-            if encoded and isinstance(encoded[0], list):
-                encoded = encoded[0]
-            return list(encoded)
-
-        flat = self._raw_flat_text(entry)
-        return self.tokenizer.encode(flat, add_special_tokens=False)
+        else:
+            text = "\n".join(
+                content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+                for content in (message["content"] for message in messages)
+            )
+        if not text.strip():
+            raise ValueError("Rendered conversation is empty.")
+        encoded = self.tokenizer.encode(text, add_special_tokens=False)
+        if not len(encoded):
+            raise ValueError("Tokenizer returned zero tokens.")
+        return encoded
 
     def get_token_count(self, entry):
         return len(self.encode_entry(entry))
@@ -218,176 +230,149 @@ class TokenMaxxerCore:
         return ordered
 
     # ---------------- Core operations ----------------
-    def analyze_file(self, file_path: str):
-        raw_entries = []
-        lengths = []
-        errors = 0
+    @staticmethod
+    def _output_base(file_path):
+        output = Path(__file__).resolve().parents[2] / "Outputs"
+        output.mkdir(parents=True, exist_ok=True)
+        return output / Path(file_path).stem
 
-        with open(file_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
+    def _encoded_rows(self, file_path, issues, *, studio_template):
+        with open(file_path, "rb") as source:
+            for number, raw in enumerate(source, 1):
                 try:
+                    line = raw.decode("utf-8-sig" if number == 1 else "utf-8")
+                    if not line.strip():
+                        continue
                     entry = json.loads(line)
-                    count = self.get_token_count(entry)
-                    raw_entries.append(entry)
-                    lengths.append(count)
-                except Exception:
-                    errors += 1
+                    ids = self.encode_entry(entry, studio_template=studio_template)
+                except Exception as exc:
+                    issues.append({
+                        "line": number, "status": "invalid",
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    })
+                    continue
+                yield number, entry, ids
 
+    @staticmethod
+    def _write_jsonl(path, rows):
+        with path.open("w", encoding="utf-8") as out:
+            for row in rows:
+                out.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    def _issue_summary(self, output_base, operation, issues):
+        report = output_base.with_name(f"{output_base.name}_{operation}_issues.jsonl")
+        issues = sorted(issues, key=lambda issue: issue["line"])
+        self._write_jsonl(report, issues)
+        preview = "\n".join(
+            f"Line {issue['line']}: {issue['reason']}" for issue in issues[:10]
+        )
+        return f"Row issues: {len(issues)}\nIssue report: {report}" + (f"\n{preview}" if preview else "")
+
+    def _prepare_template(self):
+        if self.tokenizer is None:
+            raise RuntimeError("Tokenizer is not loaded.")
+        return _studio_gemma_template() if self._uses_gemma_reasoning() else None
+
+    def analyze_file(self, file_path: str):
+        template = self._prepare_template()
+        issues = []
+        lengths = []
+        longest_entry = None
+        longest_tokens = 0
+        longest_line = None
+        for number, entry, ids in self._encoded_rows(file_path, issues, studio_template=template):
+            count = len(ids)
+            lengths.append(count)
+            if count > longest_tokens:
+                longest_entry, longest_tokens, longest_line = entry, count, number
+
+        report = self._issue_summary(self._output_base(file_path), "analyze", issues)
         if not lengths:
-            return "⚠️ No valid entries to analyze."
+            return f"No valid entries to analyze.\n{report}"
 
         percentiles = np.percentile(lengths, [10, 25, 50, 75, 90, 95, 99, 100])
-        longest_idx = lengths.index(max(lengths))
-        mode = self._counting_mode()
-
         return (
-            f"🧮 Counting mode: {mode}\n"
-            f"🔢 Percentiles: {percentiles.tolist()}\n"
-            f"📏 Min: {min(lengths)} | Max: {max(lengths)}\n"
-            f"📍 Longest Entry Index: {longest_idx}\n"
-            f"🧪 Tokens: {lengths[longest_idx]}\n"
-            f"⚠️ Skipped/invalid entries: {errors}\n"
-            f"🕵️ Entry:\n{json.dumps(raw_entries[longest_idx], indent=2, ensure_ascii=False)}"
+            f"Counting mode: {self._counting_mode()}\n"
+            f"Percentiles: {percentiles.tolist()}\n"
+            f"Min: {min(lengths)} | Max: {max(lengths)}\n"
+            f"Longest entry: line {longest_line} ({longest_tokens} tokens)\n"
+            f"{report}\n"
+            f"{json.dumps(longest_entry, indent=2, ensure_ascii=False)}"
         )
 
     def clean_file(
-        self,
-        file_path: str,
-        max_tokens: int,
-        sort_by_length: bool = False,
-        longest_first: bool = False,
-        bucket_tokens: int = 128,
+        self, file_path: str, max_tokens: int, sort_by_length: bool = False,
+        longest_first: bool = False, bucket_tokens: int = 128,
     ):
-        # Default to outputs folder in repo root
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        repo_root = os.path.dirname(os.path.dirname(script_dir))
-        outputs_dir = os.path.join(repo_root, "Outputs")
-        os.makedirs(outputs_dir, exist_ok=True)
-
-        base_name = os.path.splitext(os.path.basename(file_path))[0]
-        cleaned = os.path.join(outputs_dir, f"{base_name}_cleaned.jsonl")
-        long_file = os.path.join(outputs_dir, f"{base_name}_long.jsonl")
-
-        cleaned_entries = []
-        long_entries = []
-        long_count = 0
-        error_count = 0
-        longest_entry_pre = None
-        longest_count_pre = 0
-
-        with open(file_path, "r", encoding="utf-8") as fin:
-            for line in fin:
-                if not line.strip():
-                    continue
-                try:
-                    entry = json.loads(line)
-                    count = self.get_token_count(entry)
-
-                    if count > longest_count_pre:
-                        longest_count_pre = count
-                        longest_entry_pre = entry
-
-                    if count <= max_tokens:
-                        cleaned_entries.append((entry, count))
-                    else:
-                        long_entries.append((entry, count))
-                        long_count += 1
-                except Exception:
-                    error_count += 1
+        if max_tokens < 1:
+            raise ValueError("Max token length must be a positive integer.")
+        template = self._prepare_template()
+        output_base = self._output_base(file_path)
+        cleaned_path = output_base.with_name(f"{output_base.name}_cleaned.jsonl")
+        long_path = output_base.with_name(f"{output_base.name}_long.jsonl")
+        issues = []
+        cleaned = []
+        long = []
+        longest_input = None
+        # Studio final-turn-only SFT excludes rows at the cap because the
+        # trainer cannot tell them apart from truncated conversations.
+        usable_limit = max_tokens - 1 if template is not None else max_tokens
+        for number, entry, ids in self._encoded_rows(file_path, issues, studio_template=template):
+            count = len(ids)
+            if longest_input is None or count > longest_input[1]:
+                longest_input = (entry, count)
+            if count <= usable_limit:
+                cleaned.append((entry, count))
+            else:
+                long.append((entry, count))
+                reason = (
+                    f"{count} tokens reaches the {max_tokens}-token Studio final-turn limit."
+                    if count == max_tokens else f"{count} tokens exceeds the {max_tokens}-token limit."
+                )
+                issues.append({"line": number, "status": "limit", "tokens": count, "reason": reason})
 
         if sort_by_length:
-            cleaned_entries = self._approximate_length_sort(
-                cleaned_entries,
-                bucket_tokens=bucket_tokens,
-                longest_first=longest_first,
-            )
-            long_entries = self._approximate_length_sort(
-                long_entries,
-                bucket_tokens=bucket_tokens,
-                longest_first=longest_first,
-            )
-
-        with open(cleaned, "w", encoding="utf-8") as fclean:
-            for entry, _ in cleaned_entries:
-                json.dump(entry, fclean, ensure_ascii=False)
-                fclean.write("\n")
-
-        with open(long_file, "w", encoding="utf-8") as flong:
-            for entry, _ in long_entries:
-                json.dump(entry, flong, ensure_ascii=False)
-                flong.write("\n")
-
-        if cleaned_entries:
-            longest_entry = max(cleaned_entries, key=lambda x: x[1])
-            post_clean_log = (
-                f"🥵️ Longest Entry After Cleaning ({longest_entry[1]} tokens):\n"
-                f"{json.dumps(longest_entry[0], indent=2, ensure_ascii=False)}"
-            )
-        else:
-            post_clean_log = "⚠️ No entries were retained after cleaning."
-
-        pre_clean_log = (
-            f"🧌 Longest Entry Before Cleaning ({longest_count_pre} tokens):\n"
-            f"{json.dumps(longest_entry_pre, indent=2, ensure_ascii=False)}"
-        ) if longest_entry_pre else "⚠️ Failed to determine longest entry before cleaning."
-
-        mode = self._counting_mode()
-        if sort_by_length:
-            sort_description = (
-                f"Approximate {'longest' if longest_first else 'shortest'} first "
-                f"({bucket_tokens}-token buckets, shuffled within each bucket)"
-            )
-        else:
-            sort_description = "Original order"
-
+            cleaned = self._approximate_length_sort(cleaned, bucket_tokens, longest_first)
+            long = self._approximate_length_sort(long, bucket_tokens, longest_first)
+        self._write_jsonl(cleaned_path, (entry for entry, _ in cleaned))
+        self._write_jsonl(long_path, (entry for entry, _ in long))
+        report = self._issue_summary(output_base, "clean", issues)
+        longest_retained = max(cleaned, key=lambda row: row[1], default=None)
+        previews = []
+        for name, row in (("Longest input", longest_input), ("Longest retained entry", longest_retained)):
+            if row is not None:
+                entry, count = row
+                previews.append(f"{name} ({count} tokens):\n{json.dumps(entry, indent=2, ensure_ascii=False)}")
+        sort_order = (
+            f"{'Longest' if longest_first else 'Shortest'} first in {bucket_tokens}-token buckets"
+            if sort_by_length else "Original order"
+        )
+        preview = "\n\n".join(previews)
         return (
-            f"✅ Finished processing: {os.path.basename(file_path)}\n"
-            f"🧮 Counting mode: {mode}\n"
-            f"🪼 Cleaned: {len(cleaned_entries)}\n"
-            f"🐉 Long: {long_count}\n"
-            f"⚠️ Skipped/invalid: {error_count}\n"
-            f"📁 Cleaned File: {cleaned}\n"
-            f"📁 Long File: {long_file}\n"
-            f"📏 Sort order: {sort_description}\n"
-            f"{pre_clean_log}\n\n{post_clean_log}"
+            f"Finished processing: {Path(file_path).name}\n"
+            f"Counting mode: {self._counting_mode()}\n"
+            f"Cleaned: {len(cleaned)} | Outside token limit: {len(long)}\n"
+            f"Cleaned file: {cleaned_path}\nLong file: {long_path}\n"
+            f"Sort order: {sort_order}\n{report}\n\n{preview}"
         )
 
     def tokenize_only(self, file_path: str):
-        # Default to outputs folder in repo root
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        repo_root = os.path.dirname(os.path.dirname(script_dir))
-        outputs_dir = os.path.join(repo_root, "Outputs")
-        os.makedirs(outputs_dir, exist_ok=True)
-
-        base_name = os.path.splitext(os.path.basename(file_path))[0]
-        output_path = os.path.join(outputs_dir, f"{base_name}_tokenized.jsonl")
-        error_count = 0
+        template = self._prepare_template()
+        output_base = self._output_base(file_path)
+        output = output_base.with_name(f"{output_base.name}_tokenized.jsonl")
+        issues = []
         written = 0
 
-        with open(file_path, "r", encoding="utf-8") as fin, \
-             open(output_path, "w", encoding="utf-8") as fout:
-            for line in fin:
-                if not line.strip():
-                    continue
-                try:
-                    entry = json.loads(line)
-                    input_ids = self.encode_entry(entry)
-                    out = {
-                        "input_ids": input_ids,
-                        "attention_mask": [1] * len(input_ids),
-                    }
-                    json.dump(out, fout, ensure_ascii=False)
-                    fout.write("\n")
-                    written += 1
-                except Exception:
-                    error_count += 1
+        def rows():
+            nonlocal written
+            for _, _, ids in self._encoded_rows(file_path, issues, studio_template=template):
+                written += 1
+                yield {"input_ids": ids, "attention_mask": [1] * len(ids)}
 
-        mode = self._counting_mode()
+        self._write_jsonl(output, rows())
+        report = self._issue_summary(output_base, "tokenize", issues)
         return (
-            f"✅ Tokenized file written to: {output_path}\n"
-            f"🧮 Tokenization mode: {mode}\n"
-            f"🧵 Entries written: {written}\n"
-            f"⚠️ Skipped/invalid: {error_count}"
+            f"Tokenized file: {output}\n"
+            f"Tokenization mode: {self._counting_mode()}\n"
+            f"Entries written: {written}\n{report}"
         )

@@ -1,0 +1,2 @@
+# DupeMancer package
+

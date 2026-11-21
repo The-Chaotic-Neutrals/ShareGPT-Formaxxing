@@ -74,24 +74,33 @@ class ImageDeduplication:
         paths: List[str] = []
         seen = set()
 
+        def add(path):
+            identity = os.path.normcase(os.path.realpath(path))
+            if identity not in seen:
+                seen.add(identity)
+                paths.append(os.path.abspath(path))
+
         for raw in inputs:
             p = Path(raw)
             if p.is_dir():
-                for root, _, files in os.walk(p):
-                    for fn in files:
-                        ext = Path(fn).suffix.lower()
-                        if ext in self.IMAGE_EXTS:
-                            full = str(Path(root) / fn)
-                            if full not in seen:
-                                seen.add(full)
-                                paths.append(full)
-            elif p.is_file():
-                if p.suffix.lower() in self.IMAGE_EXTS:
-                    full = str(p)
-                    if full not in seen:
-                        seen.add(full)
-                        paths.append(full)
+                for root, directories, files in os.walk(p):
+                    directories.sort()
+                    for name in sorted(files):
+                        if Path(name).suffix.lower() in self.IMAGE_EXTS:
+                            add(Path(root) / name)
+            elif p.is_file() and p.suffix.lower() in self.IMAGE_EXTS:
+                add(p)
         return paths
+
+    @staticmethod
+    def _write_extracted_image(output_dir, stem, image_bytes):
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            extension = {"JPEG": "jpg", "TIFF": "tiff"}.get(
+                image.format, (image.format or "png").lower()
+            )
+        path = Path(output_dir) / f"{stem}.{extension}"
+        path.write_bytes(image_bytes)
+        return str(path)
 
     def load_parquet_images(
         self,
@@ -198,44 +207,10 @@ class ImageDeduplication:
                             global_idx += 1
                             continue
                         
-                        # Determine output filename
-                        if img_rel_path:
-                            # Use path from parquet, but flatten subdirs with underscores
-                            safe_name = img_rel_path.replace("/", "_").replace("\\", "_")
-                        else:
-                            # Generate filename based on index
-                            safe_name = f"parquet_{global_idx:08d}.png"
-                        
-                        # Ensure unique filename
-                        out_path = os.path.join(output_dir, safe_name)
-                        if os.path.exists(out_path):
-                            stem, ext = os.path.splitext(safe_name)
-                            k = 1
-                            while os.path.exists(out_path):
-                                out_path = os.path.join(output_dir, f"{stem}_{k}{ext}")
-                                k += 1
-                        
-                        # Detect image format and save
-                        try:
-                            img = Image.open(io.BytesIO(img_bytes))
-                            img = ImageOps.exif_transpose(img)
-                            
-                            # Ensure we have a proper extension
-                            if not out_path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')):
-                                fmt = img.format or "PNG"
-                                ext = f".{fmt.lower()}"
-                                if ext == ".jpeg":
-                                    ext = ".jpg"
-                                out_path = out_path + ext
-                            
-                            # Save image
-                            img.save(out_path)
-                            img.close()
-                        except Exception:
-                            # Fallback: write raw bytes
-                            with open(out_path, 'wb') as f:
-                                f.write(img_bytes)
-                        
+                        out_path = self._write_extracted_image(
+                            output_dir, f"parquet_{global_idx:08d}", img_bytes,
+                        )
+
                         # Collect metadata
                         text_val = ""
                         if text_column in table.column_names:
@@ -394,7 +369,7 @@ class ImageDeduplication:
                 - Dict mapping image path -> metadata dict (text, source, row_idx)
         """
         try:
-            from datasets import load_dataset, DatasetDict, IterableDataset
+            from datasets import load_dataset, DatasetDict, IterableDataset, Image as HFImage
         except ImportError:
             update_status("❌ datasets library required. Install with: pip install datasets")
             return [], {}
@@ -463,6 +438,10 @@ class ImageDeduplication:
         except Exception:
             pass
         
+        feature = (getattr(dataset, "features", None) or {}).get(image_column)
+        if isinstance(feature, HFImage):
+            dataset = dataset.cast_column(image_column, HFImage(decode=False))
+
         update_status(f"Extracting images to {output_dir}...")
         update_progress(0, total_samples)
         
@@ -478,40 +457,29 @@ class ImageDeduplication:
                 if img_data is None:
                     continue
                 
-                # Handle different image formats
-                img = None
-                if hasattr(img_data, 'save'):
-                    # PIL Image
-                    img = img_data
-                elif isinstance(img_data, dict) and 'bytes' in img_data:
-                    # HuggingFace Image format with bytes
-                    img = Image.open(io.BytesIO(img_data['bytes']))
-                elif isinstance(img_data, bytes):
-                    img = Image.open(io.BytesIO(img_data))
-                elif isinstance(img_data, str) and os.path.exists(img_data):
-                    # File path
-                    img = Image.open(img_data)
-                
-                if img is None:
+                image_bytes = img_data.get("bytes") if isinstance(img_data, dict) else img_data
+                stem = f"hf_{idx:08d}"
+                if isinstance(image_bytes, bytes):
+                    out_path = self._write_extracted_image(output_dir, stem, image_bytes)
+                elif hasattr(img_data, "save"):
+                    out_path = os.path.join(output_dir, f"{stem}.png")
+                    img_data.save(out_path)
+                elif isinstance(img_data, str) and os.path.isfile(img_data):
+                    out_path = self._write_extracted_image(output_dir, stem, Path(img_data).read_bytes())
+                elif isinstance(img_data, dict) and img_data.get("path"):
+                    # Decode path-backed Image features using the dataset library's resolver.
+                    image = (
+                        HFImage().decode_example(img_data, token_per_repo_id={dataset_name: token})
+                        if isinstance(feature, HFImage) else None
+                    )
+                    if image is None:
+                        continue
+                    out_path = os.path.join(output_dir, f"{stem}.png")
+                    with image:
+                        image.save(out_path)
+                else:
                     continue
-                
-                # Determine output filename
-                out_name = f"hf_{idx:08d}.png"
-                out_path = os.path.join(output_dir, out_name)
-                
-                # Handle collisions
-                if os.path.exists(out_path):
-                    k = 1
-                    while os.path.exists(out_path):
-                        out_path = os.path.join(output_dir, f"hf_{idx:08d}_{k}.png")
-                        k += 1
-                
-                # Save image
-                img = ImageOps.exif_transpose(img)
-                img.save(out_path)
-                if hasattr(img, 'close'):
-                    img.close()
-                
+
                 # Get text/caption
                 text_val = ""
                 if text_column:
@@ -527,10 +495,10 @@ class ImageDeduplication:
                 
                 image_paths.append(out_path)
                 metadata_map[out_path] = {
+                    **extra_meta,
                     "text": text_val,
                     "source_dataset": dataset_name,
                     "row_idx": idx,
-                    **extra_meta,
                 }
                 extracted += 1
                 
@@ -554,9 +522,8 @@ class ImageDeduplication:
 
     @staticmethod
     def _load_image_rgb(path: str) -> Image.Image:
-        img = Image.open(path)
-        img = ImageOps.exif_transpose(img)
-        return img.convert("RGB")
+        with Image.open(path) as image:
+            return ImageOps.exif_transpose(image).convert("RGB")
 
     @staticmethod
     def _get_image_meta(path: str) -> ImageMeta:
@@ -624,7 +591,7 @@ class ImageDeduplication:
         extra = extra or {}
         with open(report_path, "w", encoding="utf-8") as f:
             for gid, paths in enumerate(groups):
-                keep = self._choose_keep(paths)
+                keep = paths[0]
                 dups = [p for p in paths if p != keep]
                 f.write(json.dumps({
                     "group_id": gid,
@@ -635,19 +602,44 @@ class ImageDeduplication:
                     **extra
                 }, ensure_ascii=False) + "\n")
 
+    def kept_paths(self, all_paths, groups):
+        duplicates = {path for group in groups for path in group[1:]}
+        return [path for path in all_paths if path not in duplicates]
+
+    def combine_image_groups(self, exact_groups, near_groups):
+        """Expand perceptual groups after scanning only SHA-256 representatives."""
+        exact_by_keep = {group[0]: group for group in exact_groups}
+        combined = []
+        for group in near_groups:
+            combined.append([
+                path for representative in group
+                for path in exact_by_keep.pop(representative, [representative])
+            ])
+        combined.extend(exact_by_keep.values())
+        return combined
+
+    def _order_groups(self, groups):
+        """Choose one representative before any file is copied or moved."""
+        ordered = []
+        for group in groups:
+            keep = self._choose_keep(group)
+            ordered.append([keep, *(p for p in group if p != keep)])
+        return ordered
+
     def _move_duplicates(
         self,
         groups: List[List[str]],
         duplicates_dir: str,
         update_status: Callable[[str], None] = default_update_status,
+        exclude=(),
     ):
         self._ensure_dir(duplicates_dir)
         moved = 0
 
         for paths in groups:
-            keep = self._choose_keep(paths)
+            keep = paths[0]
             for p in paths:
-                if p == keep:
+                if p == keep or p in exclude:
                     continue
                 try:
                     base = os.path.basename(p)
@@ -662,10 +654,10 @@ class ImageDeduplication:
                                 break
                             k += 1
 
-                    os.replace(p, dest)
+                    shutil.move(p, dest)
                     moved += 1
-                except Exception:
-                    logging.error(f"Failed to move duplicate: {p}", exc_info=True)
+                except OSError as exc:
+                    raise OSError(f"Could not move duplicate {p}: {exc}") from exc
 
         update_status(f"Moved {moved} duplicate files to: {duplicates_dir}")
 
@@ -685,27 +677,15 @@ class ImageDeduplication:
         import random
         self._ensure_dir(output_dir)
 
-        # Build set of all duplicate paths (excluding the "keep" from each group)
-        duplicates_set = set()
-        keep_set = set()
-        for paths in groups:
-            keep = self._choose_keep(paths)
-            keep_set.add(keep)
-            for p in paths:
-                if p != keep:
-                    duplicates_set.add(p)
+        unique_paths = self.kept_paths(all_paths, groups)
 
-        # Unique images = all images that are NOT duplicates
-        # This includes: images not in any group + the "keep" image from each group
-        unique_paths = [p for p in all_paths if p not in duplicates_set]
-        
         # Randomize order if requested
         if randomize:
             random.shuffle(unique_paths)
             update_status("Shuffled output order")
 
         total = len(unique_paths)
-        dup_count = len(duplicates_set)
+        dup_count = len(all_paths) - total
         update_status(f"Found {len(groups)} duplicate groups ({dup_count} files). Copying {total} unique images...")
         copied = 0
 
@@ -729,8 +709,8 @@ class ImageDeduplication:
 
                 if i % 50 == 0:
                     update_progress(i, total)
-            except Exception:
-                logging.error(f"Failed to copy: {p}", exc_info=True)
+            except OSError as exc:
+                raise OSError(f"Could not copy retained image {p}: {exc}") from exc
 
         update_progress(total, total)
         update_status(f"Copied {copied} unique images to: {output_dir}")
@@ -745,9 +725,11 @@ class ImageDeduplication:
         move_duplicates: bool = False,
         duplicates_dir: Optional[str] = None,
         precomputed_paths: Optional[List[str]] = None,
+        annotation_keys=None,
     ) -> List[List[str]]:
+        annotation_keys = annotation_keys or {}
         try:
-            paths = precomputed_paths if precomputed_paths else self.iter_image_paths(inputs)
+            paths = precomputed_paths if precomputed_paths is not None else self.iter_image_paths(inputs)
             if not paths:
                 update_status("No images found.")
                 return []
@@ -770,7 +752,7 @@ class ImageDeduplication:
 
             update_status(f"SHA-256 scanning {len(paths)} images...")
             bytes_done = 0
-            groups_by_hash: Dict[str, List[str]] = {}
+            groups_by_hash: Dict[tuple, List[str]] = {}
             completed = 0
 
             # Parallel SHA-256 hashing
@@ -783,7 +765,7 @@ class ImageDeduplication:
                         bytes_done += read
                         if bytes_done > total_bytes:
                             total_bytes = bytes_done + 1
-                        groups_by_hash.setdefault(digest, []).append(p)
+                        groups_by_hash.setdefault((digest, annotation_keys.get(p)), []).append(p)
                     except Exception:
                         logging.error(f"SHA-256 failed for: {p}", exc_info=True)
 
@@ -793,7 +775,12 @@ class ImageDeduplication:
 
             update_progress(total_bytes, total_bytes)
 
-            dup_groups = [g for g in groups_by_hash.values() if len(g) > 1]
+            order = {path: index for index, path in enumerate(paths)}
+            dup_groups = self._order_groups([
+                sorted(group, key=order.__getitem__)
+                for group in groups_by_hash.values() if len(group) > 1
+            ])
+            dup_groups.sort(key=lambda group: order[group[0]])
             self._write_report_jsonl(report_path, dup_groups, method="sha256_exact")
 
             update_status(f"SHA-256 complete. Duplicate groups: {len(dup_groups)}. Report: {report_path}")
@@ -805,7 +792,7 @@ class ImageDeduplication:
         except Exception as e:
             logging.error(f"Error during SHA-256 image dedup: {e}", exc_info=True)
             update_status(f"SHA-256 failed: {type(e).__name__}: {e}")
-            return []
+            raise
 
     # (rest unchanged)
     def perform_dhash_dedup(
@@ -817,9 +804,11 @@ class ImageDeduplication:
         move_duplicates: bool = False,
         duplicates_dir: Optional[str] = None,
         precomputed_paths: Optional[List[str]] = None,
+        annotation_keys=None,
     ) -> List[List[str]]:
+        annotation_keys = annotation_keys or {}
         try:
-            paths = precomputed_paths if precomputed_paths else self.iter_image_paths(inputs)
+            paths = precomputed_paths if precomputed_paths is not None else self.iter_image_paths(inputs)
             n = len(paths)
             if n == 0:
                 update_status("No images found.")
@@ -828,14 +817,14 @@ class ImageDeduplication:
             update_status(f"dHash scanning {n} images...")
             update_progress(0, n)
 
-            items: List[Tuple[str, int, ImageMeta]] = []
+            items = []
 
-            def compute_dhash(p: str) -> Optional[Tuple[str, int, ImageMeta]]:
+            def compute_dhash(p: str):
                 try:
-                    img = self._load_image_rgb(p)
-                    dh = self._dhash64(img)
-                    meta = self._get_image_meta(p)
-                    return (p, dh, meta)
+                    with self._load_image_rgb(p) as img:
+                        dhash = self._dhash64(img)
+                        color = np.asarray(img.resize((8, 8), Image.Resampling.BOX), dtype=np.int16)
+                    return p, dhash, color, self._get_image_meta(p)
                 except Exception:
                     return None
 
@@ -861,9 +850,12 @@ class ImageDeduplication:
             PREFIX = max(1, min(PREFIX, 32))
             prefix_mask = (1 << PREFIX) - 1
 
-            buckets: Dict[int, List[int]] = {}
-            for idx, (_, dh, _) in enumerate(items):
-                key = (dh >> (64 - PREFIX)) & prefix_mask
+            # Compare to the same best-quality image that will represent the group.
+            order = {path: index for index, path in enumerate(paths)}
+            items.sort(key=lambda item: (*self._canonical_score(item[3]), -order[item[0]]), reverse=True)
+            buckets = {}
+            for idx, (path, dh, _, _) in enumerate(items):
+                key = ((dh >> (64 - PREFIX)) & prefix_mask, annotation_keys.get(path))
                 buckets.setdefault(key, []).append(idx)
 
             visited = set()
@@ -873,14 +865,18 @@ class ImageDeduplication:
                 for pos, i in enumerate(idxs):
                     if i in visited:
                         continue
-                    _, base_hash, _ = items[i]
+                    _, base_hash, base_color, _ = items[i]
                     group = [i]
 
                     for j in idxs[pos + 1:]:
                         if j in visited:
                             continue
-                        _, h2, _ = items[j]
-                        if self._hamming(base_hash, h2) <= int(self.dhash_hamming_threshold):
+                        _, candidate_hash, candidate_color, _ = items[j]
+                        # Grayscale-gradient hashes alone collapse unrelated flat-color images.
+                        if (
+                            self._hamming(base_hash, candidate_hash) <= int(self.dhash_hamming_threshold)
+                            and np.abs(base_color - candidate_color).mean() <= 24
+                        ):
                             group.append(j)
 
                     for k in group:
@@ -889,11 +885,12 @@ class ImageDeduplication:
                     if len(group) > 1:
                         groups.append([items[k][0] for k in group])
 
+            groups = self._order_groups(groups)
             self._write_report_jsonl(
                 report_path,
                 groups,
                 method=f"dhash64_h{int(self.dhash_hamming_threshold)}_p{PREFIX}",
-                extra={"hamming_threshold": int(self.dhash_hamming_threshold), "prefix_bits": PREFIX}
+                extra={"hamming_threshold": int(self.dhash_hamming_threshold), "prefix_bits": PREFIX, "color_mean_difference_limit": 24}
             )
 
             update_status(f"dHash complete. Duplicate groups: {len(groups)}. Report: {report_path}")
@@ -905,7 +902,7 @@ class ImageDeduplication:
         except Exception as e:
             logging.error(f"Error during dHash dedup: {e}", exc_info=True)
             update_status(f"dHash failed: {type(e).__name__}: {e}")
-            return []
+            raise
 
     def perform_embedding_dedup(
         self,
@@ -917,9 +914,11 @@ class ImageDeduplication:
         move_duplicates: bool = False,
         duplicates_dir: Optional[str] = None,
         precomputed_paths: Optional[List[str]] = None,
+        annotation_keys=None,
     ) -> List[List[str]]:
+        annotation_keys = annotation_keys or {}
         try:
-            paths = precomputed_paths if precomputed_paths else self.iter_image_paths(inputs)
+            paths = precomputed_paths if precomputed_paths is not None else self.iter_image_paths(inputs)
             n = len(paths)
             if n == 0:
                 update_status("No images found.")
@@ -976,8 +975,9 @@ class ImageDeduplication:
                     inputs_t = processor(images=imgs, return_tensors="pt")
                     pixel_values = inputs_t["pixel_values"].to(device, dtype=torch.float16 if use_fp16 else torch.float32)
                     with torch.inference_mode():
-                        feats = model.get_image_features(pixel_values=pixel_values)
-                        feats = feats / feats.norm(dim=-1, keepdim=True)
+                        features = model.get_image_features(pixel_values=pixel_values)
+                        feats = features if torch.is_tensor(features) else features.pooler_output
+                        feats = torch.nn.functional.normalize(feats.float(), dim=-1)
                     embs.append(feats.detach().cpu().float().numpy().astype("float32"))
                     good_paths.extend(local_paths)
 
@@ -1020,10 +1020,10 @@ class ImageDeduplication:
                     continue
 
                 group = [i]
-                for j, sim in zip(I[i][1:], D[i][1:]):
-                    if j < 0 or j in visited:
+                for j, sim in zip(I[i], D[i]):
+                    if j < 0 or j == i or j in visited:
                         continue
-                    if float(sim) >= thr:
+                    if float(sim) >= thr and annotation_keys.get(good_paths[i]) == annotation_keys.get(good_paths[j]):
                         group.append(int(j))
 
                 for k in group:
@@ -1038,6 +1038,7 @@ class ImageDeduplication:
 
             update_progress(total_steps, total_steps)
 
+            groups = self._order_groups(groups)
             self._write_report_jsonl(
                 report_path,
                 groups,
@@ -1053,7 +1054,7 @@ class ImageDeduplication:
         except Exception as e:
             logging.error(f"Error during embedding dedup: {e}", exc_info=True)
             update_status(f"Embedding dedup failed: {type(e).__name__}")
-            return []
+            raise
 
     def perform_text_metadata_dedup(
         self,
@@ -1105,20 +1106,21 @@ class ImageDeduplication:
                 images_path = input_path
             
             if not meta_path.exists():
-                update_status(f"❌ Metadata file not found: {meta_path}")
-                return (0, 0)
+                raise FileNotFoundError(f"Metadata file not found: {meta_path}")
             
             # Load metadata records
             update_status(f"Loading metadata from {meta_path}...")
             records = []
             with open(meta_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
+                for number, line in enumerate(f, 1):
+                    if line.strip():
                         try:
-                            records.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            continue
+                            record = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            raise ValueError(f"{meta_path}, line {number}: {exc.msg}") from exc
+                        if not isinstance(record, dict):
+                            raise ValueError(f"{meta_path}, line {number}: expected a JSON object.")
+                        records.append(record)
             
             if not records:
                 update_status("❌ No valid records found in metadata.")
@@ -1127,72 +1129,30 @@ class ImageDeduplication:
             total = len(records)
             update_status(f"Found {total} records. Extracting text for embedding...")
             
-            # Extract texts
-            texts = []
-            valid_records = []
-            for rec in records:
-                text = rec.get(text_field, "")
-                if isinstance(text, str) and text.strip():
-                    texts.append(text.strip())
-                    valid_records.append(rec)
-                else:
-                    # Skip records without text
-                    pass
-            
-            if not texts:
-                update_status(f"❌ No text found in field '{text_field}'.")
-                return (0, 0)
-            
-            update_status(f"Encoding {len(texts)} texts with {self.text_embed_model}...")
-            update_progress(0, len(texts))
-            
-            # Load sentence transformer model
-            with suppress_stdout_stderr():
-                from sentence_transformers import SentenceTransformer
-                model = SentenceTransformer(self.text_embed_model)
-            
-            # Encode texts
-            embeddings = model.encode(
-                texts,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-                batch_size=128,
-            )
-            
-            update_progress(len(texts) // 2, len(texts))
-            
-            # Deduplicate based on similarity
-            update_status("Finding duplicates by text similarity...")
-            kept_indices = []
-            kept_embeddings = []
-            duplicate_groups = []
-            
-            threshold = float(self.text_sim_threshold)
-            
-            for i, (rec, emb) in enumerate(zip(valid_records, embeddings)):
-                if kept_embeddings:
-                    # Compute similarity with all kept embeddings
-                    sims = np.dot(kept_embeddings, emb)
-                    max_sim = float(np.max(sims))
-                    
-                    if max_sim >= threshold:
-                        # This is a duplicate - find which group it belongs to
-                        max_idx = int(np.argmax(sims))
-                        # Track as duplicate (for reporting)
-                        continue
-                
-                # Keep this record
-                kept_indices.append(i)
-                kept_embeddings.append(emb)
-                
-                if i % 100 == 0:
-                    update_progress(len(texts) // 2 + i // 2, len(texts))
-            
-            kept_records = [valid_records[i] for i in kept_indices]
-            removed_count = len(valid_records) - len(kept_records)
-            
-            update_status(f"Keeping {len(kept_records)} / {len(valid_records)} records (removed {removed_count} duplicates)")
-            
+            indexed_texts = [
+                (index, text.strip()) for index, record in enumerate(records)
+                if isinstance(text := record.get(text_field), str) and text.strip()
+            ]
+            dropped = set()
+            if indexed_texts:
+                with suppress_stdout_stderr():
+                    from sentence_transformers import SentenceTransformer
+                    model = SentenceTransformer(self.text_embed_model)
+                embeddings = model.encode(
+                    [text for _, text in indexed_texts], normalize_embeddings=True,
+                    show_progress_bar=False, batch_size=128,
+                )
+                kept_embeddings = []
+                for (index, _), embedding in zip(indexed_texts, embeddings):
+                    if kept_embeddings and float(np.max(np.dot(kept_embeddings, embedding))) >= self.text_sim_threshold:
+                        dropped.add(index)
+                    else:
+                        kept_embeddings.append(embedding)
+
+            kept_records = [record for index, record in enumerate(records) if index not in dropped]
+            removed_count = len(dropped)
+            update_status(f"Keeping {len(kept_records)} / {total} records (removed {removed_count} duplicates).")
+
             # Create output directory
             out_path = Path(output_dir)
             out_images_path = out_path / images_subdir
@@ -1203,36 +1163,40 @@ class ImageDeduplication:
             update_status("Copying unique images to output...")
             copied = 0
             
-            with open(out_path / metadata_file, 'w', encoding='utf-8') as f:
-                for i, rec in enumerate(kept_records):
-                    filename = rec.get(filename_field, "")
-                    if filename:
-                        src = images_path / filename
-                        dst = out_images_path / filename
-                        
-                        if src.exists():
-                            try:
-                                shutil.copy2(str(src), str(dst))
-                                copied += 1
-                            except Exception:
-                                logging.error(f"Failed to copy: {src}", exc_info=True)
-                    
-                    # Write record to new metadata
-                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                    
-                    if i % 50 == 0:
-                        update_progress(len(texts) // 2 + len(texts) // 4 + i * len(texts) // (4 * len(kept_records)), len(texts))
-            
-            update_progress(len(texts), len(texts))
-            
+            source_root = images_path.resolve()
+            destination_root = out_images_path.resolve()
+            if destination_root == source_root or (out_path / metadata_file).resolve() == meta_path.resolve():
+                raise ValueError("Choose an output folder separate from the input dataset.")
+
+            copies = []
+            for record in kept_records:
+                filename = record.get(filename_field)
+                if not isinstance(filename, str) or not filename or Path(filename).is_absolute():
+                    raise ValueError(f"Expected a relative image filename, got {filename!r}.")
+                src = (source_root / filename).resolve()
+                dst = (destination_root / filename).resolve()
+                if not src.is_relative_to(source_root) or not dst.is_relative_to(destination_root):
+                    raise ValueError(f"Image filename escapes its dataset folder: {filename!r}.")
+                if not src.is_file():
+                    raise FileNotFoundError(f"Image not found for metadata record: {filename!r}.")
+                copies.append((src, dst))
+            for src, dst in copies:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                copied += 1
+            with open(out_path / metadata_file, "w", encoding="utf-8") as f:
+                for record in kept_records:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            update_progress(total, total)
+
             # Write report
             self._ensure_dir(os.path.dirname(report_path))
             with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(json.dumps({
                     "method": "text_similarity",
                     "model": self.text_embed_model,
-                    "threshold": threshold,
-                    "total_records": len(valid_records),
+                    "threshold": self.text_sim_threshold,
+                    "total_records": total,
                     "kept_records": len(kept_records),
                     "removed_duplicates": removed_count,
                     "images_copied": copied,
@@ -1240,11 +1204,11 @@ class ImageDeduplication:
                     "output_dir": str(out_path),
                 }, ensure_ascii=False) + "\n")
             
-            update_status(f"✅ Text dedup complete! Kept {len(kept_records)}/{len(valid_records)} ({copied} images copied)")
+            update_status(f"✅ Text dedup complete! Kept {len(kept_records)}/{total} ({copied} images copied)")
             
-            return (len(kept_records), len(valid_records))
+            return (len(kept_records), total)
             
         except Exception as e:
             logging.error(f"Error during text metadata dedup: {e}", exc_info=True)
             update_status(f"❌ Text dedup failed: {type(e).__name__}: {e}")
-            return (0, 0)
+            raise
